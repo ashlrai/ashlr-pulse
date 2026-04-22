@@ -1,0 +1,10 @@
+.env
+.env.local
+.DS_Store
+node_modules/
+.next/
+dist/
+target/
+*.log
+.idea/
+.vscode/
