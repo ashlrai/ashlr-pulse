@@ -1,88 +1,157 @@
 # Roadmap
 
-Rough time estimates assume Mason solo, ~2 hrs/day. Multiply by 2-3 for realistic
-calendar time given AshlrAI's other work.
+Phased from "Mason dogfoods alone" → "founding pair uses it every day" → "early
+AI-native teams pay for it" → "full agentic-engineering PM suite." Each phase
+is a usable product on its own.
 
-## v0.1 — Personal dogfood (weeks 1–2)
+Estimates assume Mason solo, ~2 hrs/day average. Calendar time = 2–3× the raw
+estimate given AshlrAI's other work.
 
-Goal: Mason uses Pulse on his own laptop. Prove the data schema and capture paths.
+---
 
-- [ ] Monorepo scaffold (pnpm workspaces): `agent/`, `server/`, `dashboard/`
-- [ ] Rust agent skeleton (or Go — decide after spike): config, OTel collector, local sqlite buffer
-- [ ] Claude Code OTel → agent path (`OTEL_EXPORTER_OTLP_ENDPOINT`) end to end, visible in agent's local log
-- [ ] Shell preexec/precmd hooks for zsh — capture `{cmd, cwd, duration, exit}` for known AI CLIs (claude, aider, sgpt, q chat)
-- [ ] Postgres schema migration (use `activity_event` as specified in ARCHITECTURE.md)
-- [ ] Next.js dashboard boilerplate with a "Today" view: minutes by source, tokens today, tool-call timeline
-- [ ] One-command local bootstrap: `docker compose up` gives Postgres + server + dashboard
+## v0.1 — Personal dashboard (Mason, alone) — ~2 weeks
 
-**Success criteria**: Mason can point to the dashboard and see his own Claude Code
-sessions broken down by tool call, cost, and project.
+**Ship goal**: Mason uses it every day instead of opening GitHub notifications.
 
-## v0.2 — Second developer (weeks 3–4)
+- Monorepo scaffold: `agent/`, `server/`, `dashboard/`
+- Rust or Go agent with OTel collector, local SQLite buffer
+- Claude Code native OTel → agent → dashboard, end to end
+- Shell preexec/precmd hooks for zsh — capture `{cmd, cwd, duration, exit}`
+  for known AI CLIs (claude, aider, sgpt, q)
+- Postgres schema (see `ARCHITECTURE.md`); no prompt/code storage, hardwired
+- Next.js dashboard "Today" view: minutes by source, tokens, cost, tool-call
+  timeline, per-repo breakdown
+- Per-repo grouping into **projects** — manually assigned at first
+  (`client-foo`, `saas-bar`, `internal`)
+- One-command bootstrap: `docker compose up`
+- `brew install ashlrai/pulse/agent`
 
-Goal: Cody (real human, real company) can install Pulse and see their own data.
+**Success criteria**: Mason opens Pulse every morning and it reduces his
+"what's going on" cognitive load vs GitHub + Slack.
 
-- [ ] WakaTime heartbeat endpoint compatibility — verify with VS Code plugin
-- [ ] Cursor Admin API poller — pulls per-user daily metrics
-- [ ] GitHub Copilot Metrics API poller
-- [ ] Per-user + per-project views on dashboard
-- [ ] Agent auto-updater
-- [ ] Installer: Homebrew tap, `brew install ashlr/pulse/agent`
-- [ ] First documentation pass: `docs/getting-started.md`
+---
 
-**Success criteria**: three developers on three different stacks (IDE-heavy, CLI-heavy,
-mixed) running Pulse for a week and finding the data accurate.
+## v0.2 — Shared visibility (founding pair) — ~2–3 weeks after v0.1
 
-## v0.3 — Team view (weeks 5–6)
+**Ship goal**: Mason and cofounder use Pulse as their shared dashboard.
 
-Goal: Pulse answers team questions, not just individual ones.
+- **User accounts + org model** (first time multi-user)
+- **Configurable-sharing data model**: per-user, per-peer, per-scope rules.
+  Example: Mason → Cofounder: `client-*` realtime, `saas-*` weekly,
+  `experiments-*` nothing.
+- **"Our team" dashboard view**: pair-oriented layout, peer activity stream,
+  shared project portfolio
+- **Daily digest**: "here's what Mason shipped yesterday, here's what Cofounder
+  shipped" — delivered via Slack DM or email
+- WakaTime heartbeat protocol endpoint — cofounder's VS Code plugin works day one
+- Git commit ingester (via webhook or poll) — fills gaps where only commits are
+  the signal
+- Auth via Supabase Auth or Clerk
 
-- [ ] Team/org concept in data model (users belong to orgs, permissions)
-- [ ] Team dashboard: aggregated AI usage, top tools, per-user breakdown
-- [ ] Daily digest (email / Slack) — "your team did X hours, Y tokens, Z commits yesterday"
-- [ ] Cost-per-outcome surface — $X AI spend → Y cycle time delta
-- [ ] Privacy UI — dev can see exactly what goes to the server
+**Success criteria**: Mason and cofounder cancel one weekly sync call because
+Pulse replaces its purpose.
 
-**Success criteria**: one engineering manager at a 5–20 person team says "this is my
-new default dashboard."
+---
 
-## v0.4 — Cloud + billing (weeks 7–9)
+## v0.3 — Portfolio view (25 repos) — ~3 weeks after v0.2
 
-Goal: Turn Pulse into a real product you can charge for.
+**Ship goal**: The entire AshlrAI portfolio is legible at a glance.
 
-- [ ] Multi-tenant cloud deployment (Fly.io or Railway for v1)
-- [ ] Clerk/Supabase Auth
-- [ ] Billing: Stripe, $10/dev/mo as a starting guess
-- [ ] Marketing site at `pulse.ashlr.ai`
-- [ ] Launch: Hacker News, Product Hunt, dev-tool Slack communities
+- **Project-level rollups**: group repos into SaaS products / client engagements
+  / internal tools, with drill-down
+- **Per-project health cards**: commits/week, active contributors, AI share,
+  time since last deploy, token cost this month
+- **Attention map**: where the team's effort is actually landing vs. where
+  you said it should (pair with a lightweight weekly "intent" note)
+- **Engagement billing export**: hours × AI tokens by repo, CSV ready for
+  invoicing client work
+- Cursor Admin API poller
+- GitHub Copilot Metrics API poller
 
-**Success criteria**: 10 paying teams within 60 days of launch.
+**Success criteria**: "which client engagement is slipping?" is answerable in
+<10 seconds without opening GitHub.
 
-## v1.0 — Correlation layer (weeks 10+)
+---
 
-Goal: the "outcome correlation" wedge, which is the hardest and most valuable piece.
+## v0.4 — Early team (3–20) + cloud launch — ~4 weeks after v0.3
 
-- [ ] Git ingester with quality signals (PR size, review cycles, revert rate)
-- [ ] AI-generated-code attribution via commit signature detection (GitClear approach)
-- [ ] "Did heavier AI usage on feature X correlate with more/fewer review cycles?" view
-- [ ] Cohort benchmarking (opt-in)
-- [ ] Integrations: export to Datadog, Swarmia, Jira, Linear
+**Ship goal**: a friend's AI-native startup pays for a cloud seat.
 
-**Success criteria**: a team can answer "is our AI spend actually moving the needle
-on cycle time?" in under 30 seconds on the dashboard.
+- **Multi-tenant cloud deployment** (Fly / Railway / Render)
+- **Team invitation + onboarding flow** — config-share defaults guide new
+  hires through what's visible to whom
+- **Billing**: Stripe, $10–$15/dev/mo trial pricing
+- **Marketing site** at `pulse.ashlr.ai`
+- Launch: AshlrAI channels, indie hackers, HN, Product Hunt, dev-tool Slacks
+- **Opt-in analytics** for Pulse itself so we learn how teams use Pulse
 
-## Things we might do later (or never)
+**Success criteria**: 10 paying teams within 60 days.
 
-- Browser extension for ChatGPT/Claude.ai usage in browser
-- Custom watcher SDK for teams that want to emit from their own internal tools
-- On-prem enterprise tier with SSO + audit
-- AI-model fine-tuning with aggregated Pulse data (huge IP minefield; later, or never)
-- "Pulse Insights" — a second product that coaches teams on AI adoption patterns
+---
 
-## What we will NOT do, ever
+## v0.5 — Async standup + weekly recap (AI-generated) — ~3 weeks after v0.4
 
-- Keystroke logging
-- Screenshot capture
-- Storage of prompts or code content in the cloud tier (even opt-in)
-- Manager-facing "time away from keyboard" metric
-- Ranking devs against each other on a public leaderboard by default
+**Ship goal**: replace a standup.
+
+- AI-generated daily standup per person: "yesterday I: … today I plan to: …
+  blocked on: …" — inferred from activity + asked for missing pieces
+- Weekly recap for the team: human-readable narrative of what moved, what
+  didn't, what's new on the attention map
+- Pushed to Slack, email, or Pulse inbox
+
+**Success criteria**: a team reports they eliminated a recurring meeting
+because of Pulse's async recaps.
+
+---
+
+## v1.0 — Outcome correlation — ~4 weeks after v0.5
+
+**Ship goal**: Pulse answers "was our AI spend worth it?"
+
+- Git quality ingester: PR size, review cycles, revert rate, incident correlation
+- AI-generated-code attribution via commit signature detection
+- Cohort benchmarking (opt-in; teams compared against anonymized peers)
+- Spend-per-outcome surface: $X AI → Y days cycle time delta, Z commits/feature
+
+**Success criteria**: a paying team says "we used Pulse data to justify
+continuing/canceling one of our AI tool subscriptions."
+
+---
+
+## v1.5+ — Toward an agentic-engineering PM suite
+
+As Pulse owns the "what actually happened" data, it earns the right to own
+"what should happen next."
+
+- Lightweight roadmap (tied to repos and projects, not separate from them)
+- Changelog auto-generation from commits + PRs + AI activity
+- Ticket layer built on top of actual activity data, not separate aspirational
+  goals
+- Integration path with Linear / GitHub Projects for teams that already have
+  them
+- AshlrAI's own agents suggesting "you've been pulled onto three client
+  engagements; your SaaS X hasn't seen a commit in two weeks"
+
+Each added layer is only worth building if Pulse's base data is already
+trusted — otherwise it's another Linear clone.
+
+---
+
+## Hard nos (today and forever)
+
+- No keystroke logging
+- No screenshot capture
+- No prompt / code / completion storage at any tier
+- No surveillance-mode default where managers see all and ICs see self
+- No public leaderboards ranking devs against each other by default
+- No "AI acceptance rate ranked between cofounders" — we are not setting
+  partners against each other
+
+## Reference: where cotidie fits
+
+cotidie is Mason's personal executive-function system (meds, sleep, meals,
+etc.). Pulse is engineering visibility. They sit side by side in AshlrAI's
+personal-productivity story but are separate products. Pulse's "coding time"
+signal is a plausible input to cotidie's dashboard, and cotidie's
+"focus/energy" data could eventually cross-reference into Pulse for
+per-developer context — but neither depends on the other.

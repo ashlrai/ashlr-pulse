@@ -1,89 +1,94 @@
 # Competitive landscape
 
-Distilled from deeper research briefs in `research/`. TL;DR at the top.
+Sharpened for the actual ICP: agentic-engineering founding pairs and small teams.
 
 ## TL;DR
 
-- **Saturated**: individual editor-time tracking, DORA/SPACE team metrics, git-based velocity, single-AI-tool admin dashboards.
-- **Unmet**: cross-tool AI visibility, terminal/CLI agent observability, AI-cost → delivery-outcome correlation, privacy-first team observability.
-- **Our defensible line**: "one dashboard across every AI tool and terminal, local-first, aggregates-only."
+We do NOT compete with Swarmia / LinearB / Jellyfish. They sell to traditional
+VP Engs measuring DORA; we sell to AI-native co-founders measuring "what are we
+shipping together."
 
-## Who we overlap with (and why we're different)
+We compete with **GitHub notifications + Slack + gut feel** — the free, messy,
+ad-hoc toolkit every cofounder pair uses today. Our job is to make that
+portfolio view so useful that they stop improvising.
+
+## Who we *actually* replace
+
+| What they use today | Why it's broken at 25 repos |
+|---|---|
+| GitHub mobile app / notification stream | Per-PR, per-comment; no portfolio shape |
+| "What are you working on?" Slack DMs | Reactive, lossy, tiring |
+| Weekly founders call | Too sparse; too much recall work |
+| GitHub org contributions graph | Aggregates everything into one grid; not project-aware |
+| Spreadsheet of client hours | Manual; nobody maintains it |
+
+Our win: collapse all five into a single dashboard they open every morning.
+
+## Who we *could be confused with* (and why we're different)
 
 | Player | What they do | Why we're not them |
 |---|---|---|
-| **WakaTime** | Editor time tracking for individuals, lightweight teams | Editors only. No AI awareness. No terminal. We accept their protocol and extend. |
-| **ActivityWatch** | Local-first activity tracking, OSS | Solo devs, no team story, no AI. Great pattern; we borrow it. |
-| **Cursor Admin API** | Usage metrics for Cursor users | Cursor only. Doesn't see Copilot, Claude Code, terminal. |
-| **GitHub Copilot Metrics** | Acceptance rate, adoption, DAU for Copilot | Copilot only. Same siloing problem. |
-| **Windsurf / Tabnine / Cody** | Per-tool admin dashboards | Same pattern. Teams want cross-tool. |
-| **Swarmia / LinearB / Haystack / Jellyfish** | DORA/SPACE team metrics from git/PR data | AI-blind. We feed them, not replace them. |
-| **GitClear** | AI-generated code detection from commit signatures | Narrowly focused on git. We ingest git *and* tool APIs *and* OTel spans. |
-| **Langfuse / Helicone / Phoenix** | LLM-app observability | App-level, not dev-workflow level. We self-host Langfuse inside Pulse. |
-| **Rize.io** | System-level dev activity (apps, URLs) | No AI, no team. |
+| **Swarmia / LinearB / Haystack / Jellyfish** | DORA + SPACE for mid-market eng orgs | Wrong buyer (VP Eng), wrong process model (sprint/ship-to-prod), AI-blind |
+| **Cursor Admin API / Copilot Metrics** | Per-tool usage dashboards | Single-tool, single-purpose, no cross-tool aggregation |
+| **Linear / Shortcut / Jira** | Ticketing and sprint management | Tickets are aspirational; we show what actually got done |
+| **Basecamp / Height / Notion** | PM suites | Not engineering-data-native; can't see repos/agents |
+| **WakaTime / ActivityWatch** | Personal time tracking | Solo-use, no shared-visibility model, no AI awareness |
+| **GitClear** | AI-generated code detection from commit signatures | Narrow; no agent-session data, no peer visibility |
+| **Langfuse / Helicone / Phoenix** | LLM-app observability | App-level, not dev-workflow level; self-host inside Pulse |
 
-## The killer gap
+## The defining feature: configurable peer visibility
 
-A typical AI-heavy engineering team in 2026 uses:
-- Cursor (one dashboard)
-- GitHub Copilot (another dashboard)
-- Claude Code CLI (no dashboard)
-- Codeium or Windsurf on some machines (yet another dashboard)
-- aider or sgpt in terminal (no dashboard)
+Every existing observability product is asymmetric: managers see everything,
+ICs see themselves. Pulse inverts this.
 
-**Five dashboards, zero aggregation.** An engineering leader asking "are we getting
-value from our $20k/mo AI spend?" has to sum five spreadsheets by hand. Nobody is
-solving this. Every AI tool vendor has incentive NOT to solve it (they want you in
-their own funnel).
+- **Default**: you see your own data. Nobody else sees anything.
+- **Sharing is peer-to-peer, explicit, and revocable.** "Give Sam real-time view
+  of my `client-*` repos and weekly-aggregate-only of `ashlr-stack`."
+- **Different scopes can share different granularity.** Real-time with a
+  cofounder, weekly with a contractor, opt-in aggregated-only with an advisor.
+- **Hard privacy floor**: prompt content and code content are never shared,
+  never stored in the shared layer. Not a toggle.
 
-This is the Swarmia-for-AI-tools move. Swarmia won the "aggregate your engineering
-signals across GitHub + Jira + Linear + Slack" game. Pulse wins "aggregate your AI
-signals across Cursor + Copilot + Claude + Windsurf + Tabnine."
+This is the feature Swarmia can't add without rebuilding their data model. It's
+the feature WakaTime can't add because they have no concept of team. It's the
+feature that makes Pulse feel like "a tool for peers" not "a tool for being
+watched."
 
-## Why now
+## Moat sources, in priority order
 
-Three shifts that make this buildable:
-
-1. **OpenTelemetry GenAI semantic conventions** became an official CNCF standard in
-   2024/25. Claude Code already exports to it natively. Others will follow. The
-   integration surface is standardizing exactly when we need it to.
-2. **Every AI-code-assist vendor shipped an admin API** in the last 18 months
-   (Cursor in 2024, Copilot in 2024, Windsurf in 2025, Tabnine in 2024). The
-   primitives are in place.
-3. **AI spend is a real line item.** A 50-dev team on Cursor ($20/seat) + Copilot
-   ($20/seat) = $24k/year *each*. Leaders are asking whether it's justified and
-   have no answer.
-
-## Moat
-
-**Short-term**: first-mover advantage on cross-tool aggregation + OTel-native
-ingestion. We're early on the OTel GenAI conventions train.
-
-**Medium-term**: the dataset itself. A team feeding Pulse for six months accumulates
-per-dev / per-repo / per-tool usage history that's painful to recreate. Switching
-cost grows with time, without being a lock-in trap.
-
-**Long-term**: the correlation layer. "Teams that use Claude Code >30% of the time
-on greenfield work ship 40% faster" — that kind of cross-org benchmark is only
-possible at scale, and it compounds.
+1. **Being first on cross-tool AI-agent aggregation for small teams.** Every
+   incumbent is tool-specific or mid-market-oriented; the 2–20-person
+   agentic-engineering team is the gap.
+2. **Configurable-visibility data model.** Hardwired into our schema from day
+   one. Anyone copying us has to rebuild their permissions layer.
+3. **OpenTelemetry GenAI-native.** As AI tool vendors standardize on OTel
+   (Claude Code already did; others will), Pulse gets integration for free
+   while incumbents scramble.
+4. **Dataset compounding.** A year of portfolio-level agentic-engineering data
+   per team is hard to reconstruct after the fact; switching cost grows
+   without lock-in tactics.
+5. **AshlrAI distribution.** The same founders buying AshlrAI's other products
+   are the same people who'd use Pulse. Shared brand, shared go-to-market.
 
 ## Risks
 
-- **An incumbent builds cross-tool aggregation themselves.** Most likely candidate:
-  Swarmia or LinearB extending into AI. Our edge is being AI-native, not
-  AI-bolted-on.
-- **Cursor / Copilot / Anthropic launch cross-vendor dashboards.** Unlikely — they
-  compete with each other. A neutral third party is actually better positioned.
-- **Privacy backlash.** Devs could reject any observability tool on principle. Our
-  counter: local-first agent, aggregates-only, no prompt/code storage, open source
-  code.
-- **OSS core hurts commercial upside.** We keep enterprise features (SSO, audit
-  logs, advanced correlation) in the paid tier. Same playbook as PostHog, Supabase,
-  Langfuse.
+- **The incumbents add "AI mode."** Swarmia/LinearB are already nibbling at AI
+  metrics. Mitigation: they're stuck in their VP-Eng/DORA posture; pivoting
+  to peer-visibility means breaking their existing buyer.
+- **Cursor / Anthropic / GitHub build the cross-tool view themselves.**
+  Unlikely — each has anti-incentives to unify with competitors. A neutral
+  third party is structurally better positioned.
+- **Small teams don't want *any* observability tool.** This is the real risk.
+  We mitigate by making the personal dashboard genuinely great (cotidie-level
+  polish), so adoption starts with "I want this for me" not "I'm being told
+  to use this."
+- **OSS core cannibalizes cloud revenue.** Managed it with Langfuse/PostHog/
+  Supabase playbook: enterprise/collaboration features in the paid tier; OSS
+  gets the individual + small-team flow.
 
 ## Positioning statement (draft)
 
-> Ashlr Pulse is the engineering-intelligence platform for teams where AI writes a
-> meaningful share of the code. It unifies visibility across every AI tool, every
-> editor, and every terminal — without bossware-grade surveillance. If your team
-> has more than one AI subscription, you need Pulse.
+> **Ashlr Pulse is the shared mission control for agentic-engineering teams.**
+> Glance once in the morning and know what you and your cofounder shipped,
+> which product is accelerating, and what the agents cost you. Peer-visibility
+> by default, configurable by you, no bossware ever.
