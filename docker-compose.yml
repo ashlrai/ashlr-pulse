@@ -1,0 +1,23 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ashlr-pulse-pg
+    environment:
+      POSTGRES_USER:     pulse
+      POSTGRES_PASSWORD: pulse
+      POSTGRES_DB:       pulse
+    ports:
+      - "5432:5432"
+    volumes:
+      - pulse-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pulse -d pulse"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # v0.1: run the server via `bun run dev` locally. Add a service here in
+  # v0.4 when we stand up Pulse Cloud.
+
+volumes:
+  pulse-pg:
