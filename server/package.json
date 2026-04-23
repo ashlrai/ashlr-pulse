@@ -1,0 +1,30 @@
+{
+  "name": "@ashlr/pulse-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Ashlr Pulse v0.1 — OTel ingest + Next.js dashboard",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "migrate": "bun run src/cli/migrate.ts"
+  },
+  "dependencies": {
+    "next": "15.0.3",
+    "react": "19.0.0",
+    "react-dom": "19.0.0",
+    "postgres": "^3.4.4",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/bun": "latest",
+    "typescript": "^5.6.3"
+  }
+}
