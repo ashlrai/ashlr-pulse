@@ -10,7 +10,7 @@ import { revalidatePath } from "next/cache";
 import { currentUser } from "@/lib/current-user";
 import { ensureDefaultOrg } from "@/lib/current-user";
 import { listProjects, createProject, addProjectRepo, removeProjectRepo } from "@/lib/project-db";
-import { signOutAction } from "@/lib/auth-actions";
+import { Header } from "@/components/Header";
 
 export const dynamic = "force-dynamic";
 
@@ -71,13 +71,11 @@ export default async function ProjectsPage({
   const { ok, error } = await searchParams;
 
   return (
-    <main style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", padding: 32, maxWidth: 900 }}>
-      <h1 style={{ margin: 0, fontSize: 24 }}>Pulse · projects</h1>
-      <p style={{ color: "#666", marginTop: 4 }}>
-        you: <code>{me.email}</code> · <a href="/">dashboard →</a> ·{" "}
-        <form action={signOutAction} style={{ display: "inline" }}>
-          <button type="submit" style={{ background: "none", border: "none", cursor: "pointer", color: "#666", fontSize: "inherit", padding: 0 }}>sign out</button>
-        </form>
+    <main style={{ padding: "0 32px 32px", maxWidth: 900, margin: "0 auto" }}>
+      <Header me={me} active="projects" />
+      <h1 style={{ margin: 0, fontSize: 28, fontWeight: 600, letterSpacing: "-0.5px" }}>projects</h1>
+      <p style={{ color: "#666", marginTop: 4, fontSize: 13 }}>
+        group repos into SaaS / client / internal / experiment buckets so the dashboard rolls up by line of work.
       </p>
 
       {ok && <p style={{ color: "#080" }}>project created.</p>}

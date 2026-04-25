@@ -14,7 +14,7 @@ import { currentUser } from "@/lib/current-user";
 import { getAccountForUser, listEnabledRepos, setRepoEnabled } from "@/lib/github-account-db";
 import { syncAccount } from "@/lib/github-sync";
 import { sql } from "@/lib/db";
-import { signOutAction } from "@/lib/auth-actions";
+import { Header } from "@/components/Header";
 
 async function syncNowAction(): Promise<void> {
   "use server";
@@ -75,20 +75,11 @@ export default async function GitHubPage({
   const { ok, error } = await searchParams;
 
   return (
-    <main
-      style={{
-        fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-        padding: 32,
-        maxWidth: 960,
-      }}
-    >
-      <h1 style={{ margin: 0, fontSize: 24 }}>Pulse · github</h1>
-      <p style={{ color: "#666", marginTop: 4 }}>
-        you: <code>{me.email}</code> · <a href="/">dashboard →</a> ·{" "}
-        <a href="/share">sharing →</a> ·{" "}
-        <form action={signOutAction} style={{ display: "inline" }}>
-          <button type="submit" style={linkBtn}>sign out</button>
-        </form>
+    <main style={{ padding: "0 32px 32px", maxWidth: 960, margin: "0 auto" }}>
+      <Header me={me} active="github" />
+      <h1 style={{ margin: 0, fontSize: 28, fontWeight: 600, letterSpacing: "-0.5px" }}>github</h1>
+      <p style={{ color: "#666", marginTop: 4, fontSize: 13 }}>
+        connect your account to ingest commits, PRs, and reviews into the dashboard.
       </p>
 
       {ok && <p style={{ color: "#080" }}>connected.</p>}

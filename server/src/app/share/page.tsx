@@ -12,7 +12,7 @@ import type { ReactElement } from "react";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { currentUser } from "@/lib/current-user";
-import { signOutAction } from "@/lib/auth-actions";
+import { Header } from "@/components/Header";
 import {
   listGrantsOwnedBy,
   listGrantsForViewer,
@@ -102,19 +102,11 @@ export default async function SharePage({
   const { ok, error } = await searchParams;
 
   return (
-    <main
-      style={{
-        fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-        padding: 32,
-        maxWidth: 960,
-      }}
-    >
-      <h1 style={{ margin: 0, fontSize: 24 }}>Pulse · sharing</h1>
-      <p style={{ color: "#666", marginTop: 4 }}>
-        you: <code>{me.email}</code> · <a href="/">dashboard →</a> ·{" "}
-        <form action={signOutAction} style={{ display: "inline" }}>
-          <button type="submit" style={{ background: "none", border: "none", cursor: "pointer", color: "#666", fontSize: "inherit", padding: 0 }}>sign out</button>
-        </form>
+    <main style={{ padding: "0 32px 32px", maxWidth: 960, margin: "0 auto" }}>
+      <Header me={me} active="share" />
+      <h1 style={{ margin: 0, fontSize: 28, fontWeight: 600, letterSpacing: "-0.5px" }}>sharing</h1>
+      <p style={{ color: "#666", marginTop: 4, fontSize: 13 }}>
+        configurable, revocable peer-visibility — granted per repo glob, granularity, and column whitelist.
       </p>
 
       {ok && <p style={{ color: "#080" }}>grant created.</p>}

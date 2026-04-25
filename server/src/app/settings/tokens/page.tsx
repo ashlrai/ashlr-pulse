@@ -11,7 +11,7 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { currentUser } from "@/lib/current-user";
 import { mintPat, listPats, revokePat, type PatRow } from "@/lib/pat";
-import { signOutAction } from "@/lib/auth-actions";
+import { Header } from "@/components/Header";
 
 export const dynamic = "force-dynamic";
 
@@ -48,13 +48,11 @@ export default async function TokensPage({
   const { token: flashToken, error } = await searchParams;
 
   return (
-    <main style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", padding: 32, maxWidth: 800 }}>
-      <h1 style={{ margin: 0, fontSize: 24 }}>Pulse · tokens</h1>
-      <p style={{ color: "#666", marginTop: 4 }}>
-        you: <code>{me.email}</code> · <a href="/">dashboard →</a> ·{" "}
-        <form action={signOutAction} style={{ display: "inline" }}>
-          <button type="submit" style={{ background: "none", border: "none", cursor: "pointer", color: "#666", fontSize: "inherit", padding: 0 }}>sign out</button>
-        </form>
+    <main style={{ padding: "0 32px 32px", maxWidth: 800, margin: "0 auto" }}>
+      <Header me={me} active="tokens" />
+      <h1 style={{ margin: 0, fontSize: 28, fontWeight: 600, letterSpacing: "-0.5px" }}>personal access tokens</h1>
+      <p style={{ color: "#666", marginTop: 4, fontSize: 13 }}>
+        ingest-only credentials for the Rust agent, ashlr-plugin, or any other OTLP source.
       </p>
 
       {flashToken && (

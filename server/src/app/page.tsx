@@ -34,7 +34,8 @@ import { sql } from "@/lib/db";
 import { currentUser } from "@/lib/current-user";
 import { listGrantsForViewer, type PeerShareRow } from "@/lib/peer-share-db";
 import { costUsdCents, fmtUsd } from "@/lib/pricing";
-import { signOutAction } from "@/lib/auth-actions";
+import { Header } from "@/components/Header";
+import { StatCard } from "@/components/StatCard";
 
 export const dynamic = "force-dynamic";
 
@@ -277,20 +278,11 @@ export default async function Page({
   const windowLabel = windowForGranularity(gran);
 
   return (
-    <main
-      style={{
-        fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-        padding: 32,
-        maxWidth: 880,
-      }}
-    >
-      <h1 style={{ margin: 0, fontSize: 24 }}>Pulse · today</h1>
-      <p style={{ color: "#666", marginTop: 4 }}>
-        you: <code>{me.email}</code> · <a href="/github">github →</a> ·{" "}
-        <a href="/share">sharing →</a> ·{" "}
-        <form action={signOutAction} style={{ display: "inline" }}>
-          <button type="submit" style={{ background: "none", border: "none", cursor: "pointer", color: "#666", fontSize: "inherit", padding: 0 }}>sign out</button>
-        </form>
+    <main style={{ padding: "0 32px 32px", maxWidth: 1100, margin: "0 auto" }}>
+      <Header me={me} active="dashboard" />
+      <h1 style={{ margin: 0, fontSize: 28, fontWeight: 600, letterSpacing: "-0.5px" }}>today</h1>
+      <p style={{ color: "#666", marginTop: 4, fontSize: 13 }}>
+        the last {windowLabel} of activity across your tracked repos and AI tools.
       </p>
       {viewBanner}
 
