@@ -286,7 +286,8 @@ export default async function Page({
     >
       <h1 style={{ margin: 0, fontSize: 24 }}>Pulse · today</h1>
       <p style={{ color: "#666", marginTop: 4 }}>
-        you: <code>{me.email}</code> · <a href="/share">manage sharing →</a> ·{" "}
+        you: <code>{me.email}</code> · <a href="/github">github →</a> ·{" "}
+        <a href="/share">sharing →</a> ·{" "}
         <form action={signOutAction} style={{ display: "inline" }}>
           <button type="submit" style={{ background: "none", border: "none", cursor: "pointer", color: "#666", fontSize: "inherit", padding: 0 }}>sign out</button>
         </form>
@@ -360,6 +361,111 @@ claude`}
           </table>
         </>
       )}
+
+      <GitHubSection userId={me.id} />
     </main>
   );
+}
+
+// ---------------------------------------------------------------------------
+// GitHub events panel — pulled from github_event for the current user.
+// Renders quietly to nothing when the user hasn't connected GitHub yet.
+// ---------------------------------------------------------------------------
+
+interface GitHubSummaryRow {
+  kind: string;
+  events: number;
+}
+interface GitHubRecentRow {
+  ts: string;
+  kind: string;
+  actor_login: string;
+  full_name: string;
+  pr_number: number | null;
+  message_first_line: string | null;
+}
+
+async function GitHubSection({ userId }: { userId: string }): Promise<ReactElement | null> {
+  try {
+    const db = sql();
+    const [account] = await db<{ id: string; github_login: string; last_synced_at: string | null }[]>`
+      SELECT id::text AS id, github_login, last_synced_at::text AS last_synced_at
+      FROM github_account WHERE user_id = ${userId} LIMIT 1
+    `;
+    if (!account) return null;
+
+    const summary = await db<GitHubSummaryRow[]>`
+      SELECT kind, COUNT(*)::int AS events
+      FROM github_event
+      WHERE account_id = ${account.id} AND ts >= NOW() - INTERVAL '7 days'
+      GROUP BY kind ORDER BY events DESC
+    `;
+    const recent = await db<GitHubRecentRow[]>`
+      SELECT ge.ts::text AS ts, ge.kind, ge.actor_login,
+             gr.full_name, ge.pr_number, ge.message_first_line
+      FROM github_event ge
+      JOIN github_repo gr ON gr.id = ge.repo_id
+      WHERE ge.account_id = ${account.id}
+      ORDER BY ge.ts DESC
+      LIMIT 12
+    `;
+
+    const total = summary.reduce((a, r) => a + r.events, 0);
+    return (
+      <section style={{ marginTop: 48, paddingTop: 24, borderTop: "1px solid #eee" }}>
+        <h2 style={{ fontSize: 16, marginTop: 0 }}>
+          github · @{account.github_login}
+          <span style={{ color: "#666", fontWeight: 400, marginLeft: 8 }}>
+            {total} events (last 7d)
+            {account.last_synced_at && ` · synced ${new Date(account.last_synced_at).toISOString().slice(0, 16).replace("T", " ")}`}
+          </span>
+        </h2>
+        {total === 0 ? (
+          <p style={{ color: "#888" }}>
+            no events yet — <a href="/github">enable repos and run a sync</a>.
+          </p>
+        ) : (
+          <>
+            <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 16 }}>
+              {summary.map((s) => (
+                <div key={s.kind} style={{ fontSize: 13, color: "#444" }}>
+                  <strong>{s.events}</strong> {s.kind.replace(/_/g, " ")}
+                </div>
+              ))}
+            </div>
+            <table style={{ borderCollapse: "collapse", width: "100%" }}>
+              <thead>
+                <tr style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>
+                  <th style={{ padding: "8px 0", fontSize: 13 }}>when</th>
+                  <th style={{ fontSize: 13 }}>repo</th>
+                  <th style={{ fontSize: 13 }}>kind</th>
+                  <th style={{ fontSize: 13 }}>who</th>
+                  <th style={{ fontSize: 13 }}>what</th>
+                </tr>
+              </thead>
+              <tbody>
+                {recent.map((r, i) => (
+                  <tr key={i} style={{ borderBottom: "1px solid #f0f0f0" }}>
+                    <td style={{ padding: "6px 0", fontSize: 12, color: "#666" }}>
+                      {new Date(r.ts).toISOString().slice(5, 16).replace("T", " ")}
+                    </td>
+                    <td style={{ fontSize: 12 }}>{r.full_name}</td>
+                    <td style={{ fontSize: 12 }}>{r.kind.replace(/_/g, " ")}</td>
+                    <td style={{ fontSize: 12 }}>@{r.actor_login}</td>
+                    <td style={{ fontSize: 12, color: "#444" }}>
+                      {r.pr_number ? `#${r.pr_number} · ` : ""}
+                      {r.message_first_line ?? ""}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
+        )}
+      </section>
+    );
+  } catch {
+    // github_event table may not exist yet (pre-0004 deploy). Silent.
+    return null;
+  }
 }
