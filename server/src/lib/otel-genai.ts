@@ -31,6 +31,13 @@
  * GenAI-shape gate; but we override `source` to `ashlr_plugin` so the
  * UI can distinguish where data came from.
  *
+ * Source label override:
+ *
+ *   ashlr.source  — when present, overrides the auto-derived source label.
+ *                   Must be one of: 'claude_code' | 'cursor' | 'copilot' |
+ *                   'wakatime' | 'git' | 'shell' | 'ashlr_plugin'.
+ *                   Used by the pulse-agent to tag git-commit spans as "git".
+ *
  * Unknown / missing attributes map to NULL — the schema is designed for
  * partial data from heterogeneous sources.
  */
@@ -126,14 +133,19 @@ export function spanToActivityEvent(
     ? toolTypesRaw.split(",").map((s) => s.trim()).filter(Boolean)
     : null;
 
-  // Plugin spans win the source label even when they also carry claude.*
-  // attributes (the plugin wraps Claude Code calls). This way the UI
-  // surfaces "ashlr_plugin" so we can show savings stats distinctly.
-  const source = hasPlugin
-    ? "ashlr_plugin"
-    : hasClaude
-      ? "claude_code"
-      : provider ?? "unknown";
+  // ashlr.source overrides automatic detection. Validated against the known
+  // enum so arbitrary strings can't slip through to the DB.
+  const ALLOWED_SOURCES = new Set([
+    "claude_code", "cursor", "copilot", "wakatime", "git", "shell", "ashlr_plugin",
+  ]);
+  const sourceOverride = asString(attrs, "ashlr.source");
+  const source = sourceOverride && ALLOWED_SOURCES.has(sourceOverride)
+    ? sourceOverride
+    : hasPlugin
+      ? "ashlr_plugin"
+      : hasClaude
+        ? "claude_code"
+        : provider ?? "unknown";
 
   return {
     ts,
