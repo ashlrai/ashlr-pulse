@@ -36,6 +36,8 @@ COPY --from=builder /app/server/.next ./.next
 COPY --from=builder /app/server/node_modules ./node_modules
 COPY --from=builder /app/server/package.json ./package.json
 COPY --from=builder /app/server/next.config.ts ./next.config.ts
+# public/ is served by next start at runtime (favicon, etc.)
+COPY --from=builder /app/server/public ./public
 # Migration SQL files. Each migration uses IF NOT EXISTS so re-running
 # is a no-op; no schema_migrations bookkeeping needed at this scale.
 COPY --from=builder /app/db /app/db
