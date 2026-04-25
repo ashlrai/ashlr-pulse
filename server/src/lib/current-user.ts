@@ -37,6 +37,43 @@ export async function currentUser(): Promise<CurrentUser | null> {
 }
 
 /**
+ * Ensure the user has at least one org. If none exists, auto-creates one
+ * using the local-part of their email as the slug (lowercased, non-alnum
+ * chars replaced with hyphens). Returns the org id.
+ */
+export async function ensureDefaultOrg(userId: string, email: string): Promise<string> {
+  const db = sql();
+  // Check if the user already has an org via membership.
+  const [existing] = await db<{ org_id: string }[]>`
+    SELECT org_id::text AS org_id
+    FROM membership
+    WHERE user_id = ${userId}
+    LIMIT 1
+  `;
+  if (existing) return existing.org_id;
+
+  // Derive slug from email local part.
+  const localPart = email.split("@")[0] ?? email;
+  const slug = localPart.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+
+  // Upsert org (slug may collide if same email logs in on two concurrent
+  // requests — ON CONFLICT keeps it idempotent).
+  const [org] = await db<{ id: string }[]>`
+    INSERT INTO org (name, slug)
+    VALUES (${slug}, ${slug})
+    ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name
+    RETURNING id::text AS id
+  `;
+
+  await db`
+    INSERT INTO membership (org_id, user_id, role)
+    VALUES (${org.id}, ${userId}, 'owner')
+    ON CONFLICT DO NOTHING
+  `;
+  return org.id;
+}
+
+/**
  * Upsert a local user row keyed on email and return it. Email is the
  * stable bridge between Supabase auth.users and our local user table —
  * Supabase guarantees email uniqueness within a project.
