@@ -29,8 +29,7 @@ export default async function Image(): Promise<ImageResponse> {
           height: "100%",
           display: "flex",
           flexDirection: "column",
-          background:
-            "radial-gradient(80% 80% at 50% 0%, rgba(124,255,160,0.10), rgba(124,255,160,0) 60%), #050505",
+          background: "#050505",
           color: "#fff",
           fontFamily: MONO,
           padding: 80,
