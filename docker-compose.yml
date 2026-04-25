@@ -7,7 +7,9 @@ services:
       POSTGRES_PASSWORD: pulse
       POSTGRES_DB:       pulse
     ports:
-      - "5432:5432"
+      # Mapped to 55432 to avoid conflicts with a host-installed Postgres on
+      # the default 5432. Update server/.env.local DATABASE_URL accordingly.
+      - "55432:5432"
     volumes:
       - pulse-pg:/var/lib/postgresql/data
     healthcheck:
