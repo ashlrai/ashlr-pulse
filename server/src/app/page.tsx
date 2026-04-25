@@ -54,6 +54,7 @@ export default function Landing(): ReactElement {
       <PageScanlines />
       <BackgroundGrid />
       <BackgroundGlow />
+      <ResponsiveStyles />
 
       <TopNav />
 
@@ -112,7 +113,7 @@ function TopNav(): ReactElement {
       <nav style={{ display: "flex", gap: 24, alignItems: "center", fontSize: 13 }}>
         <a href="https://github.com/ashlrai/ashlr-pulse" style={navLink}>github</a>
         <a href="/login" style={navLink}>sign in</a>
-        <a href="/login" style={magentaCta}>
+        <a href="/login" className="pulse-magenta-cta" style={magentaCta}>
           start tracking →
         </a>
       </nav>
@@ -123,6 +124,7 @@ function TopNav(): ReactElement {
 function Hero(): ReactElement {
   return (
     <section
+      className="pulse-hero"
       style={{
         maxWidth: 1240,
         margin: "0 auto",
@@ -308,6 +310,7 @@ ashlr.plugin.repo         → claude.repo.name  (override)`,
         {cards.map((c, i) => (
           <Reveal key={c.label} delay={i * 0.1}>
             <article
+              className="pulse-card"
               style={{
                 background: "#0a0a0a",
                 border: "1px solid #1a1a1a",
@@ -378,6 +381,7 @@ function PrivacyFloor(): ReactElement {
   ];
   return (
     <section
+      className="pulse-privacy"
       style={{
         maxWidth: 1240,
         margin: "0 auto",
@@ -693,6 +697,61 @@ function PulseGlyph(): ReactElement {
         fill="none"
       />
     </svg>
+  );
+}
+
+function ResponsiveStyles(): ReactElement {
+  return (
+    <style>{`
+      @media (max-width: 860px) {
+        .pulse-hero, .pulse-privacy {
+          grid-template-columns: 1fr !important;
+          gap: 40px !important;
+          padding: 48px 24px !important;
+        }
+        .pulse-hero h1 {
+          font-size: 38px !important;
+          letter-spacing: -1px !important;
+        }
+        .pulse-section-title {
+          font-size: 26px !important;
+          letter-spacing: -0.5px !important;
+        }
+        .pulse-final-cta h2 {
+          font-size: 24px !important;
+        }
+        .pulse-nav {
+          gap: 16px !important;
+          padding: 16px 20px !important;
+        }
+        .pulse-nav-link[data-mobile-hide] {
+          display: none !important;
+        }
+      }
+      @media (max-width: 540px) {
+        .pulse-hero h1 {
+          font-size: 30px !important;
+        }
+        .pulse-final-cta h2 {
+          font-size: 20px !important;
+        }
+      }
+      /* CTA hover glow */
+      .pulse-magenta-cta {
+        transition: transform 150ms cubic-bezier(.2,.8,.2,1), box-shadow 150ms;
+      }
+      .pulse-magenta-cta:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 0 0 1px rgba(255,96,214,0.35), 0 14px 32px -4px rgba(255,96,214,0.55) !important;
+      }
+      .pulse-card {
+        transition: border-color 150ms, transform 150ms;
+      }
+      .pulse-card:hover {
+        border-color: #2a2a2a !important;
+        transform: translateY(-2px);
+      }
+    `}</style>
   );
 }
 
