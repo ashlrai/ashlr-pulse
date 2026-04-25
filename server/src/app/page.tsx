@@ -4,15 +4,28 @@
  *   1. /          → your own activity (last 24h, grouped by source × model).
  *   2. /?as=<id>  → a peer's activity, filtered by an active peer_share
  *                   grant from <id> to you. Scope (all / repo_pattern /
- *                   project) is honored. Granularity rollup is applied —
- *                   for v0.2 we coarse-grain to the most permissive
- *                   granularity across all matching grants.
+ *                   project) is honored.
  *
- * The privacy floor is owned by lib/peer-share-guard at write time;
- * here we only need to verify that an active grant exists and apply the
- * scope filter. There's no way to write fields outside the guarded
- * whitelist into a grant, so any field we render at read time is by
- * definition shareable.
+ * Task 4 — Granularity rollup:
+ *   When ?as= is set, pick the most permissive granularity across all
+ *   matching grants (realtime > daily > weekly > monthly).
+ *   - realtime  → last 24h, grouped by source × model
+ *   - daily     → last 7 days, grouped by date × source × model
+ *   - weekly    → last 90 days, grouped by week × source × model
+ *   - monthly   → last 1 year, grouped by month × source × model
+ *
+ * Task 5 — Field whitelist enforcement:
+ *   When ?as= is set, the union of fields[] from all matching grants
+ *   controls which columns render. Columns not in the union render "—".
+ *   The events column is always shown (it's a count, not a field).
+ *   Column → field mapping:
+ *     source       → "source"
+ *     model        → "model"
+ *     tokens in    → "tokens_input"
+ *     tokens out   → "tokens_output"
+ *     cost         → (derived from tokens — shown if either token field shown)
+ *
+ * The privacy floor is owned by lib/peer-share-guard at write time.
  */
 
 import type { ReactElement } from "react";
@@ -21,13 +34,23 @@ import { sql } from "@/lib/db";
 import { currentUser } from "@/lib/current-user";
 import { listGrantsForViewer, type PeerShareRow } from "@/lib/peer-share-db";
 import { costUsdCents, fmtUsd } from "@/lib/pricing";
+import { signOutAction } from "@/lib/auth-actions";
 
 export const dynamic = "force-dynamic";
 
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+type Granularity = "realtime" | "daily" | "weekly" | "monthly";
+
 interface TodayRow {
-  source: string;
-  model: string | null;
+  // Always present (it's a COUNT, not a stored field).
   events: number;
+  // Present for realtime; coarser granularities get a bucket label instead.
+  source: string | null;
+  model: string | null;
+  bucket: string | null; // date/week/month label for non-realtime
   tokens_in: number | null;
   tokens_out: number | null;
   tokens_cache_read: number | null;
@@ -35,28 +58,92 @@ interface TodayRow {
 }
 
 interface ScopeFilter {
-  /** SQL fragment ANDed onto WHERE clauses. Empty string for 'all'. */
   repoClauseSql: string;
   repoParams: string[];
 }
 
+// ---------------------------------------------------------------------------
+// Granularity helpers (Task 4)
+// ---------------------------------------------------------------------------
+
+const GRAN_ORDER: Granularity[] = ["monthly", "weekly", "daily", "realtime"];
+
+function mostPermissive(grants: PeerShareRow[]): Granularity {
+  let best: Granularity = "monthly";
+  for (const g of grants) {
+    if (GRAN_ORDER.indexOf(g.granularity) > GRAN_ORDER.indexOf(best)) {
+      best = g.granularity;
+    }
+  }
+  return best;
+}
+
+function windowForGranularity(gran: Granularity): string {
+  switch (gran) {
+    case "realtime": return "24 hours";
+    case "daily":    return "7 days";
+    case "weekly":   return "90 days";
+    case "monthly":  return "1 year";
+  }
+}
+
+function bucketExpr(gran: Granularity): string {
+  switch (gran) {
+    case "realtime": return "NULL::text";
+    case "daily":    return "date_trunc('day', ts)::text";
+    case "weekly":   return "date_trunc('week', ts)::text";
+    case "monthly":  return "date_trunc('month', ts)::text";
+  }
+}
+
+function groupByForGranularity(gran: Granularity): string {
+  if (gran === "realtime") return "source, model";
+  return "bucket, source, model";
+}
+
+// ---------------------------------------------------------------------------
+// Field whitelist helpers (Task 5)
+// ---------------------------------------------------------------------------
+
+// Map display column names to the activity_event field names in grants.
+const COLUMN_FIELDS: Record<string, string> = {
+  source:     "source",
+  model:      "model",
+  tokens_in:  "tokens_input",
+  tokens_out: "tokens_output",
+};
+
+function buildAllowedColumns(grants: PeerShareRow[]): Set<string> | null {
+  // null = show everything (own view, no grant filtering).
+  const union = new Set<string>();
+  for (const g of grants) {
+    for (const f of g.fields) union.add(f);
+  }
+  return union;
+}
+
+function colAllowed(col: string, allowed: Set<string> | null): boolean {
+  if (allowed === null) return true;
+  const field = COLUMN_FIELDS[col];
+  if (!field) return true; // unknown → show (safe: only applies to events count)
+  return allowed.has(field);
+}
+
+// ---------------------------------------------------------------------------
+// Scope filter
+// ---------------------------------------------------------------------------
+
 function buildScopeFilter(grants: PeerShareRow[]): ScopeFilter {
-  // Any 'all' grant short-circuits scope filtering.
   if (grants.some((g) => g.scope_type === "all")) {
     return { repoClauseSql: "", repoParams: [] };
   }
-  // Otherwise OR together the repo_pattern entries. Project scopes would
-  // need a JOIN through project_repo; v0.2 keeps it simple by ignoring
-  // them and falling back to "no grant matched" if that's all there is.
   const repoPatterns = grants
     .filter((g) => g.scope_type === "repo_pattern")
     .map((g) => g.scope_value)
     .filter((v): v is string => Boolean(v));
   if (repoPatterns.length === 0) {
-    // No usable scope yet (only project grants). Empty filter that matches nothing.
     return { repoClauseSql: " AND FALSE", repoParams: [] };
   }
-  // Translate `client-*` style globs into SQL LIKE patterns.
   return {
     repoClauseSql:
       " AND (" +
@@ -66,28 +153,37 @@ function buildScopeFilter(grants: PeerShareRow[]): ScopeFilter {
   };
 }
 
-async function loadToday(userId: string, scope: ScopeFilter): Promise<TodayRow[]> {
+// ---------------------------------------------------------------------------
+// Query
+// ---------------------------------------------------------------------------
+
+async function loadRows(
+  userId: string,
+  scope: ScopeFilter,
+  gran: Granularity,
+): Promise<TodayRow[]> {
   try {
     const db = sql();
-    // postgres-js's tagged-template form doesn't compose well with
-    // dynamic clauses; fall back to .unsafe() for the scope WHERE we
-    // build above. user_id is bound parametrically — never interpolated.
+    const window = windowForGranularity(gran);
+    const bucket = bucketExpr(gran);
+    const groupBy = groupByForGranularity(gran);
     const rows = await db.unsafe<TodayRow[]>(
       `
       SELECT
+        ${bucket}                          AS bucket,
         source,
         model,
-        COUNT(*)::int                  AS events,
-        SUM(tokens_input)::int         AS tokens_in,
-        SUM(tokens_output)::int        AS tokens_out,
-        SUM(tokens_cache_read)::int    AS tokens_cache_read,
-        SUM(tokens_cache_write)::int   AS tokens_cache_write
+        COUNT(*)::int                      AS events,
+        SUM(tokens_input)::int             AS tokens_in,
+        SUM(tokens_output)::int            AS tokens_out,
+        SUM(tokens_cache_read)::int        AS tokens_cache_read,
+        SUM(tokens_cache_write)::int       AS tokens_cache_write
       FROM activity_event
       WHERE user_id = $1
-        AND ts >= NOW() - INTERVAL '24 hours'
+        AND ts >= NOW() - INTERVAL '${window}'
         ${scope.repoClauseSql}
-      GROUP BY source, model
-      ORDER BY events DESC
+      GROUP BY ${groupBy}
+      ORDER BY ${gran === "realtime" ? "events" : "bucket"} DESC
       `,
       [userId, ...scope.repoParams],
     );
@@ -96,6 +192,10 @@ async function loadToday(userId: string, scope: ScopeFilter): Promise<TodayRow[]
     return [];
   }
 }
+
+// ---------------------------------------------------------------------------
+// Page component
+// ---------------------------------------------------------------------------
 
 interface SearchParams {
   as?: string;
@@ -111,10 +211,11 @@ export default async function Page({
 
   const { as } = await searchParams;
 
-  // Default mode: render your own data.
   let targetUserId = me.id;
   let viewBanner: ReactElement | null = null;
   let scope: ScopeFilter = { repoClauseSql: "", repoParams: [] };
+  let gran: Granularity = "realtime";
+  let allowedFields: Set<string> | null = null; // null = own view (unrestricted)
 
   if (as && as !== me.id) {
     const grants = (await listGrantsForViewer(me.id)).filter((g) => g.owner_id === as);
@@ -125,6 +226,9 @@ export default async function Page({
     }
     targetUserId = as;
     scope = buildScopeFilter(grants);
+    gran = mostPermissive(grants);
+    allowedFields = buildAllowedColumns(grants);
+
     viewBanner = (
       <p
         style={{
@@ -140,7 +244,7 @@ export default async function Page({
         {grants
           .map((g) => (g.scope_type === "all" ? "all" : `${g.scope_type}:${g.scope_value ?? ""}`))
           .join(", ")}{" "}
-        ·{" "}
+        · granularity: {gran} ·{" "}
         <a href="/" style={{ color: "#444" }}>
           back to your view
         </a>
@@ -148,7 +252,7 @@ export default async function Page({
     );
   }
 
-  const rows = await loadToday(targetUserId, scope);
+  const rows = await loadRows(targetUserId, scope, gran);
   const rowsWithCost = rows.map((r) => ({
     ...r,
     cost_cents: costUsdCents({
@@ -162,6 +266,16 @@ export default async function Page({
   const totalCents = rowsWithCost.reduce((acc, r) => acc + (r.cost_cents ?? 0), 0);
   const totalEvents = rowsWithCost.reduce((acc, r) => acc + r.events, 0);
 
+  // Determine which columns to show/hide (Task 5).
+  const showSource    = colAllowed("source",     allowedFields);
+  const showModel     = colAllowed("model",       allowedFields);
+  const showTokensIn  = colAllowed("tokens_in",   allowedFields);
+  const showTokensOut = colAllowed("tokens_out",  allowedFields);
+  // Cost is derived — show only if at least one token column is visible.
+  const showCost = showTokensIn || showTokensOut;
+
+  const windowLabel = windowForGranularity(gran);
+
   return (
     <main
       style={{
@@ -172,14 +286,17 @@ export default async function Page({
     >
       <h1 style={{ margin: 0, fontSize: 24 }}>Pulse · today</h1>
       <p style={{ color: "#666", marginTop: 4 }}>
-        you: <code>{me.email}</code> · <a href="/share">manage sharing →</a>
+        you: <code>{me.email}</code> · <a href="/share">manage sharing →</a> ·{" "}
+        <form action={signOutAction} style={{ display: "inline" }}>
+          <button type="submit" style={{ background: "none", border: "none", cursor: "pointer", color: "#666", fontSize: "inherit", padding: 0 }}>sign out</button>
+        </form>
       </p>
       {viewBanner}
 
       {rows.length === 0 ? (
         <section style={{ marginTop: 32 }}>
           <p style={{ color: "#888" }}>
-            no activity in the last 24 hours. wire an ingest source and you'll see rows show up here.
+            no activity in the last {windowLabel}. wire an ingest source and you'll see rows show up here.
           </p>
           <details style={{ marginTop: 16 }}>
             <summary style={{ cursor: "pointer", color: "#444" }}>
@@ -199,7 +316,7 @@ export default async function Page({
 bun run src/cli/mint-pat.ts <your-user-uuid> "laptop"
 
 # 2. point Claude Code at the OTLP endpoint
-export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://localhost:3000/api/otlp/v1/traces
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://localhost:3001/api/otlp/v1/traces
 export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
 export OTEL_EXPORTER_OTLP_HEADERS="authorization=Bearer pulse_pat_…"
 
@@ -212,28 +329,31 @@ claude`}
         <>
           <p style={{ marginTop: 24, color: "#444" }}>
             <strong>{totalEvents}</strong> events ·{" "}
-            <strong>{fmtUsd(totalCents)}</strong> spent (last 24h)
+            {showCost && <><strong>{fmtUsd(totalCents)}</strong> spent · </>}
+            last {windowLabel}
           </p>
           <table style={{ marginTop: 16, borderCollapse: "collapse", width: "100%" }}>
             <thead>
               <tr style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>
-                <th style={{ padding: "8px 0" }}>source</th>
-                <th>model</th>
+                {gran !== "realtime" && <th style={{ padding: "8px 0" }}>period</th>}
+                {showSource    && <th style={{ padding: "8px 0" }}>source</th>}
+                {showModel     && <th>model</th>}
                 <th style={{ textAlign: "right" }}>events</th>
-                <th style={{ textAlign: "right" }}>tokens in</th>
-                <th style={{ textAlign: "right" }}>tokens out</th>
-                <th style={{ textAlign: "right" }}>cost</th>
+                {showTokensIn  && <th style={{ textAlign: "right" }}>tokens in</th>}
+                {showTokensOut && <th style={{ textAlign: "right" }}>tokens out</th>}
+                {showCost      && <th style={{ textAlign: "right" }}>cost</th>}
               </tr>
             </thead>
             <tbody>
               {rowsWithCost.map((r, i) => (
                 <tr key={i} style={{ borderBottom: "1px solid #eee" }}>
-                  <td style={{ padding: "8px 0" }}>{r.source}</td>
-                  <td>{r.model ?? "—"}</td>
+                  {gran !== "realtime" && <td style={{ padding: "8px 0", fontSize: 12, color: "#666" }}>{r.bucket ?? "—"}</td>}
+                  {showSource    && <td style={{ padding: "8px 0" }}>{r.source ?? "—"}</td>}
+                  {showModel     && <td>{r.model ?? "—"}</td>}
                   <td style={{ textAlign: "right" }}>{r.events}</td>
-                  <td style={{ textAlign: "right" }}>{r.tokens_in ?? 0}</td>
-                  <td style={{ textAlign: "right" }}>{r.tokens_out ?? 0}</td>
-                  <td style={{ textAlign: "right" }}>{fmtUsd(r.cost_cents)}</td>
+                  {showTokensIn  && <td style={{ textAlign: "right" }}>{r.tokens_in ?? 0}</td>}
+                  {showTokensOut && <td style={{ textAlign: "right" }}>{r.tokens_out ?? 0}</td>}
+                  {showCost      && <td style={{ textAlign: "right" }}>{fmtUsd(r.cost_cents)}</td>}
                 </tr>
               ))}
             </tbody>

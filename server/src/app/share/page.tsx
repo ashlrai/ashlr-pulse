@@ -12,6 +12,7 @@ import type { ReactElement } from "react";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { currentUser } from "@/lib/current-user";
+import { signOutAction } from "@/lib/auth-actions";
 import {
   listGrantsOwnedBy,
   listGrantsForViewer,
@@ -110,7 +111,10 @@ export default async function SharePage({
     >
       <h1 style={{ margin: 0, fontSize: 24 }}>Pulse · sharing</h1>
       <p style={{ color: "#666", marginTop: 4 }}>
-        you: <code>{me.email}</code>
+        you: <code>{me.email}</code> · <a href="/">dashboard →</a> ·{" "}
+        <form action={signOutAction} style={{ display: "inline" }}>
+          <button type="submit" style={{ background: "none", border: "none", cursor: "pointer", color: "#666", fontSize: "inherit", padding: 0 }}>sign out</button>
+        </form>
       </p>
 
       {ok && <p style={{ color: "#080" }}>grant created.</p>}
