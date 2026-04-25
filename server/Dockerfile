@@ -1,65 +1,74 @@
-# Multi-stage Bun image for the Ashlr Pulse server.
+# Multi-stage image for the Ashlr Pulse server.
 #
-# Build context = REPO ROOT (not server/). This lets us copy the sibling
-# db/ directory which migrate.ts reads from. Railway is configured with
-# rootDirectory="" + dockerfilePath="server/Dockerfile" to match.
+# Build with Bun (fast install + compile), run with Node (battle-tested
+# net/http stack + Next.js standalone bundle). Build context = repo root
+# so we can also ship the sibling db/ directory for migrations.
+#
+# Railway is configured via railway.json:
+#   build.dockerfilePath = "server/Dockerfile"
+#   build.builder        = "DOCKERFILE"
 
 # ---------------------------------------------------------------------------
-# Stage 1: builder
+# Stage 1: builder (Bun)
 # ---------------------------------------------------------------------------
 FROM oven/bun:1.3.10-alpine AS builder
 
 WORKDIR /app
 
-# Install deps first for layer caching.
+# Install deps first (layer cache).
 COPY server/package.json server/bun.lock ./server/
 WORKDIR /app/server
 RUN bun install --frozen-lockfile
 
-# Copy server source + the sibling db/ (migrations).
+# Copy source + sibling db/ for migration runner.
 WORKDIR /app
 COPY server ./server
 COPY db ./db
 
-# Build Next.js.
 WORKDIR /app/server
 RUN bun run build
 
 # ---------------------------------------------------------------------------
-# Stage 2: runtime
+# Stage 2: runtime (Node + Bun for one-shot migrations)
 # ---------------------------------------------------------------------------
-FROM oven/bun:1.3.10-alpine AS runtime
+FROM node:22-alpine AS runtime
+
+# Install Bun for the migration runner. Migrations are infrequent + one-shot,
+# so the extra binary is fine; keep node for the long-running Next server.
+RUN apk add --no-cache curl bash && \
+    curl -fsSL https://bun.sh/install | bash -s "bun-v1.3.10" && \
+    mv /root/.bun/bin/bun /usr/local/bin/bun && \
+    chmod +x /usr/local/bin/bun
 
 # Non-root user.
 RUN addgroup -S pulse && adduser -S pulse -G pulse
 
 WORKDIR /app/server
 
-# Built artifacts + runtime deps.
-COPY --from=builder /app/server/.next ./.next
-COPY --from=builder /app/server/node_modules ./node_modules
-COPY --from=builder /app/server/package.json ./package.json
-# tsconfig.json carries the `paths` map (@/* -> src/*) that Bun reads at
-# runtime when executing src/cli/migrate.ts. Without it, the standalone
-# script can't resolve `@/lib/logger` etc.
-COPY --from=builder /app/server/tsconfig.json ./tsconfig.json
+# Next.js standalone bundle: a self-contained Node server at server.js
+# plus a trace of node_modules. Public assets and .next/static must be
+# copied alongside per Next docs.
+COPY --from=builder /app/server/.next/standalone ./
+COPY --from=builder /app/server/.next/static ./.next/static
+COPY --from=builder /app/server/public ./public
 
-# Source files needed at runtime by `bun run migrate && bun run start`:
-#   - src/cli/migrate.ts (the migration runner)
-#   - src/lib/* (imported by migrate.ts and the Next runtime in dev mode;
-#     production Next.js standalone bundles its own copy in .next/)
+# Migration runner needs:
+#   - src/cli/migrate.ts + src/lib/* (it imports @/lib/logger)
+#   - tsconfig.json for the @/* path alias
+#   - db/migrations/*.sql (sibling dir per migrate.ts MIGRATIONS_DIR resolve)
+#   - postgres + pino in node_modules
 COPY --from=builder /app/server/src ./src
-
-# Migration SQL files referenced by src/cli/migrate.ts via
-# `resolve(import.meta.dir, "..", "..", "..", "db", "migrations")`.
+COPY --from=builder /app/server/tsconfig.json ./tsconfig.json
+COPY --from=builder /app/server/package.json ./package.json
+COPY --from=builder /app/server/node_modules ./node_modules
 COPY --from=builder /app/db /app/db
 
-# Drop privileges only after copying — chown via --chown to keep the image
-# layer count low.
 RUN chown -R pulse:pulse /app
 USER pulse
 
+ENV NODE_ENV=production
 EXPOSE 3000
 
-# DATABASE_URL etc are injected at runtime.
-CMD ["sh", "-c", "bun run migrate && bun run start"]
+# server.js is Next.js's standalone entry. It binds to 0.0.0.0 by default
+# and respects PORT (set by Railway).
+CMD ["node", "server.js"]

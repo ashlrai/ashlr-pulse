@@ -5,7 +5,7 @@
     "dockerfilePath": "server/Dockerfile"
   },
   "deploy": {
-    "startCommand": "echo \"[boot] PORT=$PORT NODE_ENV=$NODE_ENV\" && echo '[boot] starting next directly (skip migrate)' && bun run start",
+    "startCommand": "bun run migrate && node server.js",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 5
   }
