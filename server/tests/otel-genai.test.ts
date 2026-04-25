@@ -138,4 +138,29 @@ describe("spanToActivityEvent", () => {
     expect(row).not.toBeNull();
     expect(row!.tokens_input).toBeNull();
   });
+
+  it("ashlr.source=git overrides the derived source label", () => {
+    // The pulse-agent emits git-commit spans with gen_ai.system=anthropic (to
+    // pass the GenAI-shape gate) plus ashlr.source=git so the UI can show
+    // them distinctly from Claude Code activity spans.
+    const row = spanToActivityEvent(
+      {
+        name: "git.commit",
+        startTimeUnixNano: "1714100000000000000",
+        endTimeUnixNano:   "1714100000000000000",
+        attributes: [
+          { key: "gen_ai.system",   value: { stringValue: "anthropic" } },
+          { key: "ashlr.source",    value: { stringValue: "git" } },
+          { key: "claude.repo.name", value: { stringValue: "ashlrai/ashlr-pulse" } },
+          { key: "claude.git.branch", value: { stringValue: "main" } },
+        ],
+      },
+      "mason",
+    );
+    expect(row).not.toBeNull();
+    expect(row!.source).toBe("git");
+    expect(row!.provider).toBe("anthropic");
+    expect(row!.repo_name).toBe("ashlrai/ashlr-pulse");
+    expect(row!.duration_ms).toBe(0);
+  });
 });
