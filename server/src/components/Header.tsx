@@ -29,11 +29,11 @@ export function Header({ me, active }: Props): ReactElement {
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 24 }}>
-        <a href="/" style={{ ...brand, textDecoration: "none", color: "#111" }}>
+        <a href="/app" style={{ ...brand, textDecoration: "none", color: "#111" }}>
           Pulse
         </a>
         <nav style={{ display: "flex", gap: 16, fontSize: 13 }}>
-          <NavLink href="/" active={active === "dashboard"}>dashboard</NavLink>
+          <NavLink href="/app" active={active === "dashboard"}>dashboard</NavLink>
           <NavLink href="/github" active={active === "github"}>github</NavLink>
           <NavLink href="/projects" active={active === "projects"}>projects</NavLink>
           <NavLink href="/share" active={active === "share"}>sharing</NavLink>

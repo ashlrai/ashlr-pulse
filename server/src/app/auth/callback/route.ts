@@ -12,7 +12,7 @@ import { server } from "@/lib/supabase-server";
 export async function GET(req: NextRequest): Promise<Response> {
   const url = new URL(req.url);
   const code = url.searchParams.get("code");
-  const next = url.searchParams.get("next") ?? "/";
+  const next = url.searchParams.get("next") ?? "/app";
 
   if (!code) {
     return NextResponse.redirect(new URL("/login?error=missing+code", url));

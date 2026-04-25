@@ -43,6 +43,11 @@ export const config = {
      *   - _next internals
      *   - the OTLP ingest path (PAT auth, not cookie auth)
      *   - static asset extensions
+     *
+     * NOTE: We still RUN the middleware on / (the public landing) so the
+     * Supabase session cookie gets refreshed for any logged-in visitor —
+     * the landing page itself doesn't gate on auth, but if a logged-in
+     * user lands here we want their cookie fresh for the next /app hop.
      */
     "/((?!_next/|api/otlp/|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
   ],
