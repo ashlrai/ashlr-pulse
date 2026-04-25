@@ -617,6 +617,7 @@ function Footer(): ReactElement {
           <span>MIT core</span>
         </div>
         <div style={{ display: "flex", gap: 20 }}>
+          <a href="/privacy" style={navLink}>privacy</a>
           <a href="https://github.com/ashlrai/ashlr-pulse" style={navLink}>github</a>
           <a href="/login" style={navLink}>sign in</a>
         </div>
