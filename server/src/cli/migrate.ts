@@ -56,7 +56,13 @@ async function main(): Promise<void> {
   await sql.end();
 }
 
-main().catch((err) => {
-  log.error({ msg: "migrate: failed", err: err instanceof Error ? err.message : String(err) });
-  process.exit(1);
-});
+main()
+  .then(() => {
+    // Force exit so pino's async transport doesn't hold the event loop
+    // open. Migration runs are short-lived; we don't need graceful shutdown.
+    process.exit(0);
+  })
+  .catch((err) => {
+    log.error({ msg: "migrate: failed", err: err instanceof Error ? err.message : String(err) });
+    process.exit(1);
+  });
