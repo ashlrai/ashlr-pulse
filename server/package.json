@@ -16,7 +16,7 @@
   "dependencies": {
     "@supabase/ssr": "^0.10.2",
     "@supabase/supabase-js": "^2.104.1",
-    "next": "15.0.3",
+    "next": "^15.0.7",
     "pino": "^10.3.1",
     "postgres": "^3.4.4",
     "react": "19.0.0",

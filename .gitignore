@@ -8,7 +8,8 @@ dist/
 target/
 *.log
 *.tsbuildinfo
-bun.lock
-bun.lockb
+# Lockfiles are committed for reproducible builds; left as marker.
+# bun.lock
+# bun.lockb
 .idea/
 .vscode/
