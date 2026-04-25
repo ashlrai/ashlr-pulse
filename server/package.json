@@ -14,10 +14,12 @@
     "migrate": "bun run src/cli/migrate.ts"
   },
   "dependencies": {
+    "@supabase/ssr": "^0.10.2",
+    "@supabase/supabase-js": "^2.104.1",
     "next": "15.0.3",
+    "postgres": "^3.4.4",
     "react": "19.0.0",
     "react-dom": "19.0.0",
-    "postgres": "^3.4.4",
     "zod": "^3.23.8"
   },
   "devDependencies": {

@@ -1,5 +1,7 @@
 import type { ReactElement } from "react";
+import { redirect } from "next/navigation";
 import { sql } from "@/lib/db";
+import { server as supabaseServer } from "@/lib/supabase-server";
 
 export const dynamic = "force-dynamic";
 
@@ -35,8 +37,20 @@ async function loadToday(userId: string): Promise<TodayRow[]> {
   }
 }
 
+async function currentUserId(): Promise<string | null> {
+  // If Supabase isn't configured (early dev / single-user dogfood), fall
+  // back to PULSE_DEV_USER. Otherwise require a real session.
+  if (!process.env.NEXT_PUBLIC_SUPABASE_URL) {
+    return process.env.PULSE_DEV_USER ?? "dev-local";
+  }
+  const supabase = await supabaseServer();
+  const { data } = await supabase.auth.getUser();
+  return data.user?.id ?? null;
+}
+
 export default async function Page(): Promise<ReactElement> {
-  const userId = process.env.PULSE_DEV_USER ?? "dev-local";
+  const userId = await currentUserId();
+  if (!userId) redirect("/login");
   const rows = await loadToday(userId);
   return (
     <main style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", padding: 32, maxWidth: 880 }}>

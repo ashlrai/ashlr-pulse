@@ -21,6 +21,16 @@
  *   claude.git.branch
  *   claude.language
  *
+ * And ashlr-plugin attributes prefixed `ashlr.plugin.`:
+ *
+ *   ashlr.plugin.tokens_saved       -> tokens_saved
+ *   ashlr.plugin.session_id         -> session_id (overrides claude.session.id)
+ *   ashlr.plugin.repo               -> repo_name  (overrides claude.repo.name)
+ *
+ * The plugin emitter sets `gen_ai.system` so plugin spans pass the
+ * GenAI-shape gate; but we override `source` to `ashlr_plugin` so the
+ * UI can distinguish where data came from.
+ *
  * Unknown / missing attributes map to NULL — the schema is designed for
  * partial data from heterogeneous sources.
  */
@@ -47,6 +57,7 @@ export interface ActivityEventInsert {
   repo_name: string | null;
   git_branch: string | null;
   language: string | null;
+  tokens_saved: number | null;
   raw_otel_span: unknown;
 }
 
@@ -90,12 +101,14 @@ export function spanToActivityEvent(
 ): ActivityEventInsert | null {
   const attrs = attrMap(span);
 
-  // Only map spans that carry GenAI or claude-code attributes. Anything
-  // else (vanilla HTTP spans, etc.) is ignored — we're not a general OTel
-  // backend.
+  // Only map spans that carry GenAI / claude / ashlr-plugin attributes.
+  // Anything else (vanilla HTTP spans, etc.) is ignored — we're not a
+  // general OTel backend.
   const provider = asString(attrs, "gen_ai.system");
-  const hasClaude = [...attrs.keys()].some((k) => k.startsWith("claude."));
-  if (!provider && !hasClaude) return null;
+  const keys = [...attrs.keys()];
+  const hasClaude = keys.some((k) => k.startsWith("claude."));
+  const hasPlugin = keys.some((k) => k.startsWith("ashlr.plugin."));
+  if (!provider && !hasClaude && !hasPlugin) return null;
 
   const startNs = span.startTimeUnixNano;
   const endNs = span.endTimeUnixNano;
@@ -113,11 +126,22 @@ export function spanToActivityEvent(
     ? toolTypesRaw.split(",").map((s) => s.trim()).filter(Boolean)
     : null;
 
+  // Plugin spans win the source label even when they also carry claude.*
+  // attributes (the plugin wraps Claude Code calls). This way the UI
+  // surfaces "ashlr_plugin" so we can show savings stats distinctly.
+  const source = hasPlugin
+    ? "ashlr_plugin"
+    : hasClaude
+      ? "claude_code"
+      : provider ?? "unknown";
+
   return {
     ts,
     user_id: userId,
-    session_id: asString(attrs, "claude.session.id"),
-    source: hasClaude ? "claude_code" : provider ?? "unknown",
+    session_id:
+      asString(attrs, "ashlr.plugin.session_id") ??
+      asString(attrs, "claude.session.id"),
+    source,
     provider,
     model: asString(attrs, "gen_ai.request.model") ?? asString(attrs, "gen_ai.response.model"),
     duration_ms: durationMs,
@@ -130,9 +154,12 @@ export function spanToActivityEvent(
     accepted_count: asInt(attrs, "claude.edits.accepted_count"),
     rejected_count: asInt(attrs, "claude.edits.rejected_count"),
     project_hash: asString(attrs, "claude.project.hash"),
-    repo_name: asString(attrs, "claude.repo.name"),
+    repo_name:
+      asString(attrs, "ashlr.plugin.repo") ??
+      asString(attrs, "claude.repo.name"),
     git_branch: asString(attrs, "claude.git.branch"),
     language: asString(attrs, "claude.language"),
+    tokens_saved: asInt(attrs, "ashlr.plugin.tokens_saved"),
     raw_otel_span: span,
   };
 }

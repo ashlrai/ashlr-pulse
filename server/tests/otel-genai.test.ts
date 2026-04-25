@@ -81,6 +81,49 @@ describe("spanToActivityEvent", () => {
     expect(row!.duration_ms).toBe(500);
   });
 
+  it("recognizes ashlr-plugin spans and surfaces tokens_saved", () => {
+    const row = spanToActivityEvent(
+      {
+        name: "gen_ai.request",
+        startTimeUnixNano: "1714000000000000000",
+        endTimeUnixNano:   "1714000001000000000",
+        attributes: [
+          { key: "gen_ai.system",              value: { stringValue: "anthropic" } },
+          { key: "gen_ai.request.model",       value: { stringValue: "claude-opus-4-7" } },
+          { key: "gen_ai.usage.input_tokens",  value: { intValue: 800 } },
+          { key: "gen_ai.usage.output_tokens", value: { intValue: 200 } },
+          { key: "ashlr.plugin.tokens_saved",  value: { intValue: 1240 } },
+          { key: "ashlr.plugin.session_id",    value: { stringValue: "plugin-sess-1" } },
+          { key: "ashlr.plugin.repo",          value: { stringValue: "ashlrai/pulse" } },
+        ],
+      },
+      "mason",
+    );
+    expect(row).not.toBeNull();
+    expect(row!.source).toBe("ashlr_plugin");
+    expect(row!.tokens_saved).toBe(1240);
+    expect(row!.session_id).toBe("plugin-sess-1");
+    expect(row!.repo_name).toBe("ashlrai/pulse");
+    expect(row!.duration_ms).toBe(1000);
+  });
+
+  it("ashlr-plugin source label wins over claude.* attributes", () => {
+    const row = spanToActivityEvent(
+      {
+        name: "gen_ai.request",
+        attributes: [
+          { key: "gen_ai.system",            value: { stringValue: "anthropic" } },
+          { key: "claude.session.id",        value: { stringValue: "claude-sess" } },
+          { key: "ashlr.plugin.tokens_saved", value: { intValue: 50 } },
+        ],
+      },
+      "mason",
+    );
+    expect(row!.source).toBe("ashlr_plugin");
+    // Falls through to claude.session.id when plugin doesn't supply its own.
+    expect(row!.session_id).toBe("claude-sess");
+  });
+
   it("skips malformed tokens gracefully", () => {
     const row = spanToActivityEvent(
       {
