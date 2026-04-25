@@ -50,6 +50,41 @@ export async function mintPat(userId: string, name: string): Promise<MintedPat> 
   return { token, id: row.id };
 }
 
+export interface PatRow {
+  id: string;
+  name: string;
+  last_used_at: string | null;
+  created_at: string;
+}
+
+/** List all active (non-revoked) PATs for a user. Never returns hashed_token. */
+export async function listPats(userId: string): Promise<PatRow[]> {
+  const db = sql();
+  return db<PatRow[]>`
+    SELECT id::text AS id, name, last_used_at, created_at
+    FROM personal_access_token
+    WHERE user_id = ${userId}
+      AND revoked_at IS NULL
+    ORDER BY created_at DESC
+  `;
+}
+
+/**
+ * Soft-revoke a PAT. Returns true if the row was revoked, false if it
+ * didn't exist or wasn't owned by the caller (intentionally conflated).
+ */
+export async function revokePat(id: string, userId: string): Promise<boolean> {
+  const db = sql();
+  const result = await db`
+    UPDATE personal_access_token
+    SET revoked_at = NOW()
+    WHERE id = ${id}
+      AND user_id = ${userId}
+      AND revoked_at IS NULL
+  `;
+  return result.count === 1;
+}
+
 /**
  * Validate a bearer token. Returns the owning user_id on hit, null on miss.
  * Updates last_used_at on hit (best-effort — failure is silent).
