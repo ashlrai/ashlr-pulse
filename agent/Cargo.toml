@@ -1,0 +1,39 @@
+[package]
+name = "pulse-agent"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Local agent that captures Claude Code activity and git commits, forwarding them to the Pulse server via OTLP/HTTP."
+
+[[bin]]
+name = "pulse-agent"
+path = "src/main.rs"
+
+[lib]
+name = "pulse_agent"
+path = "src/lib.rs"
+
+[profile.release]
+strip = true
+opt-level = "z"
+lto = true
+codegen-units = 1
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+git2 = { version = "0.19", default-features = false, features = ["vendored-libgit2"] }
+notify = "6"
+keyring = "3"
+clap = { version = "4", features = ["derive"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+toml = "0.8"
+sha2 = "0.10"
+hex = "0.4"
+dirs = "5"
+anyhow = "1"
+thiserror = "2"
