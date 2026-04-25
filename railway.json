@@ -5,7 +5,7 @@
     "dockerfilePath": "server/Dockerfile"
   },
   "deploy": {
-    "startCommand": "bun run migrate && exec node ./node_modules/.bin/next start -H 0.0.0.0 -p ${PORT:-3000}",
+    "startCommand": "/usr/local/bin/entrypoint.sh",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 5
   }
