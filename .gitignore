@@ -13,3 +13,6 @@ target/
 # bun.lockb
 .idea/
 .vscode/
+
+# Claude Code internals
+.claude/
