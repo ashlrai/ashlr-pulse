@@ -21,6 +21,7 @@ import { sql } from "@/lib/db";
 import { currentUser } from "@/lib/current-user";
 import { listGrantsForViewer, type PeerShareRow } from "@/lib/peer-share-db";
 import { costUsdCents, fmtUsd } from "@/lib/pricing";
+import { signOutAction } from "@/lib/auth-actions";
 
 export const dynamic = "force-dynamic";
 
@@ -172,7 +173,10 @@ export default async function Page({
     >
       <h1 style={{ margin: 0, fontSize: 24 }}>Pulse · today</h1>
       <p style={{ color: "#666", marginTop: 4 }}>
-        you: <code>{me.email}</code> · <a href="/share">manage sharing →</a>
+        you: <code>{me.email}</code> · <a href="/share">manage sharing →</a> ·{" "}
+        <form action={signOutAction} style={{ display: "inline" }}>
+          <button type="submit" style={{ background: "none", border: "none", cursor: "pointer", color: "#666", fontSize: "inherit", padding: 0 }}>sign out</button>
+        </form>
       </p>
       {viewBanner}
 
