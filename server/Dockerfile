@@ -39,6 +39,10 @@ WORKDIR /app/server
 COPY --from=builder /app/server/.next ./.next
 COPY --from=builder /app/server/node_modules ./node_modules
 COPY --from=builder /app/server/package.json ./package.json
+# tsconfig.json carries the `paths` map (@/* -> src/*) that Bun reads at
+# runtime when executing src/cli/migrate.ts. Without it, the standalone
+# script can't resolve `@/lib/logger` etc.
+COPY --from=builder /app/server/tsconfig.json ./tsconfig.json
 
 # Source files needed at runtime by `bun run migrate && bun run start`:
 #   - src/cli/migrate.ts (the migration runner)
