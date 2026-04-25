@@ -6,6 +6,8 @@
   },
   "deploy": {
     "startCommand": "/usr/local/bin/entrypoint.sh",
+    "healthcheckPath": "/api/healthz",
+    "healthcheckTimeout": 60,
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 5
   }
