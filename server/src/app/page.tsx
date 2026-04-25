@@ -20,6 +20,7 @@ import { redirect } from "next/navigation";
 import { sql } from "@/lib/db";
 import { currentUser } from "@/lib/current-user";
 import { listGrantsForViewer, type PeerShareRow } from "@/lib/peer-share-db";
+import { costUsdCents, fmtUsd } from "@/lib/pricing";
 
 export const dynamic = "force-dynamic";
 
@@ -29,6 +30,8 @@ interface TodayRow {
   events: number;
   tokens_in: number | null;
   tokens_out: number | null;
+  tokens_cache_read: number | null;
+  tokens_cache_write: number | null;
 }
 
 interface ScopeFilter {
@@ -74,9 +77,11 @@ async function loadToday(userId: string, scope: ScopeFilter): Promise<TodayRow[]
       SELECT
         source,
         model,
-        COUNT(*)::int              AS events,
-        SUM(tokens_input)::int     AS tokens_in,
-        SUM(tokens_output)::int    AS tokens_out
+        COUNT(*)::int                  AS events,
+        SUM(tokens_input)::int         AS tokens_in,
+        SUM(tokens_output)::int        AS tokens_out,
+        SUM(tokens_cache_read)::int    AS tokens_cache_read,
+        SUM(tokens_cache_write)::int   AS tokens_cache_write
       FROM activity_event
       WHERE user_id = $1
         AND ts >= NOW() - INTERVAL '24 hours'
@@ -144,6 +149,18 @@ export default async function Page({
   }
 
   const rows = await loadToday(targetUserId, scope);
+  const rowsWithCost = rows.map((r) => ({
+    ...r,
+    cost_cents: costUsdCents({
+      model: r.model,
+      tokens_input: r.tokens_in,
+      tokens_output: r.tokens_out,
+      tokens_cache_read: r.tokens_cache_read,
+      tokens_cache_write: r.tokens_cache_write,
+    }),
+  }));
+  const totalCents = rowsWithCost.reduce((acc, r) => acc + (r.cost_cents ?? 0), 0);
+  const totalEvents = rowsWithCost.reduce((acc, r) => acc + r.events, 0);
 
   return (
     <main
@@ -160,34 +177,68 @@ export default async function Page({
       {viewBanner}
 
       {rows.length === 0 ? (
-        <p style={{ marginTop: 32, color: "#888" }}>
-          no activity in the last 24 hours. point your OTel exporter at{" "}
-          <code>http://localhost:3000/api/otlp/v1/traces</code> with a Bearer
-          PAT and run any Claude Code command.
-        </p>
+        <section style={{ marginTop: 32 }}>
+          <p style={{ color: "#888" }}>
+            no activity in the last 24 hours. wire an ingest source and you'll see rows show up here.
+          </p>
+          <details style={{ marginTop: 16 }}>
+            <summary style={{ cursor: "pointer", color: "#444" }}>
+              quickstart — Claude Code OTel
+            </summary>
+            <pre
+              style={{
+                marginTop: 8,
+                padding: 12,
+                background: "#f6f6f6",
+                fontSize: 12,
+                borderRadius: 4,
+                overflowX: "auto",
+              }}
+            >
+{`# 1. mint a PAT
+bun run src/cli/mint-pat.ts <your-user-uuid> "laptop"
+
+# 2. point Claude Code at the OTLP endpoint
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://localhost:3000/api/otlp/v1/traces
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+export OTEL_EXPORTER_OTLP_HEADERS="authorization=Bearer pulse_pat_…"
+
+# 3. run claude — events appear here on the next page reload
+claude`}
+            </pre>
+          </details>
+        </section>
       ) : (
-        <table style={{ marginTop: 32, borderCollapse: "collapse", width: "100%" }}>
-          <thead>
-            <tr style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>
-              <th style={{ padding: "8px 0" }}>source</th>
-              <th>model</th>
-              <th style={{ textAlign: "right" }}>events</th>
-              <th style={{ textAlign: "right" }}>tokens in</th>
-              <th style={{ textAlign: "right" }}>tokens out</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r, i) => (
-              <tr key={i} style={{ borderBottom: "1px solid #eee" }}>
-                <td style={{ padding: "8px 0" }}>{r.source}</td>
-                <td>{r.model ?? "—"}</td>
-                <td style={{ textAlign: "right" }}>{r.events}</td>
-                <td style={{ textAlign: "right" }}>{r.tokens_in ?? 0}</td>
-                <td style={{ textAlign: "right" }}>{r.tokens_out ?? 0}</td>
+        <>
+          <p style={{ marginTop: 24, color: "#444" }}>
+            <strong>{totalEvents}</strong> events ·{" "}
+            <strong>{fmtUsd(totalCents)}</strong> spent (last 24h)
+          </p>
+          <table style={{ marginTop: 16, borderCollapse: "collapse", width: "100%" }}>
+            <thead>
+              <tr style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>
+                <th style={{ padding: "8px 0" }}>source</th>
+                <th>model</th>
+                <th style={{ textAlign: "right" }}>events</th>
+                <th style={{ textAlign: "right" }}>tokens in</th>
+                <th style={{ textAlign: "right" }}>tokens out</th>
+                <th style={{ textAlign: "right" }}>cost</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {rowsWithCost.map((r, i) => (
+                <tr key={i} style={{ borderBottom: "1px solid #eee" }}>
+                  <td style={{ padding: "8px 0" }}>{r.source}</td>
+                  <td>{r.model ?? "—"}</td>
+                  <td style={{ textAlign: "right" }}>{r.events}</td>
+                  <td style={{ textAlign: "right" }}>{r.tokens_in ?? 0}</td>
+                  <td style={{ textAlign: "right" }}>{r.tokens_out ?? 0}</td>
+                  <td style={{ textAlign: "right" }}>{fmtUsd(r.cost_cents)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
       )}
     </main>
   );
