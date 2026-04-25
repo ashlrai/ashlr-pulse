@@ -5,7 +5,7 @@
     "dockerfilePath": "server/Dockerfile"
   },
   "deploy": {
-    "startCommand": "echo '[boot] migrating' && bun run migrate && echo '[boot] starting next on PORT='${PORT:-3000} && bun run start",
+    "startCommand": "echo '[boot] env DATABASE_URL='${DATABASE_URL:0:30}'... PORT='${PORT:-3000}' NODE_ENV='${NODE_ENV} && echo '[boot] testing pg connectivity' && bun -e 'const s = (await import(\"postgres\")).default(process.env.DATABASE_URL, {max:1}); const r = await s\\`select 1 as ok\\`; console.error(\"[boot] pg ok:\", r); await s.end();' && echo '[boot] migrating' && bun run migrate && echo '[boot] starting next' && bun run start",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 5
   }
