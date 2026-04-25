@@ -11,13 +11,14 @@
 import postgres from "postgres";
 import { readdirSync, readFileSync } from "fs";
 import { dirname, join, resolve } from "path";
+import { log } from "@/lib/logger";
 
 const MIGRATIONS_DIR = resolve(import.meta.dir, "..", "..", "..", "db", "migrations");
 
 async function main(): Promise<void> {
   const url = process.env.DATABASE_URL;
   if (!url) {
-    console.error("DATABASE_URL is not set.");
+    log.error({ msg: "DATABASE_URL is not set." });
     process.exit(1);
   }
 
@@ -43,7 +44,7 @@ async function main(): Promise<void> {
     if (applied.has(name)) continue;
     const path = join(MIGRATIONS_DIR, name);
     const body = readFileSync(path, "utf-8");
-    console.error(`[migrate] applying ${name} ...`);
+    log.info({ msg: "migrate: applying", migration: name });
     await sql.begin(async (tx) => {
       await tx.unsafe(body);
       await tx`INSERT INTO schema_migrations (name) VALUES (${name})`;
@@ -51,11 +52,11 @@ async function main(): Promise<void> {
     count++;
   }
 
-  console.error(`[migrate] ${count} migration(s) applied (${files.length - count} already current).`);
+  log.info({ msg: "migrate: done", applied: count, skipped: files.length - count });
   await sql.end();
 }
 
 main().catch((err) => {
-  console.error(`[migrate] failed: ${err instanceof Error ? err.message : String(err)}`);
+  log.error({ msg: "migrate: failed", err: err instanceof Error ? err.message : String(err) });
   process.exit(1);
 });
