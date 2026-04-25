@@ -50,7 +50,7 @@ WORKDIR /app/server
 # copied alongside per Next docs.
 COPY --from=builder /app/server/.next/standalone ./
 COPY --from=builder /app/server/.next/static ./.next/static
-COPY --from=builder /app/server/public ./public
+# (no /app/server/public — this app doesn't ship static assets yet)
 
 # Migration runner needs:
 #   - src/cli/migrate.ts + src/lib/* (it imports @/lib/logger)
