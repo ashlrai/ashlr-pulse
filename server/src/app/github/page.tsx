@@ -135,12 +135,11 @@ async function Connected({
             {account.last_synced_at
               ? <>last synced: <code>{new Date(account.last_synced_at).toISOString().slice(0, 19).replace("T", " ")}Z</code></>
               : "never synced"}
-            {account.sync_error && (
-              <span style={{ color: "#c00" }}> · error: {account.sync_error}</span>
-            )}
           </div>
         </div>
       </div>
+
+      {account.sync_error && <SyncErrorBanner error={account.sync_error} />}
 
       <form action={syncNowAction} style={{ marginTop: 16 }}>
         <button type="submit" style={primaryBtn}>sync now</button>
@@ -158,6 +157,65 @@ async function Connected({
         </details>
       )}
     </section>
+  );
+}
+
+/**
+ * Detect "your token doesn't work anymore" errors. The github-sync layer
+ * formats these as "github auth failed (token revoked?): …", and the
+ * raw GitHub responses include 401 / "Bad credentials" / "expired".
+ * Anything else gets a generic banner without the Reconnect CTA.
+ */
+function isAuthError(msg: string): boolean {
+  const m = msg.toLowerCase();
+  return (
+    m.includes("auth") ||
+    m.includes("401") ||
+    m.includes("bad credentials") ||
+    m.includes("token") ||
+    m.includes("revoked") ||
+    m.includes("expired") ||
+    m.includes("missing token")
+  );
+}
+
+function SyncErrorBanner({ error }: { error: string }): ReactElement {
+  const auth = isAuthError(error);
+  const bg = auth ? "#fff4e0" : "#fdecea";
+  const fg = auth ? "#8a4b00" : "#a02622";
+  const border = auth ? "#f5c178" : "#f5b1ae";
+  return (
+    <div
+      role="alert"
+      style={{
+        marginTop: 16,
+        background: bg,
+        color: fg,
+        border: `1px solid ${border}`,
+        borderRadius: 6,
+        padding: "12px 14px",
+        fontSize: 13,
+        display: "flex",
+        flexDirection: "column",
+        gap: 10,
+      }}
+    >
+      <div>
+        <strong>{auth ? "GitHub access needs to be re-authorized." : "Last sync failed."}</strong>
+        {" "}
+        {auth
+          ? "Your token may have been revoked or expired — your dashboard data is now stale until you reconnect."
+          : "We'll retry on the next cron tick; if it keeps failing, paste the error to support."}
+      </div>
+      <div style={{ fontFamily: "ui-monospace, Menlo, monospace", fontSize: 12, opacity: 0.8 }}>
+        {error}
+      </div>
+      {auth && (
+        <a href="/api/github/oauth/start" style={{ ...primaryBtn, alignSelf: "flex-start" }}>
+          reconnect github
+        </a>
+      )}
+    </div>
   );
 }
 

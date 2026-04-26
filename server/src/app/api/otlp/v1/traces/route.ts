@@ -82,10 +82,34 @@ export async function POST(req: Request): Promise<Response> {
     }
   }
 
-  // Parse payload — do NOT log body (privacy floor).
+  // Reject oversized payloads BEFORE buffering. The OTLP wire format
+  // is dense; a legitimate batch from the Rust agent is well under 100KB.
+  // 1 MB is generous and still bounds memory if a misbehaving client
+  // (or a probe) tries to OOM the process.
+  const MAX_BYTES = Number(process.env.PULSE_OTLP_MAX_BYTES ?? "1048576"); // 1 MB
+  const declared = Number(req.headers.get("content-length") ?? "0");
+  if (Number.isFinite(declared) && declared > MAX_BYTES) {
+    log.warn({ msg: "otlp: payload too large (declared)", bytes: declared, request_id: rid, user_id: userId });
+    return NextResponse.json(
+      { error: `payload too large: ${declared} > ${MAX_BYTES}` },
+      { status: 413, headers: { "x-request-id": rid } },
+    );
+  }
+
+  // Parse payload — do NOT log body (privacy floor). Read the body as
+  // text first so we can enforce the size cap when Content-Length is
+  // missing or wrong (chunked transfer + lying clients).
   let payload: OtlpTracesPayload;
   try {
-    payload = (await req.json()) as OtlpTracesPayload;
+    const raw = await req.text();
+    if (raw.length > MAX_BYTES) {
+      log.warn({ msg: "otlp: payload too large (actual)", bytes: raw.length, request_id: rid, user_id: userId });
+      return NextResponse.json(
+        { error: `payload too large: ${raw.length} > ${MAX_BYTES}` },
+        { status: 413, headers: { "x-request-id": rid } },
+      );
+    }
+    payload = JSON.parse(raw) as OtlpTracesPayload;
   } catch {
     log.warn({ msg: "otlp: invalid JSON", request_id: rid, user_id: userId });
     return NextResponse.json(
@@ -103,8 +127,13 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   const db = sql();
+  let inserted = 0;
   try {
-    await db`
+    // ON CONFLICT DO NOTHING handles the (user_id, span_id) unique index
+    // from migration 0007 — agent retries after a flaky network round-trip
+    // can't double-count tokens. Rows with span_id IS NULL (legacy / shell
+    // hook spans) bypass the partial unique index and always insert.
+    const result = await db`
       INSERT INTO activity_event ${db(rows, [
         "ts",
         "user_id",
@@ -126,9 +155,12 @@ export async function POST(req: Request): Promise<Response> {
         "git_branch",
         "language",
         "tokens_saved",
+        "span_id",
         "raw_otel_span",
       ])}
+      ON CONFLICT DO NOTHING
     `;
+    inserted = result.count ?? 0;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log.error({ msg: "otlp: db insert failed", err: message, request_id: rid, user_id: userId, status: 500 });
@@ -138,9 +170,10 @@ export async function POST(req: Request): Promise<Response> {
     );
   }
 
-  log.info({ msg: "otlp: accepted", spans: rows.length, request_id: rid, user_id: userId });
+  const dedup = rows.length - inserted;
+  log.info({ msg: "otlp: accepted", spans: rows.length, inserted, dedup, request_id: rid, user_id: userId });
   return NextResponse.json(
-    { partialSuccess: { rejectedSpans: 0 }, accepted: rows.length },
+    { partialSuccess: { rejectedSpans: 0 }, accepted: rows.length, inserted, dedup },
     { headers: { "x-request-id": rid } },
   );
 }

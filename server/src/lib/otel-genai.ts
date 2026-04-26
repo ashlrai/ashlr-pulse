@@ -65,6 +65,9 @@ export interface ActivityEventInsert {
   git_branch: string | null;
   language: string | null;
   tokens_saved: number | null;
+  /** OTLP spanId (16-byte hex) — used for idempotency on retries. May be
+   *  null for legacy clients that don't set it. */
+  span_id: string | null;
   raw_otel_span: unknown;
 }
 
@@ -172,6 +175,7 @@ export function spanToActivityEvent(
     git_branch: asString(attrs, "claude.git.branch"),
     language: asString(attrs, "claude.language"),
     tokens_saved: asInt(attrs, "ashlr.plugin.tokens_saved"),
+    span_id: span.spanId ?? null,
     raw_otel_span: span,
   };
 }

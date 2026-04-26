@@ -28,14 +28,28 @@ use crate::state::StateDb;
 
 /// Minimal shape of an assistant message in a Claude Code JSONL.
 /// We only parse the fields we need — everything else is ignored.
+///
+/// `timestamp` is the wall-clock time the line was written (ISO8601 Z).
+/// We use this — not `now_ns()` — as the span timestamp so cmux's many
+/// concurrent sessions land in the right hour buckets even when the
+/// agent processes them in a burst at scan time.
 #[derive(Debug, Deserialize)]
 struct JournalLine {
     #[allow(dead_code)] // kept for forward-compat; not inspected at runtime
     #[serde(rename = "type")]
     kind: Option<String>,
     message: Option<AssistantMessage>,
-    /// Session-level cwd present on the first "system" line.
+    /// Session-level cwd present on the first "system" line, repeated on every
+    /// subsequent line in modern Claude Code versions.
     cwd: Option<String>,
+    /// Wall-clock time the line was written.
+    timestamp: Option<String>,
+    /// Authoritative session id from Claude Code; preferred over the filename stem.
+    #[serde(rename = "sessionId")]
+    session_id: Option<String>,
+    /// Live git branch at line-write time; preferred over libgit2's HEAD lookup.
+    #[serde(rename = "gitBranch")]
+    git_branch: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -222,7 +236,7 @@ async fn process_file(
             Err(_) => continue, // malformed line; skip
         };
 
-        // Capture cwd from the first system/init line.
+        // Capture cwd from any line that has it (modern Claude repeats it).
         if parsed.cwd.is_some() {
             cwd = parsed.cwd.clone();
         }
@@ -237,13 +251,28 @@ async fn process_file(
             None => continue,
         };
 
-        // Derive repo name and branch from cwd if available.
-        let (repo_name, git_branch) = match &cwd {
+        // Derive repo name from cwd if available.
+        let (repo_name, branch_from_git) = match &cwd {
             Some(dir) => git_info_from_dir(dir),
             None => (None, None),
         };
+        // Prefer the JSONL's gitBranch (live at write-time) over libgit2's
+        // HEAD lookup at scan time — the latter races when a cmux session
+        // switches branches mid-conversation.
+        let git_branch = parsed.git_branch.clone().or(branch_from_git);
 
-        let ts_ns = now_ns();
+        // Use the line's wall-clock timestamp as the span time, not the
+        // scan-time clock. With cmux running 5+ concurrent sessions and
+        // the agent debouncing scans, many lines get processed in the
+        // same microsecond — but they were created minutes apart.
+        let ts_ns = parsed
+            .timestamp
+            .as_deref()
+            .and_then(parse_iso8601_to_ns)
+            .unwrap_or_else(now_ns);
+
+        // Prefer JSONL sessionId; fall back to filename stem.
+        let session_id_for_span = parsed.session_id.as_deref().or(session_id.as_deref());
 
         let span = SpanBuilder::new("gen_ai.request", ts_ns, ts_ns)
             .attr_str("gen_ai.system", "anthropic")
@@ -252,7 +281,7 @@ async fn process_file(
             .attr_int_opt("gen_ai.usage.output_tokens", usage.output_tokens)
             .attr_int_opt("gen_ai.usage.cache_read_tokens", usage.cache_read_input_tokens)
             .attr_int_opt("gen_ai.usage.cache_write_tokens", usage.cache_creation_input_tokens)
-            .attr_str_opt("claude.session.id", session_id.as_deref())
+            .attr_str_opt("claude.session.id", session_id_for_span)
             .attr_str_opt("claude.project.hash", project_hash.as_deref())
             .attr_str_opt("claude.repo.name", repo_name.as_deref())
             .attr_str_opt("claude.git.branch", git_branch.as_deref())
@@ -335,4 +364,99 @@ pub fn project_path_hash(path: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(path.as_bytes());
     hex::encode(hasher.finalize())
+}
+
+/// Parse an ISO-8601 timestamp like "2026-04-25T20:45:12.123Z" to unix
+/// nanoseconds. Returns None on any parse failure — caller falls back to
+/// scan-time clock. Handles fractional seconds at any precision.
+///
+/// Pulled in standalone (no chrono dep) because the format is fixed and
+/// chrono would add ~20s to compile time. Accepts: YYYY-MM-DDTHH:MM:SS[.frac]Z
+pub fn parse_iso8601_to_ns(s: &str) -> Option<u128> {
+    // Bytes: "2026-04-25T20:45:12.123Z"
+    //         0    5  8  11 14 17 ...
+    let bytes = s.as_bytes();
+    if bytes.len() < 20 || bytes[10] != b'T' || !s.ends_with('Z') {
+        return None;
+    }
+    let year:  i64 = s.get(0..4)?.parse().ok()?;
+    let month: u32 = s.get(5..7)?.parse().ok()?;
+    let day:   u32 = s.get(8..10)?.parse().ok()?;
+    let hour:  u32 = s.get(11..13)?.parse().ok()?;
+    let min:   u32 = s.get(14..16)?.parse().ok()?;
+    let sec:   u32 = s.get(17..19)?.parse().ok()?;
+
+    // Optional ".frac" between sec and 'Z'. Pad/truncate to nanoseconds.
+    let nanos: u32 = if bytes[19] == b'.' {
+        let frac_end = s.len() - 1; // index of 'Z'
+        let frac = &s[20..frac_end];
+        if frac.is_empty() || frac.len() > 9 || !frac.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let mut padded = frac.to_string();
+        while padded.len() < 9 { padded.push('0'); }
+        padded.parse().ok()?
+    } else if bytes[19] == b'Z' {
+        0
+    } else {
+        return None;
+    };
+
+    // Days from civil date (Howard Hinnant's algorithm — leap years correct
+    // through year 9999, no time-zone math needed because input is UTC).
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = (if y >= 0 { y } else { y - 399 }) / 400;
+    let yoe = (y - era * 400) as u64;            // [0, 399]
+    let m = month as i64;
+    let d = day as i64;
+    let doy = ((153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1) as u64;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days_since_epoch = era as i128 * 146097 + doe as i128 - 719468;
+
+    let secs_since_epoch = days_since_epoch * 86_400
+        + hour as i128 * 3600
+        + min  as i128 * 60
+        + sec  as i128;
+
+    if secs_since_epoch < 0 {
+        return None;
+    }
+    Some(secs_since_epoch as u128 * 1_000_000_000 + nanos as u128)
+}
+
+#[cfg(test)]
+mod ts_tests {
+    use super::parse_iso8601_to_ns;
+
+    #[test]
+    fn parses_unix_epoch() {
+        assert_eq!(parse_iso8601_to_ns("1970-01-01T00:00:00Z"), Some(0));
+    }
+    #[test]
+    fn parses_with_fractional() {
+        // 2026-04-25T20:45:12.123Z
+        let ns = parse_iso8601_to_ns("2026-04-25T20:45:12.123Z").unwrap();
+        // sanity: must be > unix epoch and < year 2100
+        assert!(ns > 1_700_000_000_000_000_000);
+        assert!(ns < 4_102_444_800_000_000_000);
+        // fractional 123 → 123_000_000 ns into the second
+        assert_eq!(ns % 1_000_000_000, 123_000_000);
+    }
+    #[test]
+    fn parses_no_fractional() {
+        let ns = parse_iso8601_to_ns("2026-04-25T20:45:12Z").unwrap();
+        assert_eq!(ns % 1_000_000_000, 0);
+    }
+    #[test]
+    fn rejects_non_z_offsets() {
+        assert!(parse_iso8601_to_ns("2026-04-25T20:45:12+00:00").is_none());
+        assert!(parse_iso8601_to_ns("not a date").is_none());
+        assert!(parse_iso8601_to_ns("").is_none());
+    }
+    #[test]
+    fn matches_known_value() {
+        // 2026-04-25T20:45:12.000000123Z must round-trip through nanos.
+        let ns = parse_iso8601_to_ns("2026-04-25T20:45:12.000000123Z").unwrap();
+        assert_eq!(ns % 1_000_000_000, 123);
+    }
 }
