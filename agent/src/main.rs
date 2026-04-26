@@ -5,7 +5,7 @@
 //!   doctor  — validates config + connectivity, prints status
 //!   login   — stores PAT in OS keyring, writes stub config
 
-use pulse_agent::{auth, claude, config, git, onboard, otlp, shell, state};
+use pulse_agent::{auth, backfill, claude, config, git, heartbeat, onboard, otlp, shell, state};
 
 use std::sync::Arc;
 
@@ -46,6 +46,14 @@ enum Command {
         #[arg(long, help = "Pulse server URL (e.g. https://pulse.ashlr.ai)")]
         url: String,
     },
+
+    /// Re-tail every Claude session JSONL since a chosen point in time,
+    /// ignoring the per-file watermark. Idempotent — safe to run while
+    /// `pulse-agent run` is also active.
+    Backfill {
+        #[arg(long, default_value = "7d", help = "Window: 24h, 7d, 30m, or YYYY-MM-DD")]
+        since: String,
+    },
 }
 
 #[tokio::main]
@@ -61,7 +69,19 @@ async fn main() -> Result<()> {
         Command::Doctor => cmd_doctor().await,
         Command::Login { url } => cmd_login(&url).await,
         Command::Init  { url } => onboard::run(&url).await,
+        Command::Backfill { since } => cmd_backfill(&since).await,
     }
+}
+
+// ── backfill ────────────────────────────────────────────────────────────────
+
+async fn cmd_backfill(since: &str) -> Result<()> {
+    let cfg = config::Config::load().context("loading config")?;
+    let (pat, pat_src) = auth::get_pat(&cfg.server.url, cfg.server.pat.as_deref())
+        .context("resolving PAT")?;
+    info!(url = %cfg.server.url, pat_source = %pat_src, since, "backfill starting");
+    let exporter = std::sync::Arc::new(otlp::OtlpExporter::new(&cfg.server.url, &pat));
+    backfill::run(since, &cfg, exporter).await
 }
 
 // ── run ─────────────────────────────────────────────────────────────────────
@@ -96,6 +116,16 @@ async fn cmd_run() -> Result<()> {
         git::run(repos, git_exporter, git_state, git_rx).await;
     });
 
+    // Heartbeat — pings the server every 60s so the dashboard can show
+    // "agent: alive 30s ago" instead of going silently stale.
+    let heartbeat_rx = shutdown_rx.clone();
+    let heartbeat_url = cfg.server.url.clone();
+    let heartbeat_pat = pat.clone();
+    let heartbeat_label = Some(heartbeat::hostname_label());
+    let heartbeat_handle = tokio::spawn(async move {
+        heartbeat::run(heartbeat_url, heartbeat_pat, heartbeat_label, heartbeat_rx).await;
+    });
+
     // Shell-hook tailer — opt-in via shell.enabled (default true).
     let shell_handle = if cfg.shell.enabled {
         let shell_exporter = exporter.clone();
@@ -115,7 +145,7 @@ async fn cmd_run() -> Result<()> {
     info!("shutdown signal received; stopping workers");
     let _ = shutdown_tx.send(true);
 
-    let _ = tokio::join!(claude_handle, git_handle);
+    let _ = tokio::join!(claude_handle, git_handle, heartbeat_handle);
     if let Some(h) = shell_handle {
         let _ = h.await;
     }

@@ -34,6 +34,8 @@ import { sql } from "@/lib/db";
 import { currentUser } from "@/lib/current-user";
 import { listGrantsForViewer, type PeerShareRow } from "@/lib/peer-share-db";
 import { costUsdCents, fmtUsd } from "@/lib/pricing";
+import { getAgentStatus, bucketFor, fmtAgo, type AgentStatus, type HealthBucket } from "@/lib/heartbeat";
+import { loadMissedRepos } from "@/lib/missed-repos";
 import { Header } from "@/components/Header";
 import { StatCard } from "@/components/StatCard";
 
@@ -266,7 +268,17 @@ export default async function Page({
     );
   }
 
-  const rows = await loadRows(targetUserId, scope, gran);
+  // Load agent liveness + missed repos in parallel with the main query.
+  // Both are skipped on ?as= peer views — a peer's agent uptime + their
+  // own missed-repos warning aren't yours to look at.
+  const isOwnView = targetUserId === me.id;
+  const nowUtc = new Date();
+  const since24hUtc = new Date(nowUtc.getTime() - 24 * 3600_000).toISOString();
+  const [rows, agentStatus, missedRepos] = await Promise.all([
+    loadRows(targetUserId, scope, gran),
+    isOwnView ? getAgentStatus(me.id, nowUtc) : Promise.resolve(null),
+    isOwnView ? loadMissedRepos(me.id, since24hUtc, nowUtc.toISOString()) : Promise.resolve([]),
+  ]);
   const rowsWithCost = rows.map((r) => ({
     ...r,
     cost_cents: costUsdCents({
@@ -293,11 +305,15 @@ export default async function Page({
   return (
     <main style={{ padding: "0 32px 32px", maxWidth: 1100, margin: "0 auto" }}>
       <Header me={me} active="dashboard" />
-      <h1 style={{ margin: 0, fontSize: 28, fontWeight: 600, letterSpacing: "-0.5px" }}>today</h1>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <h1 style={{ margin: 0, fontSize: 28, fontWeight: 600, letterSpacing: "-0.5px" }}>today</h1>
+        {agentStatus && <AgentStatusBadge status={agentStatus} />}
+      </div>
       <p style={{ color: "#666", marginTop: 4, fontSize: 13 }}>
         the last {windowLabel} of activity across your tracked repos and AI tools.
       </p>
       {viewBanner}
+      {isOwnView && missedRepos.length > 0 && <MissedReposPanel repos={missedRepos} />}
 
       {rows.length === 0 ? (
         <section style={{ marginTop: 32 }}>
@@ -370,6 +386,69 @@ claude`}
       <ProjectSection userId={me.id} windowLabel={windowLabel} />
       <GitHubSection userId={me.id} />
     </main>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Agent status badge + missed-repos warning
+// ---------------------------------------------------------------------------
+
+const BUCKET_STYLE: Record<HealthBucket, { fg: string; bg: string; dot: string; label: string }> = {
+  alive:  { fg: "#1a7f3a", bg: "#e7f6ec", dot: "#22c55e", label: "alive" },
+  stale:  { fg: "#8a4b00", bg: "#fff4e0", dot: "#f5b06b", label: "stale" },
+  silent: { fg: "#a02622", bg: "#fdecea", dot: "#dc2626", label: "SILENT" },
+};
+
+function AgentStatusBadge({ status }: { status: AgentStatus }): ReactElement {
+  const bucket = bucketFor(status.seconds_ago);
+  const style = BUCKET_STYLE[bucket];
+  const ago = fmtAgo(status.seconds_ago);
+  const agentCount = status.agents.length;
+  const tooltip = status.agents.length === 0
+    ? "no agent has ever pinged this account — install pulse-agent and run `pulse-agent init`"
+    : status.agents.map((a) => `${a.label ?? "agent"}: ${fmtAgo(a.seconds_ago)} ago`).join(" · ");
+
+  return (
+    <div
+      title={tooltip}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "4px 10px",
+        background: style.bg,
+        color: style.fg,
+        borderRadius: 999,
+        fontSize: 12,
+        fontFamily: "ui-monospace, Menlo, monospace",
+        cursor: "help",
+      }}
+    >
+      <span style={{ width: 8, height: 8, borderRadius: 4, background: style.dot }} />
+      <span><strong>{style.label}</strong> · {ago}{agentCount > 1 ? ` (${agentCount} agents)` : ""}</span>
+    </div>
+  );
+}
+
+function MissedReposPanel({ repos }: { repos: string[] }): ReactElement {
+  return (
+    <div
+      role="alert"
+      style={{
+        marginTop: 16,
+        background: "#fff4e0",
+        color: "#8a4b00",
+        border: "1px solid #f5c178",
+        borderRadius: 6,
+        padding: "12px 14px",
+        fontSize: 13,
+      }}
+    >
+      <strong>⚠ Agent missed {repos.length} {repos.length === 1 ? "repo" : "repos"}</strong> with GitHub commits in the last 24h but zero AI-tool activity. Usually means pulse-agent isn&apos;t running on these:
+      <div style={{ marginTop: 6, fontFamily: "ui-monospace, Menlo, monospace", fontSize: 12 }}>
+        {repos.slice(0, 8).join(" · ")}{repos.length > 8 ? ` · +${repos.length - 8} more` : ""}
+      </div>
+    </div>
   );
 }
 

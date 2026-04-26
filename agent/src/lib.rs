@@ -1,9 +1,11 @@
 //! pulse-agent library — public re-exports for integration tests.
 
 pub mod auth;
+pub mod backfill;
 pub mod claude;
 pub mod config;
 pub mod git;
+pub mod heartbeat;
 pub mod onboard;
 pub mod otlp;
 pub mod shell;
