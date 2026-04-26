@@ -7,7 +7,7 @@ no per-shell environment variables required.
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/AshlrAI/ashlr-pulse/main/agent/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/ashlrai/ashlr-pulse/main/agent/install.sh | sh
 ```
 
 The installer detects your platform (macOS arm64/x86_64, Linux x86_64),

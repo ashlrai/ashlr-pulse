@@ -24,7 +24,7 @@ multi-tenant cloud is v0.4. See [ROADMAP.md](ROADMAP.md) for the full arc.
   programmatic ingest
 - **pulse-agent** — local Rust binary; tails Claude Code sessions (cmux-friendly),
   optional shell hook for terminal AI CLIs (codex, aider, sgpt, …), and git.
-  Install with `curl -fsSL https://raw.githubusercontent.com/AshlrAI/ashlr-pulse/main/agent/install.sh | sh`,
+  Install with `curl -fsSL https://raw.githubusercontent.com/ashlrai/ashlr-pulse/main/agent/install.sh | sh`,
   then `pulse-agent init --url https://your-pulse-server` for browser-mediated
   PAT onboarding (no ssh needed). See [agent/README.md](agent/README.md).
 - **Daily digest** — opt-in morning email summarizing yesterday's activity

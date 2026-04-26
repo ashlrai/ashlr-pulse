@@ -16,7 +16,7 @@
 
 set -e
 
-REPO="${PULSE_REPO:-AshlrAI/ashlr-pulse}"
+REPO="${PULSE_REPO:-ashlrai/ashlr-pulse}"
 INSTALL_DIR="${PULSE_INSTALL_DIR:-$HOME/.local/bin}"
 VERSION="${PULSE_VERSION:-latest}"
 
