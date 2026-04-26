@@ -21,21 +21,31 @@ async function sendMagicLink(formData: FormData): Promise<void> {
   const email = String(formData.get("email") ?? "").trim();
   if (!email) return;
 
+  // Allow callers to deep-link through the magic-link callback by passing
+  // ?next= on the /login URL. Restrict to same-origin paths so we can't
+  // be turned into an open redirect.
+  const nextRaw = String(formData.get("next") ?? "").trim();
+  const nextSafe = nextRaw.startsWith("/") && !nextRaw.startsWith("//") ? nextRaw : "";
+
   const supabase = await server();
   const origin = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
+  const callback = nextSafe
+    ? `${origin}/auth/callback?next=${encodeURIComponent(nextSafe)}`
+    : `${origin}/auth/callback`;
   const { error } = await supabase.auth.signInWithOtp({
     email,
-    options: { emailRedirectTo: `${origin}/auth/callback` },
+    options: { emailRedirectTo: callback },
   });
   if (error) {
-    redirect(`/login?error=${encodeURIComponent(error.message)}`);
+    redirect(`/login?error=${encodeURIComponent(error.message)}${nextSafe ? `&next=${encodeURIComponent(nextSafe)}` : ""}`);
   }
-  redirect("/login?sent=1");
+  redirect(`/login?sent=1${nextSafe ? `&next=${encodeURIComponent(nextSafe)}` : ""}`);
 }
 
 interface SearchParams {
   sent?: string;
   error?: string;
+  next?: string;
 }
 
 export default async function LoginPage({
@@ -43,7 +53,8 @@ export default async function LoginPage({
 }: {
   searchParams: Promise<SearchParams>;
 }): Promise<ReactElement> {
-  const { sent, error } = await searchParams;
+  const { sent, error, next } = await searchParams;
+  const nextSafe = next && next.startsWith("/") && !next.startsWith("//") ? next : "";
   const githubOAuthEnabled = Boolean(process.env.GITHUB_OAUTH_CLIENT_ID);
 
   return (
@@ -139,6 +150,7 @@ export default async function LoginPage({
           </p>
 
           <form action={sendMagicLink} style={{ marginTop: 28 }}>
+            {nextSafe && <input type="hidden" name="next" value={nextSafe} />}
             <label
               htmlFor="email"
               style={{ fontSize: 12, color: "#888", letterSpacing: 0.4 }}

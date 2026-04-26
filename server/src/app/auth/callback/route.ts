@@ -9,10 +9,23 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { server } from "@/lib/supabase-server";
 
+/**
+ * Only accept same-origin relative paths. Rejects protocol-relative
+ * URLs ("//evil.com"), absolute URLs ("https://evil.com"), and anything
+ * not starting with a single "/" — defends against open-redirect via the
+ * magic-link landing.
+ */
+function safeNext(raw: string | null): string {
+  const v = raw ?? "/app";
+  if (!v.startsWith("/")) return "/app";
+  if (v.startsWith("//")) return "/app";
+  return v;
+}
+
 export async function GET(req: NextRequest): Promise<Response> {
   const url = new URL(req.url);
   const code = url.searchParams.get("code");
-  const next = url.searchParams.get("next") ?? "/app";
+  const next = safeNext(url.searchParams.get("next"));
 
   if (!code) {
     return NextResponse.redirect(new URL("/login?error=missing+code", url));
