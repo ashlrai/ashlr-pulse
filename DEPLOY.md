@@ -35,27 +35,39 @@ that work in production.
 | `NEXT_PUBLIC_APP_URL` | Where login + `/agent-onboard` callbacks redirect to. Must match the prod URL exactly (https + no trailing slash). | e.g. `https://pulse.ashlr.ai` |
 | `PULSE_CRON_SECRET` | Without this, `lib/cron.ts` skips registration entirely → no digest, no scheduled GitHub sync | `openssl rand -hex 32` |
 | `PULSE_TOKEN_ENC_KEY` | Encrypts GitHub OAuth tokens at rest via pgcrypto | `openssl rand -hex 32` |
-| `RESEND_API_KEY` | Daily digest email | resend.com → API Keys |
-| `PULSE_DIGEST_FROM_EMAIL` | Sender address on the digest. Must be a verified Resend sender on a domain you control | e.g. `pulse@ashlr.ai` |
+| `SENDGRID_API_KEY` | Daily digest email | sendgrid.com → Settings → API Keys → Create API Key (Full Access or Mail Send only) |
+| `PULSE_DIGEST_FROM_EMAIL` | Sender address on the digest. Must be a verified SendGrid sender on a domain you control | e.g. `pulse@ashlr.ai` |
 | `GITHUB_OAUTH_CLIENT_ID` / `GITHUB_OAUTH_CLIENT_SECRET` | GitHub commit/PR sync at `/github` | github.com/settings/developers → New OAuth App; callback `https://<your-pulse>/api/github/oauth/callback`; scopes `repo:status user:email read:org` |
 | `PULSE_OTLP_RATE_LIMIT` *(optional)* | Override OTLP per-PAT rate limit | default `60:1` (60 req/min, refill 1/sec) |
 | `PULSE_OTLP_MAX_BYTES` *(optional)* | Cap OTLP body size | default `1048576` (1 MB) |
 
-### 1.3 Resend domain verification (DNS)
+### 1.3 SendGrid domain authentication (DNS)
 
-In your DNS provider, add the records Resend gives you for the sending
-domain. Typical:
+If your AshlrAI org already has a verified sending domain on SendGrid
+(likely, since other projects use it), skip to 1.4 — Pulse can use the
+same domain. Just confirm the domain shows green under Settings →
+Sender Authentication.
+
+If this is a new domain or you want a sub-domain (e.g. `pulse.ashlr.ai`
+distinct from your other transactional senders so reputation issues
+on one product don't poison the others):
+
+1. SendGrid → Settings → Sender Authentication → **Authenticate Your Domain**
+2. Pick your DNS host, enter the domain
+3. SendGrid generates 3 CNAME records (DKIM keys + return-path). Add
+   them in your DNS provider exactly as shown.
+4. Click **Verify** — propagation is usually 5–30 min.
 
 ```
-TXT  resend._domainkey   p=…     # DKIM
-TXT  @                   v=spf1 include:amazonses.com ~all
-TXT  _dmarc              v=DMARC1; p=quarantine; rua=mailto:postmaster@yourdomain
-MX   send                feedback-smtp.us-east-1.amazonses.com (10)
-TXT  send                v=spf1 include:amazonses.com ~all
+CNAME  em1234.pulse.ashlr.ai    u1234.wl.sendgrid.net
+CNAME  s1._domainkey.pulse.ashlr.ai  s1.domainkey.u1234.wl.sendgrid.net
+CNAME  s2._domainkey.pulse.ashlr.ai  s2.domainkey.u1234.wl.sendgrid.net
 ```
 
-Wait for propagation (5–30 min usually). Resend's dashboard shows green
-when ready. Without verification, digests land in spam or get rejected.
+(Exact values come from SendGrid's UI — these are illustrative.)
+
+Without authentication, digests land in spam or get rejected outright
+by Gmail / Outlook.
 
 ### 1.4 GitHub OAuth app
 
@@ -78,7 +90,7 @@ curl https://<your-pulse>/api/healthz
 If `db: down`, the migration step likely failed — check Railway logs
 for `[entrypoint] applying 00XX_*.sql` lines.
 
-Manually trigger the digest cron once to verify Resend works:
+Manually trigger the digest cron once to verify SendGrid works:
 
 ```bash
 curl -X POST https://<your-pulse>/api/cron/digest \
@@ -86,8 +98,9 @@ curl -X POST https://<your-pulse>/api/cron/digest \
 # → {"ok":true,"candidates":N,"sent":...,"empty":...,"skipped":...}
 ```
 
-If `skipped > 0` and you set `RESEND_API_KEY`: check Resend dashboard
-for the rejection reason (usually "from address not verified").
+If `skipped > 0` and you set `SENDGRID_API_KEY`: check SendGrid's
+Activity Feed for the rejection reason (usually "from address not
+verified" — re-check sender authentication).
 
 ---
 
@@ -229,8 +242,9 @@ dedups via `(user_id, span_id)` unique index.
 
 ## 6. Common pitfalls
 
-- **Digest goes to spam**: Resend domain probably isn't fully verified.
-  Check the Resend dashboard for "Failed" verification on any DNS record.
+- **Digest goes to spam**: SendGrid domain authentication may be
+  incomplete. Check Settings → Sender Authentication for "Failed" on
+  any CNAME. Also check the Activity Feed for soft-bounce reasons.
 - **Agent says "alive" but no activity rows**: `pulse-agent doctor`
   shows whether OTLP ingest succeeded. If yes, check that
   `[[repos]]` paths exist and are git repos.
@@ -254,7 +268,7 @@ NEXT_PUBLIC_SUPABASE_URL=https://abcd.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJh…
 PULSE_CRON_SECRET=$(openssl rand -hex 32)
 PULSE_TOKEN_ENC_KEY=$(openssl rand -hex 32)
-RESEND_API_KEY=re_…
+SENDGRID_API_KEY=SG.…
 PULSE_DIGEST_FROM_EMAIL=pulse@example.com
 GITHUB_OAUTH_CLIENT_ID=Ov23li…
 GITHUB_OAUTH_CLIENT_SECRET=…

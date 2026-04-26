@@ -8,9 +8,9 @@
  *   1. Pick users where digest_enabled = true AND it's >= 9am in their TZ
  *      AND last_digest_sent_at < today_local_9am.
  *   2. For each, build the digest payload (yesterday's activity + peer
- *      grants that fire today), render, send via Resend, mark sent.
+ *      grants that fire today), render, send via SendGrid, mark sent.
  *
- * If RESEND_API_KEY is unset (typical in dev), individual sends return
+ * If SENDGRID_API_KEY is unset (typical in dev), individual sends return
  * `{ skipped: true }` and we log without marking the user as sent — that
  * way prod can be flipped on without backfill drift.
  *
@@ -87,7 +87,7 @@ export async function POST(req: Request): Promise<Response> {
         await markDigestSent(u.id, now);
         results.push({ user_id: u.id, email: payload.email, status: "sent", detail: r.id });
       } else if ("skipped" in r) {
-        // Don't mark sent — prod will pick this up tomorrow once Resend is wired.
+        // Don't mark sent — prod will pick this up tomorrow once SendGrid is wired.
         results.push({ user_id: u.id, email: payload.email, status: "skipped", detail: r.reason });
       } else {
         results.push({ user_id: u.id, email: payload.email, status: "error", detail: `${r.status}: ${r.error}` });

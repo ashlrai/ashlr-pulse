@@ -3,7 +3,7 @@
  *
  * Cron-secret guarded (admin scope). Returns the same payload + rendered
  * HTML/text/subject the cron would send for the given user, without
- * marking them as sent and without hitting Resend. Useful for:
+ * marking them as sent and without hitting SendGrid. Useful for:
  *   - Verifying yesterday's digest will look right before tomorrow's send
  *   - Debugging "why did Mason's cofounder's digest look weird?"
  *   - Iterating on the renderer template against live data
