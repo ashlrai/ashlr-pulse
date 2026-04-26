@@ -354,8 +354,97 @@ claude`}
         </>
       )}
 
+      <ProjectSection userId={me.id} windowLabel={windowLabel} />
       <GitHubSection userId={me.id} />
     </main>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Project rollup panel — group activity by project the user owns.
+// Silent when the user has no projects defined.
+// ---------------------------------------------------------------------------
+
+interface ProjectRollupRow {
+  project_id: string;
+  project_name: string;
+  project_kind: string;
+  repos_count: number;
+  events: number;
+  tokens: number;
+  cost_cents: number;
+}
+
+async function ProjectSection({
+  userId,
+  windowLabel,
+}: {
+  userId: string;
+  windowLabel: string;
+}): Promise<ReactElement | null> {
+  const db = sql();
+  const intervalSql = windowLabel; // safe: same source as parent — comes from windowForGranularity
+  // First check if the user has any projects at all — short-circuit if not.
+  const [{ project_count }] = await db<{ project_count: number }[]>`
+    SELECT COUNT(*)::int AS project_count
+    FROM project p
+    JOIN membership m ON m.org_id = p.org_id AND m.user_id = ${userId}
+  `;
+  if (project_count === 0) return null;
+
+  const rollups = await db<ProjectRollupRow[]>`
+    SELECT
+      p.id::text                    AS project_id,
+      p.name                        AS project_name,
+      p.kind                        AS project_kind,
+      COUNT(DISTINCT pr.repo_name)::int      AS repos_count,
+      COUNT(*)::int                 AS events,
+      COALESCE(SUM(COALESCE(ae.tokens_input, 0) + COALESCE(ae.tokens_output, 0))::int, 0) AS tokens,
+      0                             AS cost_cents
+    FROM project p
+    JOIN membership m  ON m.org_id = p.org_id AND m.user_id = ${userId}
+    JOIN project_repo pr ON pr.project_id = p.id
+    JOIN activity_event ae ON ae.repo_name = pr.repo_name AND ae.user_id = ${userId}
+    WHERE ae.ts > NOW() - ${intervalSql}::interval
+    GROUP BY p.id, p.name, p.kind
+    ORDER BY tokens DESC
+  `;
+
+  if (rollups.length === 0) return null;
+
+  // Cost is computed per-row in JS via pricing.ts but we don't have model here.
+  // For the dashboard we render tokens-only at the project level — the existing
+  // by-source × model table beneath gives the per-model cost breakdown.
+  return (
+    <section style={{ marginTop: 32 }}>
+      <h2 style={{ fontSize: 16, marginTop: 0, marginBottom: 12 }}>by project</h2>
+      <table style={{ borderCollapse: "collapse", width: "100%" }}>
+        <thead>
+          <tr style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>
+            <th style={{ padding: "8px 0" }}>project</th>
+            <th style={{ padding: "8px 0", color: "#888", fontWeight: 400 }}>kind</th>
+            <th style={{ textAlign: "right" }}>repos</th>
+            <th style={{ textAlign: "right" }}>events</th>
+            <th style={{ textAlign: "right" }}>tokens</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rollups.map((r) => (
+            <tr key={r.project_id} style={{ borderBottom: "1px solid #eee" }}>
+              <td style={{ padding: "8px 0" }}>
+                <a href={`/projects#${r.project_id}`} style={{ color: "#111", textDecoration: "none", fontWeight: 500 }}>
+                  {r.project_name}
+                </a>
+              </td>
+              <td style={{ color: "#888", fontSize: 12 }}>{r.project_kind}</td>
+              <td style={{ textAlign: "right" }}>{r.repos_count}</td>
+              <td style={{ textAlign: "right" }}>{r.events}</td>
+              <td style={{ textAlign: "right" }}>{r.tokens.toLocaleString()}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
   );
 }
 
