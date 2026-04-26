@@ -21,6 +21,7 @@ import { NextResponse } from "next/server";
 import { sql } from "@/lib/db";
 import { syncAccount, type SyncResult } from "@/lib/github-sync";
 import { log } from "@/lib/logger";
+import { safeEqual } from "@/lib/timing-safe";
 
 export const runtime = "nodejs";
 export const maxDuration = 300; // up to 5 minutes per cron tick
@@ -33,8 +34,8 @@ export async function POST(req: Request): Promise<Response> {
       { status: 500 },
     );
   }
-  const supplied = req.headers.get("x-cron-secret");
-  if (!supplied || supplied !== expected) {
+  const supplied = req.headers.get("x-cron-secret") ?? "";
+  if (!safeEqual(supplied, expected)) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 

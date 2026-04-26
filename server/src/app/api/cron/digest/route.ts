@@ -27,6 +27,7 @@ import {
 } from "@/lib/digest";
 import { renderDigestEmail } from "@/lib/digest-render";
 import { log } from "@/lib/logger";
+import { safeEqual } from "@/lib/timing-safe";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -46,7 +47,10 @@ export async function POST(req: Request): Promise<Response> {
       { status: 500 },
     );
   }
-  if (req.headers.get("x-cron-secret") !== expected) {
+  // Constant-time compare: !== short-circuits and leaks the secret
+  // byte-by-byte to an attacker measuring response timing.
+  const supplied = req.headers.get("x-cron-secret") ?? "";
+  if (!safeEqual(supplied, expected)) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 

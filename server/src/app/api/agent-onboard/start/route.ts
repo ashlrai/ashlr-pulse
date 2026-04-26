@@ -17,6 +17,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { generateCode, getCode, startCode } from "@/lib/agent-onboard-db";
 import { checkBucket } from "@/lib/rate-limit";
+import { clientIp } from "@/lib/timing-safe";
 import { log, requestId } from "@/lib/logger";
 
 export const runtime = "nodejs";
@@ -28,11 +29,11 @@ const Body = z.object({
 export async function POST(req: Request): Promise<Response> {
   const rid = requestId(req);
 
-  // Rate limit by IP — this is unauthenticated, so a key derived from
-  // the request is the best we have. x-forwarded-for is best-effort.
-  const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
-    ?? req.headers.get("x-real-ip")
-    ?? "unknown";
+  // Rate limit by client IP. Use clientIp() not the leftmost x-forwarded-for
+  // entry — Railway / most reverse-proxy stacks let clients prepend
+  // arbitrary values, so the leftmost is attacker-controlled. clientIp()
+  // takes the rightmost (platform-appended) value.
+  const ip = clientIp(req);
   const rl = checkBucket(`onboard-start:${ip}`, 30, 0.5);
   if (!rl.ok) {
     return NextResponse.json(
