@@ -36,7 +36,7 @@ that work in production.
 | `PULSE_CRON_SECRET` | Without this, `lib/cron.ts` skips registration entirely → no digest, no scheduled GitHub sync | `openssl rand -hex 32` |
 | `PULSE_TOKEN_ENC_KEY` | Encrypts GitHub OAuth tokens at rest via pgcrypto | `openssl rand -hex 32` |
 | `SENDGRID_API_KEY` | Daily digest email | sendgrid.com → Settings → API Keys → Create API Key (Full Access or Mail Send only) |
-| `PULSE_DIGEST_FROM_EMAIL` | Sender address on the digest. Must be a verified SendGrid sender on a domain you control | e.g. `pulse@ashlr.ai` |
+| `PULSE_DIGEST_FROM_EMAIL` | Sender address on the digest. Must be a verified SendGrid sender on a domain you control | e.g. `support@ashlr.ai` |
 | `GITHUB_OAUTH_CLIENT_ID` / `GITHUB_OAUTH_CLIENT_SECRET` | GitHub commit/PR sync at `/github` | github.com/settings/developers → New OAuth App; callback `https://<your-pulse>/api/github/oauth/callback`; scopes `repo:status user:email read:org` |
 | `PULSE_OTLP_RATE_LIMIT` *(optional)* | Override OTLP per-PAT rate limit | default `60:1` (60 req/min, refill 1/sec) |
 | `PULSE_OTLP_MAX_BYTES` *(optional)* | Cap OTLP body size | default `1048576` (1 MB) |
