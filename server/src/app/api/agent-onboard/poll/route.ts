@@ -71,7 +71,8 @@ export async function GET(req: Request): Promise<Response> {
     );
   }
 
-  const patName = `agent-init: ${row.agent_label ?? "unnamed"} (${new Date().toISOString().slice(0, 10)})`;
+  const label = consumed.agent_label ?? "unnamed";
+  const patName = `agent-init: ${label} (${new Date().toISOString().slice(0, 10)})`;
   const minted = await mintPat(consumed.user_id, patName);
 
   log.info({
@@ -79,7 +80,7 @@ export async function GET(req: Request): Promise<Response> {
     code,
     pat_id: minted.id,
     user_id: consumed.user_id,
-    agent_label: row.agent_label,
+    agent_label: label,
     request_id: rid,
   });
 

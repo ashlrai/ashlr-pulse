@@ -178,7 +178,7 @@ export function localCalendar(tz: string, now: Date = new Date()): { dow: number
   const wd = parts.find((p) => p.type === "weekday")?.value ?? "Sun";
   const dom = Number(parts.find((p) => p.type === "day")?.value ?? "1");
   const dow = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(wd);
-  return { dow, dom: dom };
+  return { dow, dom };
 }
 
 // ---------------------------------------------------------------------------
@@ -508,30 +508,34 @@ export function alreadySentToday(
 }
 
 /**
- * Pick all users who should be sent the digest right now. Filter is:
- *   - digest_enabled = true
- *   - it is currently 9am or later in their TZ today
- *   - last_digest_sent_at is null or before today's 9am local
+ * Pick all users who should be sent the digest right now. Filters in
+ * SQL — both the "current local hour ≥ 9" gate and the "haven't sent
+ * since today's local 9am" idempotency check — so we don't load the
+ * whole user table per cron tick AND so users past an arbitrary LIMIT
+ * never get silently skipped.
  *
- * Returned in batches of `limit` to bound work per cron tick.
+ * `last_digest_sent_at` lives as TIMESTAMPTZ (UTC); we compare it
+ * against today-9am-in-user-TZ which we convert back to UTC via
+ * `(local_wall_clock) AT TIME ZONE digest_tz`.
  */
-export async function pickDueUsers(now: Date = new Date(), limit = 200): Promise<UserPrefs[]> {
+export async function pickDueUsers(now: Date = new Date()): Promise<UserPrefs[]> {
   const db = sql();
-  const all = await db<(UserPrefs & { last_digest_sent_at: string | null; digest_enabled: boolean })[]>`
+  const nowIso = now.toISOString();
+  return db<UserPrefs[]>`
     SELECT
-      id::text          AS id,
+      id::text     AS id,
       email,
       digest_email,
-      digest_tz,
-      last_digest_sent_at::text AS last_digest_sent_at,
-      digest_enabled
+      digest_tz
     FROM "user"
     WHERE digest_enabled = TRUE
-    LIMIT ${limit}
+      AND EXTRACT(HOUR FROM (${nowIso}::timestamptz AT TIME ZONE digest_tz)) >= 9
+      AND (
+        last_digest_sent_at IS NULL
+        OR last_digest_sent_at < (
+          date_trunc('day', ${nowIso}::timestamptz AT TIME ZONE digest_tz)
+          + interval '9 hours'
+        ) AT TIME ZONE digest_tz
+      )
   `;
-  return all.filter((u) => {
-    const hour = localHour(u.digest_tz, now);
-    if (hour < 9) return false;
-    return !alreadySentToday(u.last_digest_sent_at, u.digest_tz, now);
-  });
 }

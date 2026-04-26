@@ -142,16 +142,11 @@ async fn scan_all(
     exporter: &OtlpExporter,
     state: &StateDb,
 ) -> Result<()> {
-    let pattern = projects_dir.join("projects").join("*").join("*.jsonl");
-    let pattern_str = pattern.to_string_lossy();
-
-    let entries = glob_jsonl(projects_dir)?;
-    for path in entries {
+    for path in glob_jsonl(projects_dir)? {
         if let Err(e) = process_file(&path, exporter, state).await {
             warn!("error processing {}: {e:#}", path.display());
         }
     }
-    let _ = pattern_str; // suppress unused warning
     Ok(())
 }
 
@@ -201,7 +196,14 @@ async fn process_file(
     file.seek(SeekFrom::Start(offset))?;
 
     let mut reader = BufReader::new(&file);
-    let mut new_offset = offset;
+    // `byte_cursor` tracks our read position; we advance it line-by-line.
+    // `last_good_offset` only advances after a span exports successfully,
+    // so a network blip during export rewinds to retry the failed line on
+    // the next scan instead of silently dropping it. This is the cmux
+    // safety net — losing one span per concurrent session per blip would
+    // accumulate fast.
+    let mut byte_cursor = offset;
+    let mut last_good_offset = offset;
     let mut cwd: Option<String> = None;
 
     // The project hash is the directory component of the path:
@@ -224,16 +226,23 @@ async fn process_file(
         if n == 0 {
             break; // EOF
         }
-        new_offset += n as u64;
+        let line_end = byte_cursor + n as u64;
+        byte_cursor = line_end;
 
         let trimmed = line.trim();
         if trimmed.is_empty() {
+            last_good_offset = line_end;
             continue;
         }
 
         let parsed: JournalLine = match serde_json::from_str(trimmed) {
             Ok(v) => v,
-            Err(_) => continue, // malformed line; skip
+            Err(_) => {
+                // Malformed line — already past it; skipping it forever
+                // is correct (it'll never become valid).
+                last_good_offset = line_end;
+                continue;
+            }
         };
 
         // Capture cwd from any line that has it (modern Claude repeats it).
@@ -241,14 +250,21 @@ async fn process_file(
             cwd = parsed.cwd.clone();
         }
 
-        // Only process assistant turns with usage data.
+        // Only process assistant turns with usage data; advance the
+        // watermark for non-emitting lines too — they processed fine.
         let msg = match &parsed.message {
             Some(m) if m.role.as_deref() == Some("assistant") => m,
-            _ => continue,
+            _ => {
+                last_good_offset = line_end;
+                continue;
+            }
         };
         let usage = match &msg.usage {
             Some(u) => u,
-            None => continue,
+            None => {
+                last_good_offset = line_end;
+                continue;
+            }
         };
 
         // Derive repo name from cwd if available.
@@ -289,25 +305,29 @@ async fn process_file(
 
         if let Err(e) = exporter.export(&span).await {
             warn!("failed to export claude span: {e:#}");
-            // Don't advance watermark — we'll retry next scan.
+            // Don't advance watermark past the failed line — break so the
+            // next scan resumes at last_good_offset and re-attempts it.
             break;
         }
+        last_good_offset = line_end;
         lines_processed += 1;
     }
 
-    if new_offset > offset {
-        state.set_file_offset(&path_str, new_offset)?;
+    if last_good_offset > offset {
+        state.set_file_offset(&path_str, last_good_offset)?;
         if lines_processed > 0 {
             debug!(path = %path.display(), spans = lines_processed, "exported claude spans");
         }
     }
+    let _ = byte_cursor; // suppress unused warning when no spans emit
 
     Ok(())
 }
 
 /// Attempt to read repo name and branch from a working directory path.
-/// Returns (None, None) on any error — this is best-effort.
-fn git_info_from_dir(dir: &str) -> (Option<String>, Option<String>) {
+/// Returns (None, None) on any error — this is best-effort. Reused by
+/// shell.rs to keep the libgit2 wrangling in one place.
+pub fn git_info_from_dir(dir: &str) -> (Option<String>, Option<String>) {
     use git2::Repository;
 
     let repo = match Repository::discover(dir) {

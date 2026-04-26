@@ -104,11 +104,15 @@ export async function POST(req: Request): Promise<Response> {
   };
   log.info({ msg: "cron: digest done", elapsed_ms, ...summary });
 
+  // Per-user details (emails, errors) go to the structured log only —
+  // we don't put them in the HTTP response. Cron callers (Railway,
+  // GitHub Actions) often log response bodies wholesale, and anyone
+  // with PULSE_CRON_SECRET would otherwise be able to enumerate every
+  // active digest user via the response.
   return NextResponse.json({
     ok: true,
     candidates: due.length,
     elapsed_ms,
     ...summary,
-    results,
   });
 }

@@ -23,9 +23,16 @@ async function sendMagicLink(formData: FormData): Promise<void> {
 
   // Allow callers to deep-link through the magic-link callback by passing
   // ?next= on the /login URL. Restrict to same-origin paths so we can't
-  // be turned into an open redirect.
+  // be turned into an open redirect. Mirrors safeNext() in
+  // /auth/callback — any drift between the two is a footgun.
   const nextRaw = String(formData.get("next") ?? "").trim();
-  const nextSafe = nextRaw.startsWith("/") && !nextRaw.startsWith("//") ? nextRaw : "";
+  const nextSafe =
+    nextRaw.startsWith("/") &&
+    !nextRaw.startsWith("//") &&
+    !nextRaw.includes("\\") &&
+    !/[\r\n]/.test(nextRaw)
+      ? nextRaw
+      : "";
 
   const supabase = await server();
   const origin = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
@@ -54,7 +61,14 @@ export default async function LoginPage({
   searchParams: Promise<SearchParams>;
 }): Promise<ReactElement> {
   const { sent, error, next } = await searchParams;
-  const nextSafe = next && next.startsWith("/") && !next.startsWith("//") ? next : "";
+  const nextSafe =
+    next &&
+    next.startsWith("/") &&
+    !next.startsWith("//") &&
+    !next.includes("\\") &&
+    !/[\r\n]/.test(next)
+      ? next
+      : "";
   const githubOAuthEnabled = Boolean(process.env.GITHUB_OAUTH_CLIENT_ID);
 
   return (

@@ -78,18 +78,24 @@ export async function approveCode(code: string, userId: string): Promise<boolean
 }
 
 /**
- * Atomic consume: find an approved code, return its user_id, and DELETE
- * the row in the same transaction. Returns null if no such code exists
- * (still pending, expired, or already consumed).
+ * Atomic consume: find an approved code, return its user_id +
+ * agent_label, and DELETE the row in the same statement. Returns null
+ * if no such code exists (still pending, expired, or already consumed).
+ *
+ * Returning agent_label here (instead of trusting the caller's earlier
+ * SELECT) means the PAT we mint is named from the same atomic snapshot
+ * as the user_id — no chance of a torn read between the two.
  */
-export async function consumeApprovedCode(code: string): Promise<{ user_id: string } | null> {
+export async function consumeApprovedCode(
+  code: string,
+): Promise<{ user_id: string; agent_label: string | null } | null> {
   const db = sql();
-  const [row] = await db<{ user_id: string }[]>`
+  const [row] = await db<{ user_id: string; agent_label: string | null }[]>`
     DELETE FROM agent_onboard_code
     WHERE code = ${code}
       AND status = 'approved'
       AND expires_at > NOW()
-    RETURNING user_id::text AS user_id
+    RETURNING user_id::text AS user_id, agent_label
   `;
   return row ?? null;
 }

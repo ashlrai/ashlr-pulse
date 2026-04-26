@@ -34,12 +34,15 @@ describe("generateCode", () => {
 });
 
 describe("safeNext (auth callback)", () => {
-  // The function is private to the route file; we re-implement the
-  // contract here as a regression-test against open-redirect.
+  // Keep this implementation byte-identical to /auth/callback's safeNext
+  // and /login's nextSafe ternary. The test exists specifically to catch
+  // drift between those copies.
   function safeNext(raw: string | null): string {
     const v = raw ?? "/app";
     if (!v.startsWith("/")) return "/app";
     if (v.startsWith("//")) return "/app";
+    if (v.includes("\\")) return "/app";
+    if (/[\r\n]/.test(v)) return "/app";
     return v;
   }
 
@@ -53,6 +56,13 @@ describe("safeNext (auth callback)", () => {
     ["http://evil.com/path", "/app"],
     ["javascript:alert(1)", "/app"],
     ["/path/with/slashes", "/path/with/slashes"],
+    // Backslash bypass: WHATWG URL normalizes `\` to `/` so this would
+    // otherwise resolve to `https://evil.com` via `new URL(next, base)`.
+    ["/\\evil.com", "/app"],
+    ["/path\\evil", "/app"],
+    // CRLF: protect against header / response splitting.
+    ["/path\r\nLocation: https://evil", "/app"],
+    ["/path\nset-cookie: x=1", "/app"],
   ])("%s → %s", (input, expected) => {
     expect(safeNext(input as string | null)).toBe(expected);
   });

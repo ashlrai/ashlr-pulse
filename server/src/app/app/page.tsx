@@ -158,6 +158,16 @@ function buildScopeFilter(grants: PeerShareRow[]): ScopeFilter {
 // Query
 // ---------------------------------------------------------------------------
 
+// Allow-list of strings we permit to be interpolated into raw SQL via
+// db.unsafe below. windowForGranularity only emits these four strings,
+// but we revalidate at the call site so a future Granularity union
+// addition can't quietly let an unknown literal through. ProjectSection
+// uses the tagged-template `${str}::interval` form instead — that's the
+// preferred pattern for new code; loadRows still needs db.unsafe because
+// it dynamically constructs SELECT-list expressions and GROUP BY columns
+// that postgres-js can't parameterize.
+const ALLOWED_WINDOWS = new Set<string>(["24 hours", "7 days", "90 days", "1 year"]);
+
 async function loadRows(
   userId: string,
   scope: ScopeFilter,
@@ -166,6 +176,9 @@ async function loadRows(
   try {
     const db = sql();
     const window = windowForGranularity(gran);
+    if (!ALLOWED_WINDOWS.has(window)) {
+      throw new Error(`unexpected interval window: ${window}`);
+    }
     const bucket = bucketExpr(gran);
     const groupBy = groupByForGranularity(gran);
     const rows = await db.unsafe<TodayRow[]>(
@@ -383,7 +396,12 @@ async function ProjectSection({
   windowLabel: string;
 }): Promise<ReactElement | null> {
   const db = sql();
-  const intervalSql = windowLabel; // safe: same source as parent — comes from windowForGranularity
+  // Defense in depth — even though postgres-js's tagged template
+  // parameterizes ${intervalSql} below, we verify the string is one of
+  // the values windowForGranularity is documented to emit before going
+  // anywhere near the DB. Catches a future Granularity-union expansion.
+  if (!ALLOWED_WINDOWS.has(windowLabel)) return null;
+  const intervalSql = windowLabel;
   // First check if the user has any projects at all — short-circuit if not.
   const [{ project_count }] = await db<{ project_count: number }[]>`
     SELECT COUNT(*)::int AS project_count

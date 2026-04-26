@@ -10,15 +10,22 @@ import { NextResponse, type NextRequest } from "next/server";
 import { server } from "@/lib/supabase-server";
 
 /**
- * Only accept same-origin relative paths. Rejects protocol-relative
- * URLs ("//evil.com"), absolute URLs ("https://evil.com"), and anything
- * not starting with a single "/" — defends against open-redirect via the
- * magic-link landing.
+ * Only accept same-origin relative paths. Rejects:
+ *   - protocol-relative URLs ("//evil.com")
+ *   - absolute URLs ("https://evil.com", "javascript:...")
+ *   - anything not starting with a single "/"
+ *   - any value containing "\" — WHATWG URL parsing normalizes
+ *     backslash to forward slash, so "/\evil.com" resolves to
+ *     "https://evil.com" when handed to `new URL(next, base)`.
+ *   - any value containing CR/LF — bypassed Set-Cookie / response-split
+ *     attempts.
  */
 function safeNext(raw: string | null): string {
   const v = raw ?? "/app";
   if (!v.startsWith("/")) return "/app";
   if (v.startsWith("//")) return "/app";
+  if (v.includes("\\")) return "/app";
+  if (/[\r\n]/.test(v)) return "/app";
   return v;
 }
 

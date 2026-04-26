@@ -35,7 +35,7 @@ use serde::Deserialize;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
-use crate::claude::remote_url_to_repo_name;
+use crate::claude::git_info_from_dir;
 use crate::otlp::OtlpExporter;
 use crate::span::SpanBuilder;
 use crate::state::StateDb;
@@ -166,7 +166,12 @@ async fn process_buffer(
 
     file.seek(SeekFrom::Start(offset))?;
     let mut reader = BufReader::new(&file);
-    let mut new_offset = offset;
+    // last_good_offset only advances after a successful export (or a
+    // confirmed "skip" — malformed/wrong-cli/etc lines that we'll never
+    // be able to emit). An export failure rewinds the offset so the
+    // next scan retries the failing line instead of silently dropping it.
+    let mut byte_cursor = offset;
+    let mut last_good_offset = offset;
     let mut emitted = 0usize;
 
     let mut line = String::new();
@@ -174,14 +179,18 @@ async fn process_buffer(
         line.clear();
         let n = reader.read_line(&mut line)?;
         if n == 0 { break; }
-        new_offset += n as u64;
+        let line_end = byte_cursor + n as u64;
+        byte_cursor = line_end;
 
         let trimmed = line.trim();
-        if trimmed.is_empty() { continue; }
+        if trimmed.is_empty() {
+            last_good_offset = line_end;
+            continue;
+        }
 
         let rec: ShellRecord = match serde_json::from_str(trimmed) {
             Ok(v) => v,
-            Err(_) => continue, // skip malformed
+            Err(_) => { last_good_offset = line_end; continue; }
         };
 
         // Defense-in-depth: cmd must be a single bare token, on the
@@ -189,13 +198,16 @@ async fn process_buffer(
         // variant accidentally including args.
         if rec.cmd.contains(|c: char| c.is_whitespace() || "&|;`$<>(){}[]\"'".contains(c)) {
             warn!("shell tailer: rejected cmd containing shell metachar: {:?}", rec.cmd);
+            last_good_offset = line_end;
             continue;
         }
         if !RECOGNIZED_CLIS.contains(&rec.cmd.as_str()) {
+            last_good_offset = line_end;
             continue;
         }
         if rec.ts_end_ns < rec.ts_start_ns {
-            continue; // garbage timing
+            last_good_offset = line_end; // garbage timing
+            continue;
         }
 
         let (repo_name, git_branch) = match &rec.cwd {
@@ -214,41 +226,21 @@ async fn process_buffer(
 
         if let Err(e) = exporter.export(&span).await {
             warn!("failed to export shell span: {e:#}");
-            // Don't advance watermark; retry next scan.
+            // Don't advance past the failed line — break and retry next scan.
             break;
         }
+        last_good_offset = line_end;
         emitted += 1;
     }
 
-    if new_offset > offset {
-        state.set_file_offset(&path_str, new_offset)?;
+    if last_good_offset > offset {
+        state.set_file_offset(&path_str, last_good_offset)?;
         if emitted > 0 {
             debug!(path = %path.display(), spans = emitted, "exported shell spans");
         }
     }
+    let _ = byte_cursor; // suppress unused warning when no spans emit
     Ok(())
-}
-
-/// Best-effort: read repo name + branch from a directory. Returns (None, None)
-/// on any error — duplicates the helper in claude.rs so the modules stay
-/// independent.
-fn git_info_from_dir(dir: &str) -> (Option<String>, Option<String>) {
-    use git2::Repository;
-    let repo = match Repository::discover(dir) {
-        Ok(r) => r,
-        Err(_) => return (None, None),
-    };
-    let branch = repo.head().ok().and_then(|h| h.shorthand().map(|s| s.to_string()));
-    let repo_name = repo
-        .find_remote("origin").ok()
-        .and_then(|r| r.url().map(|u| u.to_string()))
-        .map(|url| remote_url_to_repo_name(&url))
-        .or_else(|| {
-            repo.workdir()
-                .and_then(|p| p.file_name())
-                .map(|s| s.to_string_lossy().into_owned())
-        });
-    (repo_name, branch)
 }
 
 #[cfg(test)]
