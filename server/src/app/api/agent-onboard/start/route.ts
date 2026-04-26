@@ -71,9 +71,12 @@ export async function POST(req: Request): Promise<Response> {
   const row = await startCode(code, parsed.agent_label ?? null);
   log.info({ msg: "onboard: code issued", code, agent_label: parsed.agent_label, request_id: rid });
 
-  // Construct the approval URL using the request origin. The agent
-  // printed `--url <server>` so this matches what the user expects.
-  const origin = new URL(req.url).origin;
+  // Construct the approval URL. NEXT_PUBLIC_APP_URL is the canonical
+  // public URL on Railway / behind any reverse proxy where req.url
+  // reflects the internal bind address (0.0.0.0:3000) instead of the
+  // public hostname. Same pattern as github/oauth/start. Falls through
+  // to req.url for dev / single-process deploys.
+  const origin = process.env.NEXT_PUBLIC_APP_URL ?? new URL(req.url).origin;
   return NextResponse.json({
     code,
     url: `${origin}/agent-onboard?code=${code}`,
