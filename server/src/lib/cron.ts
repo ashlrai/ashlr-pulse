@@ -1,10 +1,12 @@
 /**
- * cron.ts — in-process hourly scheduler.
+ * cron.ts — in-process scheduler.
  *
- * Registered once at Next.js boot via instrumentation.ts. Calls the
- * `/api/cron/github-sync` endpoint over HTTP every 60 min, passing the
- * shared PULSE_CRON_SECRET. Hitting the HTTP endpoint (rather than
- * importing syncAllAccounts directly) keeps the auth surface uniform —
+ * Registered once at Next.js boot via instrumentation.ts. Two ticks:
+ *   - github-sync, hourly: POST /api/cron/github-sync
+ *   - digest, every 15 min: POST /api/cron/digest
+ *
+ * Both pass PULSE_CRON_SECRET. Hitting the HTTP endpoint (rather than
+ * importing the handler directly) keeps the auth surface uniform —
  * external triggers and the in-process trigger go through the same
  * authorization check.
  *
@@ -22,6 +24,7 @@
 import { log } from "./logger";
 
 const ONE_HOUR_MS = 60 * 60 * 1000;
+const FIFTEEN_MIN_MS = 15 * 60 * 1000;
 
 let started = false;
 
@@ -41,18 +44,19 @@ export function startBackgroundCron(): void {
     return;
   }
 
-  log.info({ msg: "cron: registering hourly github-sync" });
+  log.info({ msg: "cron: registering ticks", github_sync: "hourly", digest: "15m" });
 
-  // Initial tick after 2 min so we don't slam the DB at boot — gives
-  // the rest of the runtime time to finish migrations + warm up.
-  setTimeout(tick, 2 * 60 * 1000);
-  // Then on the hour, every hour.
-  setInterval(tick, ONE_HOUR_MS);
+  // Initial ticks staggered so we don't slam the DB at boot.
+  setTimeout(() => tick("github-sync"), 2 * 60 * 1000);
+  setTimeout(() => tick("digest"),     5 * 60 * 1000);
+
+  setInterval(() => tick("github-sync"), ONE_HOUR_MS);
+  setInterval(() => tick("digest"),     FIFTEEN_MIN_MS);
 }
 
-async function tick(): Promise<void> {
+async function tick(endpoint: "github-sync" | "digest"): Promise<void> {
   const port = process.env.PORT ?? "3000";
-  const url = `http://127.0.0.1:${port}/api/cron/github-sync`;
+  const url = `http://127.0.0.1:${port}/api/cron/${endpoint}`;
   try {
     const r = await fetch(url, {
       method: "POST",
@@ -62,8 +66,8 @@ async function tick(): Promise<void> {
       },
       body: "{}",
     });
-    log.info({ msg: "cron: tick complete", status: r.status });
+    log.info({ msg: "cron: tick complete", endpoint, status: r.status });
   } catch (err) {
-    log.error({ msg: "cron: tick failed", err: err instanceof Error ? err.message : String(err) });
+    log.error({ msg: "cron: tick failed", endpoint, err: err instanceof Error ? err.message : String(err) });
   }
 }

@@ -12,7 +12,7 @@ import type { CurrentUser } from "@/lib/current-user";
 
 interface Props {
   me: CurrentUser;
-  active: "dashboard" | "github" | "share" | "projects" | "tokens";
+  active: "dashboard" | "github" | "share" | "projects" | "tokens" | "settings";
 }
 
 export function Header({ me, active }: Props): ReactElement {
@@ -37,6 +37,7 @@ export function Header({ me, active }: Props): ReactElement {
           <NavLink href="/github" active={active === "github"}>github</NavLink>
           <NavLink href="/projects" active={active === "projects"}>projects</NavLink>
           <NavLink href="/share" active={active === "share"}>sharing</NavLink>
+          <NavLink href="/settings" active={active === "settings"}>settings</NavLink>
           <NavLink href="/settings/tokens" active={active === "tokens"}>tokens</NavLink>
         </nav>
       </div>
