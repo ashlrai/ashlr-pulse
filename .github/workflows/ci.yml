@@ -57,3 +57,59 @@ jobs:
         env:
           DATABASE_URL: postgres://pulse:pulse@localhost:5432/pulse
         run: bun test
+
+  agent:
+    name: build agent
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: agent -> target
+
+      - name: cargo build
+        working-directory: agent
+        run: cargo build --locked
+
+      - name: cargo test
+        working-directory: agent
+        run: cargo test --locked
+
+      - name: shell-hook smoke test (zsh)
+        run: |
+          sudo apt-get update && sudo apt-get install -y zsh
+          /bin/zsh -c '
+            export PULSE_BUFFER=/tmp/hook.jsonl
+            rm -f $PULSE_BUFFER
+            source agent/scripts/pulse-hook.zsh
+            _pulse_preexec "claude --foo bar"
+            ( exit 0 ); _pulse_precmd
+            _pulse_preexec "ls -la"
+            ( exit 0 ); _pulse_precmd
+          '
+          test -f /tmp/hook.jsonl
+          # Exactly one record (ls is not on the allowlist)
+          test "$(wc -l < /tmp/hook.jsonl)" = "1"
+          # The cmd must be exactly "claude" (no leak from args)
+          grep -q '"cmd":"claude"' /tmp/hook.jsonl
+          ! grep -q '"cmd":"claude --' /tmp/hook.jsonl
+
+      - name: shell-hook smoke test (bash)
+        run: |
+          rm -f /tmp/hook-bash.jsonl
+          /bin/bash -c '
+            export PULSE_BUFFER=/tmp/hook-bash.jsonl
+            source agent/scripts/pulse-hook.bash
+            trap - DEBUG
+            _pulse_recognize "codex --hello"; ( exit 0 ); _pulse_prompt
+            _pulse_recognize "ls -la";        ( exit 0 ); _pulse_prompt
+            _pulse_recognize "sudo aider x";  ( exit 0 ); _pulse_prompt
+          '
+          test "$(wc -l < /tmp/hook-bash.jsonl)" = "2"
+          grep -q '"cmd":"codex"' /tmp/hook-bash.jsonl
+          grep -q '"cmd":"aider"' /tmp/hook-bash.jsonl

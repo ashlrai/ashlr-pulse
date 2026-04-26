@@ -1,0 +1,95 @@
+name: Release agent
+
+# Triggered by tags shaped like agent-v0.2.0. Cross-compiles the Rust agent
+# for macOS (arm64 + x86_64) and Linux (x86_64), strips, tarballs, computes
+# sha256 sums, and attaches everything to a GitHub Release.
+#
+# The companion install script (agent/install.sh) downloads from the
+# release this workflow produces.
+
+on:
+  push:
+    tags:
+      - "agent-v*"
+
+permissions:
+  contents: write   # needed to create the release + upload assets
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-14,    target: aarch64-apple-darwin,      asset: pulse-agent-macos-arm64 }
+          - { os: macos-13,    target: x86_64-apple-darwin,       asset: pulse-agent-macos-x86_64 }
+          - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu, asset: pulse-agent-linux-x86_64 }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry + build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: agent -> target
+          key: ${{ matrix.target }}
+
+      - name: Build release binary
+        working-directory: agent
+        run: cargo build --release --target ${{ matrix.target }} --locked
+
+      - name: Stage tarball
+        working-directory: agent
+        run: |
+          mkdir -p stage
+          cp target/${{ matrix.target }}/release/pulse-agent stage/
+          cp -R scripts stage/scripts
+          cp README.md stage/
+          tar -C stage -czf ${{ matrix.asset }}.tar.gz .
+          shasum -a 256 ${{ matrix.asset }}.tar.gz > ${{ matrix.asset }}.tar.gz.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: |
+            agent/${{ matrix.asset }}.tar.gz
+            agent/${{ matrix.asset }}.tar.gz.sha256
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List dist
+        run: ls -la dist/
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: pulse-agent ${{ github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/pulse-agent-macos-arm64.tar.gz
+            dist/pulse-agent-macos-arm64.tar.gz.sha256
+            dist/pulse-agent-macos-x86_64.tar.gz
+            dist/pulse-agent-macos-x86_64.tar.gz.sha256
+            dist/pulse-agent-linux-x86_64.tar.gz
+            dist/pulse-agent-linux-x86_64.tar.gz.sha256

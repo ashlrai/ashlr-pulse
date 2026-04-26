@@ -14,7 +14,30 @@ pub struct Config {
 
     #[serde(default)]
     pub repos: Vec<RepoConfig>,
+
+    #[serde(default)]
+    pub shell: ShellConfig,
 }
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ShellConfig {
+    /// Enable the shell-hook tailer. Defaults to true; set to false to
+    /// disable even if the buffer file exists.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Path to the JSONL buffer that the shell hook appends to.
+    /// Defaults to `~/.local/share/pulse-agent/shell-events.jsonl`.
+    pub buffer_path: Option<String>,
+}
+
+impl Default for ShellConfig {
+    fn default() -> Self {
+        ShellConfig { enabled: true, buffer_path: None }
+    }
+}
+
+fn default_true() -> bool { true }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ServerConfig {
@@ -106,6 +129,16 @@ url = "{url}"
             }
         }
     }
+
+    /// Resolved shell-hook buffer path. Defaults to
+    /// `~/.local/share/pulse-agent/shell-events.jsonl` (matches what the
+    /// hook script writes to).
+    pub fn shell_buffer_path(&self) -> PathBuf {
+        match &self.shell.buffer_path {
+            Some(p) => expand_tilde(p),
+            None    => crate::shell::default_buffer_path(),
+        }
+    }
 }
 
 impl Default for Config {
@@ -114,6 +147,7 @@ impl Default for Config {
             server: ServerConfig::default(),
             claude: ClaudeConfig::default(),
             repos: Vec::new(),
+            shell: ShellConfig::default(),
         }
     }
 }

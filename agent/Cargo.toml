@@ -1,9 +1,13 @@
 [package]
 name = "pulse-agent"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 license = "MIT"
-description = "Local agent that captures Claude Code activity and git commits, forwarding them to the Pulse server via OTLP/HTTP."
+description = "Local agent for Ashlr Pulse: captures Claude Code, terminal AI CLIs (codex, aider, sgpt, …), and git activity, forwarding via OTLP/HTTP."
+repository = "https://github.com/AshlrAI/ashlr-pulse"
+authors = ["Mason Wyatt <mason@evero-consulting.com>"]
+keywords = ["otel", "ai", "observability", "agent"]
+categories = ["development-tools", "command-line-utilities"]
 
 [[bin]]
 name = "pulse-agent"

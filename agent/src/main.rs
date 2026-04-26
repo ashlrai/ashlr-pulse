@@ -5,7 +5,7 @@
 //!   doctor  — validates config + connectivity, prints status
 //!   login   — stores PAT in OS keyring, writes stub config
 
-use pulse_agent::{auth, claude, config, git, otlp, state};
+use pulse_agent::{auth, claude, config, git, onboard, otlp, shell, state};
 
 use std::sync::Arc;
 
@@ -39,6 +39,13 @@ enum Command {
         #[arg(long, help = "Pulse server URL (e.g. http://localhost:3001)")]
         url: String,
     },
+
+    /// Browser-mediated onboarding — opens the Pulse approval page so
+    /// you can mint a PAT without ssh-ing into the server.
+    Init {
+        #[arg(long, help = "Pulse server URL (e.g. https://pulse.ashlr.ai)")]
+        url: String,
+    },
 }
 
 #[tokio::main]
@@ -53,6 +60,7 @@ async fn main() -> Result<()> {
         Command::Run    => cmd_run().await,
         Command::Doctor => cmd_doctor().await,
         Command::Login { url } => cmd_login(&url).await,
+        Command::Init  { url } => onboard::run(&url).await,
     }
 }
 
@@ -88,11 +96,29 @@ async fn cmd_run() -> Result<()> {
         git::run(repos, git_exporter, git_state, git_rx).await;
     });
 
+    // Shell-hook tailer — opt-in via shell.enabled (default true).
+    let shell_handle = if cfg.shell.enabled {
+        let shell_exporter = exporter.clone();
+        let shell_state    = state.clone();
+        let shell_rx       = shutdown_rx.clone();
+        let buffer_path    = cfg.shell_buffer_path();
+        info!(buffer = %buffer_path.display(), "shell tailer enabled");
+        Some(tokio::spawn(async move {
+            shell::run(buffer_path, shell_exporter, shell_state, shell_rx).await;
+        }))
+    } else {
+        info!("shell tailer disabled by config");
+        None
+    };
+
     tokio::signal::ctrl_c().await.context("waiting for signal")?;
     info!("shutdown signal received; stopping workers");
     let _ = shutdown_tx.send(true);
 
     let _ = tokio::join!(claude_handle, git_handle);
+    if let Some(h) = shell_handle {
+        let _ = h.await;
+    }
     info!("pulse-agent stopped");
     Ok(())
 }
