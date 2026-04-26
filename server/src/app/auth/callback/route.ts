@@ -17,15 +17,19 @@ import { server } from "@/lib/supabase-server";
  *   - any value containing "\" — WHATWG URL parsing normalizes
  *     backslash to forward slash, so "/\evil.com" resolves to
  *     "https://evil.com" when handed to `new URL(next, base)`.
- *   - any value containing CR/LF — bypassed Set-Cookie / response-split
- *     attempts.
+ *   - any ASCII control character (0x00–0x1f) — the WHATWG URL parser
+ *     SILENTLY STRIPS tab (0x09), LF (0x0a), and CR (0x0d) before state
+ *     processing, so "/\tevil.com" becomes "//evil.com" → external host.
+ *     Rejecting the whole 0x00–0x1f range is broader-but-safer than
+ *     listing the three.
  */
 function safeNext(raw: string | null): string {
   const v = raw ?? "/app";
   if (!v.startsWith("/")) return "/app";
   if (v.startsWith("//")) return "/app";
   if (v.includes("\\")) return "/app";
-  if (/[\r\n]/.test(v)) return "/app";
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1f]/.test(v)) return "/app";
   return v;
 }
 

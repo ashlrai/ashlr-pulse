@@ -42,7 +42,8 @@ describe("safeNext (auth callback)", () => {
     if (!v.startsWith("/")) return "/app";
     if (v.startsWith("//")) return "/app";
     if (v.includes("\\")) return "/app";
-    if (/[\r\n]/.test(v)) return "/app";
+    // eslint-disable-next-line no-control-regex
+    if (/[\x00-\x1f]/.test(v)) return "/app";
     return v;
   }
 
@@ -60,9 +61,15 @@ describe("safeNext (auth callback)", () => {
     // otherwise resolve to `https://evil.com` via `new URL(next, base)`.
     ["/\\evil.com", "/app"],
     ["/path\\evil", "/app"],
-    // CRLF: protect against header / response splitting.
+    // ASCII control chars: WHATWG URL parser SILENTLY STRIPS \t, \r, \n
+    // before parsing, so "/\tevil.com" becomes "//evil.com" and resolves
+    // to an external host. Block the entire 0x00-0x1f range.
+    ["/\tevil.com", "/app"],
+    ["/path\tinjected", "/app"],
     ["/path\r\nLocation: https://evil", "/app"],
     ["/path\nset-cookie: x=1", "/app"],
+    ["/path\x00null", "/app"],
+    ["/path\x1bescape", "/app"],
   ])("%s → %s", (input, expected) => {
     expect(safeNext(input as string | null)).toBe(expected);
   });

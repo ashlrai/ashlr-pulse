@@ -30,7 +30,8 @@ async function sendMagicLink(formData: FormData): Promise<void> {
     nextRaw.startsWith("/") &&
     !nextRaw.startsWith("//") &&
     !nextRaw.includes("\\") &&
-    !/[\r\n]/.test(nextRaw)
+    // eslint-disable-next-line no-control-regex
+    !/[\x00-\x1f]/.test(nextRaw)
       ? nextRaw
       : "";
 
@@ -66,7 +67,8 @@ export default async function LoginPage({
     next.startsWith("/") &&
     !next.startsWith("//") &&
     !next.includes("\\") &&
-    !/[\r\n]/.test(next)
+    // eslint-disable-next-line no-control-regex
+    !/[\x00-\x1f]/.test(next)
       ? next
       : "";
   const githubOAuthEnabled = Boolean(process.env.GITHUB_OAUTH_CLIENT_ID);
