@@ -16,6 +16,42 @@ import { server } from "@/lib/supabase-server";
 
 const MONO = "var(--font-mono), ui-monospace, SFMono-Regular, Menlo, monospace";
 
+/**
+ * GitHub OAuth sign-in via Supabase. Distinct from /api/github/oauth/start,
+ * which retains the upstream token for repo data ingest. This flow only
+ * authenticates the user — Supabase manages the session, no upstream token
+ * is stored. Cofounder onboarding is one-click after this is wired up.
+ */
+async function signInWithGitHub(formData: FormData): Promise<void> {
+  "use server";
+  const nextRaw = String(formData.get("next") ?? "").trim();
+  const nextSafe =
+    nextRaw.startsWith("/") &&
+    !nextRaw.startsWith("//") &&
+    !nextRaw.includes("\\") &&
+    // eslint-disable-next-line no-control-regex
+    !/[\x00-\x1f]/.test(nextRaw)
+      ? nextRaw
+      : "";
+
+  const supabase = await server();
+  const origin = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
+  const callback = nextSafe
+    ? `${origin}/auth/callback?next=${encodeURIComponent(nextSafe)}`
+    : `${origin}/auth/callback`;
+
+  const { data, error } = await supabase.auth.signInWithOAuth({
+    provider: "github",
+    options: { redirectTo: callback },
+  });
+  if (error || !data?.url) {
+    redirect(`/login?error=${encodeURIComponent(error?.message ?? "github sign-in unavailable")}`);
+  }
+  // Hand the user off to GitHub's OAuth consent screen. Supabase returns
+  // the full URL with state/redirect params already populated.
+  redirect(data!.url);
+}
+
 async function sendMagicLink(formData: FormData): Promise<void> {
   "use server";
   const email = String(formData.get("email") ?? "").trim();
@@ -165,13 +201,27 @@ export default async function LoginPage({
             no password. one click in your email and you're back here.
           </p>
 
-          <form action={sendMagicLink} style={{ marginTop: 28 }}>
+          {githubOAuthEnabled && (
+            <form action={signInWithGitHub} style={{ marginTop: 28 }}>
+              {nextSafe && <input type="hidden" name="next" value={nextSafe} />}
+              <button type="submit" style={githubCta}>
+                <GitHubMark /> continue with github
+              </button>
+              <p style={{ margin: "8px 2px 0", fontSize: 11, color: "#666" }}>
+                fastest. uses your github profile + email — no password, no spam folder.
+              </p>
+            </form>
+          )}
+
+          {githubOAuthEnabled && <Divider />}
+
+          <form action={sendMagicLink} style={{ marginTop: githubOAuthEnabled ? 4 : 28 }}>
             {nextSafe && <input type="hidden" name="next" value={nextSafe} />}
             <label
               htmlFor="email"
               style={{ fontSize: 12, color: "#888", letterSpacing: 0.4 }}
             >
-              email
+              {githubOAuthEnabled ? "or sign in with email" : "email"}
             </label>
             <input
               id="email"
@@ -179,7 +229,7 @@ export default async function LoginPage({
               name="email"
               placeholder="you@yourcompany.com"
               required
-              autoFocus
+              autoFocus={!githubOAuthEnabled}
               style={{
                 display: "block",
                 width: "100%",
@@ -194,19 +244,10 @@ export default async function LoginPage({
                 outline: "none",
               }}
             />
-            <button type="submit" style={magentaCta}>
-              send magic link →
+            <button type="submit" style={githubOAuthEnabled ? secondaryEmailCta : magentaCta}>
+              {githubOAuthEnabled ? "send magic link" : "send magic link →"}
             </button>
           </form>
-
-          {githubOAuthEnabled && (
-            <>
-              <Divider />
-              <a href="/api/github/oauth/start" style={githubCta}>
-                <GitHubMark /> continue with github
-              </a>
-            </>
-          )}
 
           {sent && (
             <p
@@ -393,12 +434,33 @@ const githubCta: React.CSSProperties = {
   justifyContent: "center",
   gap: 10,
   width: "100%",
-  padding: "12px 16px",
+  padding: "14px 16px",
   background: "#1a1a1a",
   color: "#fff",
-  border: "1px solid #2a2a2a",
+  border: "1px solid #3a3a3a",
   borderRadius: 6,
   fontSize: 14,
+  fontWeight: 600,
   fontFamily: MONO,
   textDecoration: "none",
+  cursor: "pointer",
+  // Subtle glow so the primary CTA reads as the primary CTA even at the top.
+  boxShadow: "0 0 0 1px rgba(124,255,160,0.15), 0 6px 18px -4px rgba(124,255,160,0.18)",
+};
+
+// Email is the secondary affordance now — quieter button styling so it
+// doesn't compete with the GitHub CTA.
+const secondaryEmailCta: React.CSSProperties = {
+  display: "block",
+  width: "100%",
+  marginTop: 10,
+  padding: "10px 14px",
+  background: "transparent",
+  color: "#bbb",
+  border: "1px solid #2a2a2a",
+  borderRadius: 6,
+  fontSize: 13,
+  fontFamily: MONO,
+  cursor: "pointer",
+  textAlign: "center",
 };
