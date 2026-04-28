@@ -9,26 +9,47 @@ other's work — commits, AI tool usage, and token cost — with a hard privacy 
 that never stores prompts, completions, or code. It is built on OpenTelemetry GenAI
 semantic conventions, so nothing about the data model is proprietary.
 
+## Get started in 60 seconds
+
+Pulse is built for teams whose primary tool is Claude Code (or Codex, Cursor,
+Aider). The setup story is too — drop these two commands in front of your AI
+coding assistant and it'll do the rest:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ashlrai/ashlr-pulse/main/agent/install.sh | sh
+pulse-agent onboard --url https://pulse.ashlr.ai
+```
+
+The unified `onboard` command runs six idempotent steps end-to-end:
+server-reach → PAT mint (browser-mediated approval) → repo auto-discovery →
+shell hook install → background service → GitHub connect. Each step prints a
+structured progress line so AI agents driving the CLI can follow along, and
+emits explicit "human action required" handoff blocks for the few moments
+that need a passkey or browser approval. See **[AGENTS.md](AGENTS.md)** for
+the canonical AI-driveable instructions, and [DEPLOY.md](DEPLOY.md) for
+hosting your own.
+
 ## Status
 
-**v0.2 in progress** — single-user dashboard and cofounder peer-share is live;
-multi-tenant cloud is v0.4. See [ROADMAP.md](ROADMAP.md) for the full arc.
+**v0.2 in progress** — single-user dashboard, cofounder peer-share, daily
+digest, project rollups, AI-first onboarding all live. Multi-tenant cloud is
+v0.4. See [ROADMAP.md](ROADMAP.md) for the full arc.
 
 ## What's running
 
 - **OTLP ingest** at `POST /api/otlp/v1/traces` — accepts GenAI-shaped OTel spans
-- **Today dashboard** at `/` — repos × models × token cost, grouped by source
-- **Peer-share** at `/share` — configure what your cofounder sees and preview it
-- **Login** at `/login` — magic-link via Supabase Auth
-- **PAT mint** via `bun run src/cli/mint-pat.ts` — issue personal access tokens for
-  programmatic ingest
+- **Today dashboard** at `/app` — by source × model × project × repo, with
+  agent-uptime badge + missed-repos warning + cost rollups
+- **Peer-share + invite links** at `/share` — configure what your cofounder
+  sees, generate one-shot invite URLs that auto-suggest peer-share defaults
+- **GitHub OAuth + magic-link sign-in** at `/login`
 - **pulse-agent** — local Rust binary; tails Claude Code sessions (cmux-friendly),
-  optional shell hook for terminal AI CLIs (codex, aider, sgpt, …), and git.
-  Install with `curl -fsSL https://raw.githubusercontent.com/ashlrai/ashlr-pulse/main/agent/install.sh | sh`,
-  then `pulse-agent init --url https://your-pulse-server` for browser-mediated
-  PAT onboarding (no ssh needed). See [agent/README.md](agent/README.md).
+  optional shell hook for terminal AI CLIs (claude, codex, aider, sgpt, …),
+  and git. CLI subcommands: `run`, `init`, `onboard`, `doctor`, `login`,
+  `backfill`. See [agent/README.md](agent/README.md).
 - **Daily digest** — opt-in morning email summarizing yesterday's activity
   (your own + peers, filtered through peer-share). Toggle at `/settings`.
+  Sends via SendGrid.
 
 ## Run it locally
 
@@ -39,7 +60,9 @@ cp .env.example .env.local      # fill in SUPABASE_URL, SUPABASE_ANON_KEY, DATAB
 bun run migrate && bun run dev  # http://localhost:3000
 ```
 
-See [QUICKSTART.md](QUICKSTART.md) for full setup, auth, and ingest instructions.
+See [QUICKSTART.md](QUICKSTART.md) for full setup, [DEPLOY.md](DEPLOY.md) for
+hosting your own, and [AGENTS.md](AGENTS.md) for the AI-agent-driveable
+contract.
 
 ## Privacy floor
 
@@ -54,11 +77,15 @@ exclude `prompts`, `completions`, and `raw_otel_span`.
 
 | File | Contents |
 |---|---|
+| **[AGENTS.md](AGENTS.md)** | **Canonical AI-agent instructions** — read first when an agent is working in or with this repo |
+| [DEPLOY.md](DEPLOY.md) | End-to-end self-hosting walkthrough (Railway + SendGrid + Supabase + GitHub OAuth) |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Data model, OTel schema, stack, deployment shapes |
 | [PERSONAS.md](PERSONAS.md) | Who this is for |
 | [ROADMAP.md](ROADMAP.md) | Phased plan from dogfood to PM suite |
 | [COMPETITIVE.md](COMPETITIVE.md) | Landscape and our defensible line |
 | [QUICKSTART.md](QUICKSTART.md) | Local setup, auth, ingest, and smoke tests |
+| [agent/README.md](agent/README.md) | `pulse-agent` install + run + config |
+| [agent/CHANGELOG.md](agent/CHANGELOG.md) | Agent release notes |
 
 ## The core idea
 
