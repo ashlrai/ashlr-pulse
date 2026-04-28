@@ -5,7 +5,7 @@
 //!   doctor  — validates config + connectivity, prints status
 //!   login   — stores PAT in OS keyring, writes stub config
 
-use pulse_agent::{auth, backfill, claude, config, git, heartbeat, onboard, otlp, shell, state};
+use pulse_agent::{auth, backfill, claude, config, git, heartbeat, onboard, orchestrator, otlp, shell, state};
 
 use std::sync::Arc;
 
@@ -54,6 +54,25 @@ enum Command {
         #[arg(long, default_value = "7d", help = "Window: 24h, 7d, 30m, or YYYY-MM-DD")]
         since: String,
     },
+
+    /// One-shot end-to-end setup: server-reach → PAT mint → repo
+    /// auto-discovery → shell hook → background service → github connect.
+    /// Idempotent. Designed to be driveable by AI agents (Claude Code,
+    /// Codex, etc.) per AGENTS.md.
+    Onboard {
+        #[arg(long, help = "Pulse server URL (e.g. https://pulse.ashlr.ai)")]
+        url: String,
+        #[arg(long, help = "Skip the local repo auto-discovery step")]
+        skip_repo_scan: bool,
+        #[arg(long, help = "Skip installing the shell hook")]
+        skip_shell_hook: bool,
+        #[arg(long, help = "Skip installing the background service")]
+        skip_service: bool,
+        #[arg(long, help = "Skip the GitHub connect human-action prompt")]
+        skip_github: bool,
+        #[arg(short = 'y', long = "yes", help = "Assume yes for non-destructive prompts")]
+        yes: bool,
+    },
 }
 
 #[tokio::main]
@@ -70,6 +89,16 @@ async fn main() -> Result<()> {
         Command::Login { url } => cmd_login(&url).await,
         Command::Init  { url } => onboard::run(&url).await,
         Command::Backfill { since } => cmd_backfill(&since).await,
+        Command::Onboard {
+            url, skip_repo_scan, skip_shell_hook, skip_service, skip_github, yes,
+        } => orchestrator::run(orchestrator::OnboardOpts {
+            url,
+            skip_repo_scan,
+            skip_shell_hook,
+            skip_service,
+            skip_github,
+            yes,
+        }).await,
     }
 }
 
