@@ -1,0 +1,19 @@
+---
+description: Ashlr Pulse — see AGENTS.md for canonical instructions
+alwaysApply: true
+---
+
+The canonical AI instructions for this project live in [AGENTS.md](mdc:AGENTS.md).
+This file exists so Cursor honors the same conventions as Codex CLI / Aider /
+Claude Code. AGENTS.md is the source of truth.
+
+Key points (read AGENTS.md for the full version):
+
+- Two products in one repo: `server/` (Next.js + Postgres on Railway) and `agent/` (Rust binary).
+- Privacy floor is immutable: never store prompts, completions, code, file contents.
+- Never read `server/.env*` or `agent/.env*` — they contain secrets.
+- Never echo a secret to your conversation. Use `{{ paste here }}` stubs.
+- Hard handoff to human for: GitHub OAuth app provisioning, Supabase provider config, Railway env-var writes containing secrets, magic-link clicks.
+- Tests must pass: `bun test` in server/, `cargo test` in agent/.
+- Migrations are idempotent and apply at boot.
+- Commit messages: `<type>(<scope>): <summary>`. New commit, never `--amend`.
