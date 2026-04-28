@@ -317,35 +317,7 @@ export default async function Page({
 
       {rows.length === 0 ? (
         <section style={{ marginTop: 32 }}>
-          <p style={{ color: "#888" }}>
-            no activity in the last {windowLabel}. wire an ingest source and you'll see rows show up here.
-          </p>
-          <details style={{ marginTop: 16 }}>
-            <summary style={{ cursor: "pointer", color: "#444" }}>
-              quickstart — Claude Code OTel
-            </summary>
-            <pre
-              style={{
-                marginTop: 8,
-                padding: 12,
-                background: "#f6f6f6",
-                fontSize: 12,
-                borderRadius: 4,
-                overflowX: "auto",
-              }}
-            >
-{`# 1. mint a PAT
-bun run src/cli/mint-pat.ts <your-user-uuid> "laptop"
-
-# 2. point Claude Code at the OTLP endpoint
-export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://localhost:3001/api/otlp/v1/traces
-export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
-export OTEL_EXPORTER_OTLP_HEADERS="authorization=Bearer pulse_pat_…"
-
-# 3. run claude — events appear here on the next page reload
-claude`}
-            </pre>
-          </details>
+          <EmptyStateWelcome />
         </section>
       ) : (
         <>
@@ -427,6 +399,108 @@ function AgentStatusBadge({ status }: { status: AgentStatus }): ReactElement {
       <span style={{ width: 8, height: 8, borderRadius: 4, background: style.dot }} />
       <span><strong>{style.label}</strong> · {ago}{agentCount > 1 ? ` (${agentCount} agents)` : ""}</span>
     </div>
+  );
+}
+
+function EmptyStateWelcome(): ReactElement {
+  return (
+    <section style={{ marginTop: 32 }}>
+      <div style={{
+        padding: "32px 28px",
+        border: "1px solid #ececec",
+        borderRadius: 10,
+        background: "linear-gradient(180deg, #fafbfc 0%, #f5f6f7 100%)",
+      }}>
+        <h2 style={{ margin: 0, fontSize: 20, fontWeight: 600, letterSpacing: "-0.2px" }}>
+          Welcome — let&apos;s get you tracking in 60 seconds
+        </h2>
+        <p style={{ margin: "8px 0 24px", color: "#555", fontSize: 14, lineHeight: 1.55 }}>
+          One CLI command does sign-in, repo discovery, shell hook, and background service.
+          Built to be driven by Claude Code or any AI coding agent — see <a href="https://github.com/ashlrai/ashlr-pulse/blob/main/AGENTS.md" target="_blank" rel="noopener" style={{ color: "#111", borderBottom: "1px solid #ccc" }}>AGENTS.md</a>.
+        </p>
+
+        <div style={{ display: "grid", gap: 20 }}>
+          <Step n={1} title="Install the agent">
+            <Code>{`curl -fsSL https://raw.githubusercontent.com/ashlrai/ashlr-pulse/main/agent/install.sh | sh`}</Code>
+          </Step>
+          <Step n={2} title="Run the unified onboard command">
+            <Code>{`pulse-agent onboard --url https://pulse.ashlr.ai`}</Code>
+            <p style={{ margin: "6px 2px 0", color: "#666", fontSize: 12 }}>
+              Six idempotent steps: server-reach → PAT mint → repo discovery → shell hook → launchd service → github connect. Each prints a structured progress line; AI agents driving the CLI can parse them.
+            </p>
+          </Step>
+          <Step n={3} title="Connect GitHub for commits + PRs">
+            <a href="/github" style={{ display: "inline-block", padding: "8px 14px", background: "#111", color: "#fff", borderRadius: 4, fontSize: 13, textDecoration: "none" }}>
+              Connect GitHub →
+            </a>
+          </Step>
+          <Step n={4} title="Group repos into projects">
+            <a href="/projects" style={{ display: "inline-block", padding: "8px 14px", background: "transparent", color: "#111", border: "1px solid #ccc", borderRadius: 4, fontSize: 13, textDecoration: "none" }}>
+              Set up projects (auto-suggested clusters) →
+            </a>
+          </Step>
+        </div>
+
+        <p style={{ margin: "28px 0 0", color: "#888", fontSize: 12 }}>
+          Already running an agent on another machine? It&apos;ll appear here as soon as its first heartbeat lands.
+          Want a digest tomorrow morning? Visit <a href="/settings" style={{ color: "#444", textDecoration: "underline" }}>/settings</a>.
+        </p>
+      </div>
+
+      <details style={{ marginTop: 16, color: "#666", fontSize: 12 }}>
+        <summary style={{ cursor: "pointer" }}>Manual setup (no orchestrator)</summary>
+        <pre style={{ marginTop: 8, padding: 12, background: "#f6f6f6", fontSize: 12, borderRadius: 4, overflowX: "auto" }}>
+{`# 1. install
+curl -fsSL https://raw.githubusercontent.com/ashlrai/ashlr-pulse/main/agent/install.sh | sh
+
+# 2. mint PAT (browser-mediated approval)
+pulse-agent init --url https://pulse.ashlr.ai
+
+# 3. add repos to ~/.config/pulse/config.toml
+# 4. source the shell hook in ~/.zshrc
+echo 'source ~/.local/share/pulse-agent/pulse-hook.zsh' >> ~/.zshrc
+
+# 5. start the watcher
+pulse-agent run
+
+# 6. (optional) backfill last week of Claude Code
+pulse-agent backfill --since 7d`}
+        </pre>
+      </details>
+    </section>
+  );
+}
+
+function Step({ n, title, children }: { n: number; title: string; children: React.ReactNode }): ReactElement {
+  return (
+    <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
+      <span style={{
+        flexShrink: 0,
+        width: 24, height: 24, borderRadius: 12,
+        background: "#111", color: "#fff",
+        fontSize: 12, fontWeight: 600,
+        display: "inline-flex", alignItems: "center", justifyContent: "center",
+      }}>{n}</span>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 6 }}>{title}</div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function Code({ children }: { children: string }): ReactElement {
+  return (
+    <code style={{
+      display: "block",
+      padding: "10px 12px",
+      background: "#0d0d0d",
+      color: "#eaeaea",
+      fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+      fontSize: 12,
+      borderRadius: 4,
+      overflowX: "auto",
+    }}>{children}</code>
   );
 }
 
