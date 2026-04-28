@@ -34,22 +34,28 @@ function safeNext(raw: string | null): string {
 }
 
 export async function GET(req: NextRequest): Promise<Response> {
-  const url = new URL(req.url);
-  const code = url.searchParams.get("code");
-  const next = safeNext(url.searchParams.get("next"));
+  const reqUrl = new URL(req.url);
+  const code = reqUrl.searchParams.get("code");
+  const next = safeNext(reqUrl.searchParams.get("next"));
+
+  // Same bug pattern as /api/agent-onboard/start: req.url on Railway
+  // reflects the bind address (0.0.0.0:3000) not the public host. Use
+  // NEXT_PUBLIC_APP_URL for redirects so the session cookie set on the
+  // public domain stays addressable. Falls back to req.url for dev.
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? reqUrl.origin;
 
   if (!code) {
-    return NextResponse.redirect(new URL("/login?error=missing+code", url));
+    return NextResponse.redirect(new URL("/login?error=missing+code", baseUrl));
   }
 
   const supabase = await server();
   const { error } = await supabase.auth.exchangeCodeForSession(code);
 
   if (error) {
-    const target = new URL("/login", url);
+    const target = new URL("/login", baseUrl);
     target.searchParams.set("error", error.message);
     return NextResponse.redirect(target);
   }
 
-  return NextResponse.redirect(new URL(next, url));
+  return NextResponse.redirect(new URL(next, baseUrl));
 }
