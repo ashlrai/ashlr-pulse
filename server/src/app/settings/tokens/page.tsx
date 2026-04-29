@@ -11,7 +11,14 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { currentUser } from "@/lib/current-user";
 import { mintPat, listPats, revokePat, type PatRow } from "@/lib/pat";
+
 import { Header } from "@/components/Header";
+import { DashboardShell } from "@/components/ui/DashboardShell";
+import { Card, CardHeader } from "@/components/ui/Card";
+import { Banner } from "@/components/ui/Banner";
+import { Button } from "@/components/ui/Button";
+import { Input, Field } from "@/components/ui/Input";
+import { palette, space } from "@/lib/theme";
 
 export const dynamic = "force-dynamic";
 
@@ -48,66 +55,100 @@ export default async function TokensPage({
   const { token: flashToken, error } = await searchParams;
 
   return (
-    <main style={{ padding: "0 32px 32px", maxWidth: 800, margin: "0 auto" }}>
+    <DashboardShell maxWidth={840}>
       <Header me={me} active="tokens" />
-      <h1 style={{ margin: 0, fontSize: 28, fontWeight: 600, letterSpacing: "-0.5px" }}>personal access tokens</h1>
-      <p style={{ color: "#666", marginTop: 4, fontSize: 13 }}>
+      <h1 style={pageTitle}>personal access tokens</h1>
+      <p style={pageSub}>
         ingest-only credentials for the Rust agent, ashlr-plugin, or any other OTLP source.
       </p>
 
-      {flashToken && (
-        <div style={{ marginTop: 16, padding: "12px 16px", background: "#f0fdf4", border: "1px solid #86efac", borderRadius: 4 }}>
-          <p style={{ margin: 0, fontWeight: 600, color: "#166534" }}>token created — copy it now, it won't be shown again.</p>
-          <code style={{ display: "block", marginTop: 8, wordBreak: "break-all", fontSize: 13, color: "#14532d" }}>{flashToken}</code>
-        </div>
-      )}
-      {error && <p style={{ color: "#c00", marginTop: 8 }}>error: {error}</p>}
+      <div style={{ display: "flex", flexDirection: "column", gap: space.x4 }}>
+        {flashToken && (
+          <Banner variant="success" title="token created — copy it now, it won't be shown again">
+            <code style={tokenBox}>{flashToken}</code>
+          </Banner>
+        )}
+        {error && <Banner variant="danger">{error.replace(/\+/g, " ")}</Banner>}
 
-      <h2 style={{ fontSize: 16, marginTop: 32 }}>new token</h2>
-      <form action={mintAction} style={{ display: "flex", gap: 8, alignItems: "flex-end", maxWidth: 480 }}>
-        <label style={{ flex: 1 }}>
-          name
-          <input name="name" type="text" required placeholder="laptop, CI, etc." style={inp} />
-        </label>
-        <button type="submit" style={btn}>create</button>
-      </form>
+        <form action={mintAction}>
+          <Card>
+            <CardHeader title="new token" />
+            <div style={{ display: "flex", gap: space.x3, alignItems: "flex-end" }}>
+              <div style={{ flex: 1 }}>
+                <Field label="name">
+                  <Input name="name" type="text" required placeholder="laptop, CI, etc." />
+                </Field>
+              </div>
+              <Button type="submit" variant="primary" style={{ marginBottom: space.x4 }}>create</Button>
+            </div>
+          </Card>
+        </form>
 
-      <h2 style={{ fontSize: 16, marginTop: 32 }}>active tokens</h2>
-      {pats.length === 0 ? (
-        <p style={{ color: "#888" }}>no active tokens.</p>
-      ) : (
-        <table style={{ borderCollapse: "collapse", width: "100%", marginTop: 8 }}>
-          <thead>
-            <tr style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>
-              <th style={th}>name</th>
-              <th style={th}>created</th>
-              <th style={th}>last used</th>
-              <th style={th}></th>
-            </tr>
-          </thead>
-          <tbody>
-            {pats.map((p: PatRow) => (
-              <tr key={p.id} style={{ borderBottom: "1px solid #eee" }}>
-                <td style={td}>{p.name}</td>
-                <td style={td}>{new Date(p.created_at).toLocaleDateString()}</td>
-                <td style={td}>{p.last_used_at ? new Date(p.last_used_at).toLocaleDateString() : "—"}</td>
-                <td style={td}>
-                  <form action={revokeAction}>
-                    <input type="hidden" name="id" value={p.id} />
-                    <button type="submit" style={revokeBtn}>revoke</button>
-                  </form>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </main>
+        <Card>
+          <CardHeader title={`active tokens · ${pats.length}`} />
+          {pats.length === 0 ? (
+            <p style={{ color: palette.textMute, fontSize: 12, margin: 0 }}>no active tokens.</p>
+          ) : (
+            <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
+              <thead>
+                <tr style={{ textAlign: "left", borderBottom: `1px solid ${palette.border}` }}>
+                  <th style={th}>name</th>
+                  <th style={th}>created</th>
+                  <th style={th}>last used</th>
+                  <th style={th}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {pats.map((p: PatRow) => (
+                  <tr key={p.id} style={{ borderBottom: `1px dashed ${palette.border}` }}>
+                    <td style={td}>{p.name}</td>
+                    <td style={td}>
+                      <code style={{ color: palette.textDim }}>
+                        {new Date(p.created_at).toLocaleDateString()}
+                      </code>
+                    </td>
+                    <td style={td}>
+                      {p.last_used_at
+                        ? <code style={{ color: palette.green }}>{new Date(p.last_used_at).toLocaleDateString()}</code>
+                        : <span style={{ color: palette.textMute }}>—</span>}
+                    </td>
+                    <td style={{ ...td, textAlign: "right" }}>
+                      <form action={revokeAction}>
+                        <input type="hidden" name="id" value={p.id} />
+                        <Button type="submit" variant="danger" size="sm">revoke</Button>
+                      </form>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </Card>
+      </div>
+    </DashboardShell>
   );
 }
 
-const inp: React.CSSProperties = { display: "block", width: "100%", padding: 8, fontSize: 13, fontFamily: "inherit", border: "1px solid #ccc", borderRadius: 4, marginTop: 4 };
-const btn: React.CSSProperties = { padding: "10px 14px", fontSize: 13, fontFamily: "inherit", background: "#111", color: "#fff", border: 0, borderRadius: 4, cursor: "pointer" };
-const revokeBtn: React.CSSProperties = { padding: "4px 8px", fontSize: 12, background: "transparent", color: "#c00", border: "1px solid #c00", borderRadius: 4, cursor: "pointer" };
-const th: React.CSSProperties = { padding: "8px 4px", fontSize: 13 };
-const td: React.CSSProperties = { padding: "8px 4px", fontSize: 13 };
+const pageTitle: React.CSSProperties = {
+  fontSize: 22, fontWeight: 600, margin: `${space.x2}px 0 ${space.x05}px`,
+  color: palette.text, letterSpacing: "-0.5px",
+};
+const pageSub: React.CSSProperties = {
+  color: palette.textDim, fontSize: 13, marginBottom: space.x5,
+};
+const tokenBox: React.CSSProperties = {
+  display: "block",
+  padding: "10px 12px",
+  background: palette.bgRaised,
+  border: `1px solid ${palette.border}`,
+  borderRadius: 4,
+  fontSize: 12,
+  wordBreak: "break-all",
+  color: palette.green,
+};
+const th: React.CSSProperties = {
+  padding: "8px 6px", color: palette.textDim,
+  fontSize: 11, fontWeight: 500, letterSpacing: "0.5px",
+  textTransform: "uppercase",
+};
+const td: React.CSSProperties = { padding: "8px 6px", color: palette.text };

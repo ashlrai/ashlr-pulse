@@ -1,729 +1,545 @@
 /**
- * / — the dashboard. Two modes:
+ * /app — the cyber/agentic dashboard.
  *
- *   1. /          → your own activity (last 24h, grouped by source × model).
- *   2. /?as=<id>  → a peer's activity, filtered by an active peer_share
- *                   grant from <id> to you. Scope (all / repo_pattern /
- *                   project) is honored.
+ * Modes:
+ *   1. /        → your own activity over the last 30 days, with the
+ *                 last 24h elevated and the rest as charts/feed.
+ *   2. /?as=<id> → a peer's activity, filtered by an active peer_share
+ *                 grant from <id> to you. Honors granularity + field
+ *                 whitelist (lib/peer-share-guard).
  *
- * Task 4 — Granularity rollup:
- *   When ?as= is set, pick the most permissive granularity across all
- *   matching grants (realtime > daily > weekly > monthly).
- *   - realtime  → last 24h, grouped by source × model
- *   - daily     → last 7 days, grouped by date × source × model
- *   - weekly    → last 90 days, grouped by week × source × model
- *   - monthly   → last 1 year, grouped by month × source × model
- *
- * Task 5 — Field whitelist enforcement:
- *   When ?as= is set, the union of fields[] from all matching grants
- *   controls which columns render. Columns not in the union render "—".
- *   The events column is always shown (it's a count, not a field).
- *   Column → field mapping:
- *     source       → "source"
- *     model        → "model"
- *     tokens in    → "tokens_input"
- *     tokens out   → "tokens_output"
- *     cost         → (derived from tokens — shown if either token field shown)
- *
- * The privacy floor is owned by lib/peer-share-guard at write time.
+ * The page is a single server component that loads everything in
+ * parallel via lib/dashboard-data, then composes purely-presentational
+ * components. The AI briefing call is fired in parallel with the heavy
+ * SQL — it never blocks the chart render.
  */
 
 import type { ReactElement } from "react";
 import { redirect } from "next/navigation";
-import { sql } from "@/lib/db";
+import { Suspense } from "react";
+
 import { currentUser } from "@/lib/current-user";
 import { listGrantsForViewer, type PeerShareRow } from "@/lib/peer-share-db";
-import { costUsdCents, fmtUsd } from "@/lib/pricing";
-import { getAgentStatus, bucketFor, fmtAgo, type AgentStatus, type HealthBucket } from "@/lib/heartbeat";
+import { fmtUsd } from "@/lib/pricing";
+import { getAgentStatus } from "@/lib/heartbeat";
 import { loadMissedRepos } from "@/lib/missed-repos";
+import { loadDashboard, type ScopeFilter } from "@/lib/dashboard-data";
+import { getOrComputeBriefing, type BriefingInputs } from "@/lib/briefing";
+import { detectAnomaly } from "@/lib/anomalies";
+
 import { Header } from "@/components/Header";
 import { StatCard } from "@/components/StatCard";
+import { Card, CardHeader } from "@/components/ui/Card";
+import { Banner } from "@/components/ui/Banner";
+import { DashboardShell } from "@/components/ui/DashboardShell";
+import { Skeleton } from "@/components/ui/Skeleton";
+import { ChartFrame } from "@/components/charts/ChartFrame";
+import { StackedAreaChart } from "@/components/charts/StackedAreaChart";
+import { HBarChart } from "@/components/charts/HBarChart";
+import { DonutChart } from "@/components/charts/DonutChart";
+import { Heatmap } from "@/components/charts/Heatmap";
+import { LineChart } from "@/components/charts/LineChart";
+import { RadialGauge } from "@/components/charts/RadialGauge";
+
+import { palette, space } from "@/lib/theme";
 
 export const dynamic = "force-dynamic";
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-type Granularity = "realtime" | "daily" | "weekly" | "monthly";
-
-interface TodayRow {
-  // Always present (it's a COUNT, not a stored field).
-  events: number;
-  // Present for realtime; coarser granularities get a bucket label instead.
-  source: string | null;
-  model: string | null;
-  bucket: string | null; // date/week/month label for non-realtime
-  tokens_in: number | null;
-  tokens_out: number | null;
-  tokens_cache_read: number | null;
-  tokens_cache_write: number | null;
-  tokens_cache_5m_write: number | null;
-  tokens_cache_1h_write: number | null;
-}
-
-interface ScopeFilter {
-  repoClauseSql: string;
-  repoParams: string[];
-}
-
-// ---------------------------------------------------------------------------
-// Granularity helpers (Task 4)
-// ---------------------------------------------------------------------------
-
-const GRAN_ORDER: Granularity[] = ["monthly", "weekly", "daily", "realtime"];
-
-function mostPermissive(grants: PeerShareRow[]): Granularity {
-  let best: Granularity = "monthly";
-  for (const g of grants) {
-    if (GRAN_ORDER.indexOf(g.granularity) > GRAN_ORDER.indexOf(best)) {
-      best = g.granularity;
-    }
-  }
-  return best;
-}
-
-function windowForGranularity(gran: Granularity): string {
-  switch (gran) {
-    case "realtime": return "24 hours";
-    case "daily":    return "7 days";
-    case "weekly":   return "90 days";
-    case "monthly":  return "1 year";
-  }
-}
-
-function bucketExpr(gran: Granularity): string {
-  switch (gran) {
-    case "realtime": return "NULL::text";
-    case "daily":    return "date_trunc('day', ts)::text";
-    case "weekly":   return "date_trunc('week', ts)::text";
-    case "monthly":  return "date_trunc('month', ts)::text";
-  }
-}
-
-function groupByForGranularity(gran: Granularity): string {
-  if (gran === "realtime") return "source, model";
-  return "bucket, source, model";
-}
-
-// ---------------------------------------------------------------------------
-// Field whitelist helpers (Task 5)
-// ---------------------------------------------------------------------------
-
-// Map display column names to the activity_event field names in grants.
-const COLUMN_FIELDS: Record<string, string> = {
-  source:     "source",
-  model:      "model",
-  tokens_in:  "tokens_input",
-  tokens_out: "tokens_output",
-};
-
-function buildAllowedColumns(grants: PeerShareRow[]): Set<string> | null {
-  // null = show everything (own view, no grant filtering).
-  const union = new Set<string>();
-  for (const g of grants) {
-    for (const f of g.fields) union.add(f);
-  }
-  return union;
-}
-
-function colAllowed(col: string, allowed: Set<string> | null): boolean {
-  if (allowed === null) return true;
-  const field = COLUMN_FIELDS[col];
-  if (!field) return true; // unknown → show (safe: only applies to events count)
-  return allowed.has(field);
-}
-
-// ---------------------------------------------------------------------------
-// Scope filter
-// ---------------------------------------------------------------------------
-
-function buildScopeFilter(grants: PeerShareRow[]): ScopeFilter {
-  if (grants.some((g) => g.scope_type === "all")) {
-    return { repoClauseSql: "", repoParams: [] };
-  }
-  const repoPatterns = grants
-    .filter((g) => g.scope_type === "repo_pattern")
-    .map((g) => g.scope_value)
-    .filter((v): v is string => Boolean(v));
-  if (repoPatterns.length === 0) {
-    return { repoClauseSql: " AND FALSE", repoParams: [] };
-  }
-  return {
-    repoClauseSql:
-      " AND (" +
-      repoPatterns.map((_, i) => `repo_name LIKE $${i + 2}`).join(" OR ") +
-      ")",
-    repoParams: repoPatterns.map((p) => p.replace(/\*/g, "%")),
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Query
-// ---------------------------------------------------------------------------
-
-// Allow-list of strings we permit to be interpolated into raw SQL via
-// db.unsafe below. windowForGranularity only emits these four strings,
-// but we revalidate at the call site so a future Granularity union
-// addition can't quietly let an unknown literal through. ProjectSection
-// uses the tagged-template `${str}::interval` form instead — that's the
-// preferred pattern for new code; loadRows still needs db.unsafe because
-// it dynamically constructs SELECT-list expressions and GROUP BY columns
-// that postgres-js can't parameterize.
-const ALLOWED_WINDOWS = new Set<string>(["24 hours", "7 days", "90 days", "1 year"]);
-
-async function loadRows(
-  userId: string,
-  scope: ScopeFilter,
-  gran: Granularity,
-): Promise<TodayRow[]> {
-  try {
-    const db = sql();
-    const window = windowForGranularity(gran);
-    if (!ALLOWED_WINDOWS.has(window)) {
-      throw new Error(`unexpected interval window: ${window}`);
-    }
-    const bucket = bucketExpr(gran);
-    const groupBy = groupByForGranularity(gran);
-    const rows = await db.unsafe<TodayRow[]>(
-      `
-      SELECT
-        ${bucket}                          AS bucket,
-        source,
-        model,
-        COUNT(*)::int                      AS events,
-        SUM(tokens_input)::int             AS tokens_in,
-        SUM(tokens_output)::int            AS tokens_out,
-        SUM(tokens_cache_read)::int        AS tokens_cache_read,
-        SUM(tokens_cache_write)::int       AS tokens_cache_write,
-        SUM(tokens_cache_5m_write)::int    AS tokens_cache_5m_write,
-        SUM(tokens_cache_1h_write)::int    AS tokens_cache_1h_write
-      FROM activity_event
-      WHERE user_id = $1
-        AND ts >= NOW() - INTERVAL '${window}'
-        ${scope.repoClauseSql}
-      GROUP BY ${groupBy}
-      ORDER BY ${gran === "realtime" ? "events" : "bucket"} DESC
-      `,
-      [userId, ...scope.repoParams],
-    );
-    return rows;
-  } catch {
-    return [];
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Page component
-// ---------------------------------------------------------------------------
-
-interface SearchParams {
-  as?: string;
-}
+interface SearchParams { as?: string }
 
 export default async function Page({
   searchParams,
-}: {
-  searchParams: Promise<SearchParams>;
-}): Promise<ReactElement> {
+}: { searchParams: Promise<SearchParams> }): Promise<ReactElement> {
   const me = await currentUser();
   if (!me) redirect("/login");
 
   const { as } = await searchParams;
-
   let targetUserId = me.id;
-  let viewBanner: ReactElement | null = null;
   let scope: ScopeFilter = { repoClauseSql: "", repoParams: [] };
-  let gran: Granularity = "realtime";
-  let allowedFields: Set<string> | null = null; // null = own view (unrestricted)
+  let peerLabel: string | null = null;
 
   if (as && as !== me.id) {
     const grants = (await listGrantsForViewer(me.id)).filter((g) => g.owner_id === as);
     if (grants.length === 0) {
-      redirect(
-        `/share?error=${encodeURIComponent("you don't have an active grant from that user")}`,
-      );
+      redirect(`/share?error=${encodeURIComponent("no active grant from that user")}`);
     }
     targetUserId = as;
     scope = buildScopeFilter(grants);
-    gran = mostPermissive(grants);
-    allowedFields = buildAllowedColumns(grants);
-
-    viewBanner = (
-      <p
-        style={{
-          marginTop: 12,
-          padding: "8px 12px",
-          background: "#f4f1e8",
-          border: "1px solid #d9c98a",
-          borderRadius: 4,
-          fontSize: 13,
-        }}
-      >
-        viewing as <code>{grants[0].owner_email}</code> · scope:{" "}
-        {grants
-          .map((g) => (g.scope_type === "all" ? "all" : `${g.scope_type}:${g.scope_value ?? ""}`))
-          .join(", ")}{" "}
-        · granularity: {gran} ·{" "}
-        <a href="/app" style={{ color: "#444" }}>
-          back to your view
-        </a>
-      </p>
-    );
+    peerLabel = grants[0].owner_email ?? "peer";
   }
 
-  // Load agent liveness + missed repos in parallel with the main query.
-  // Both are skipped on ?as= peer views — a peer's agent uptime + their
-  // own missed-repos warning aren't yours to look at.
   const isOwnView = targetUserId === me.id;
   const nowUtc = new Date();
   const since24hUtc = new Date(nowUtc.getTime() - 24 * 3600_000).toISOString();
-  const [rows, agentStatus, missedRepos] = await Promise.all([
-    loadRows(targetUserId, scope, gran),
+
+  // Run all the heavy lifts in parallel.
+  const [data, agentStatus, missedRepos] = await Promise.all([
+    loadDashboard(targetUserId, scope),
     isOwnView ? getAgentStatus(me.id, nowUtc) : Promise.resolve(null),
     isOwnView ? loadMissedRepos(me.id, since24hUtc, nowUtc.toISOString()) : Promise.resolve([]),
   ]);
-  const rowsWithCost = rows.map((r) => ({
-    ...r,
-    cost_cents: costUsdCents({
-      model: r.model,
-      tokens_input: r.tokens_in,
-      tokens_output: r.tokens_out,
-      tokens_cache_read: r.tokens_cache_read,
-      tokens_cache_write: r.tokens_cache_write,
-      tokens_cache_5m_write: r.tokens_cache_5m_write,
-      tokens_cache_1h_write: r.tokens_cache_1h_write,
-    }),
-  }));
-  const totalCents = rowsWithCost.reduce((acc, r) => acc + (r.cost_cents ?? 0), 0);
-  const totalEvents = rowsWithCost.reduce((acc, r) => acc + r.events, 0);
 
-  // Determine which columns to show/hide (Task 5).
-  const showSource    = colAllowed("source",     allowedFields);
-  const showModel     = colAllowed("model",       allowedFields);
-  const showTokensIn  = colAllowed("tokens_in",   allowedFields);
-  const showTokensOut = colAllowed("tokens_out",  allowedFields);
-  // Cost is derived — show only if at least one token column is visible.
-  const showCost = showTokensIn || showTokensOut;
+  // Compute the prior-week median so the AI briefing has a baseline.
+  const prior7 = data.daily.slice(0, 7);
+  const baselineEvents = median(prior7.map((d) => d.events));
+  const baselineTokens = median(prior7.map((d) => d.tokens));
+  const baselineCost   = median(prior7.map((d) => d.costCents ?? 0));
 
-  const windowLabel = windowForGranularity(gran);
+  // Anomaly detection runs synchronously — pure numeric, no API calls.
+  const eventAnomaly = detectAnomaly({
+    current: data.today.events,
+    baseline: prior7.map((d) => d.events),
+    metric: "events", noun: "events",
+  });
+  const tokenAnomaly = detectAnomaly({
+    current: data.today.tokens,
+    baseline: prior7.map((d) => d.tokens),
+    metric: "tokens", noun: "tokens",
+  });
+  const costAnomaly = detectAnomaly({
+    current: data.today.costCents ?? 0,
+    baseline: prior7.map((d) => d.costCents ?? 0),
+    metric: "cost", noun: "spend",
+  });
+
+  // Cache hit ratio (rolling 14d) — single dimensional gauge.
+  const totalReads  = data.cacheEfficiency.reduce((a, b) => a + b.reads, 0);
+  const totalWrites = data.cacheEfficiency.reduce((a, b) => a + b.writes, 0);
+  const cacheHit = totalReads + totalWrites === 0 ? 0 : totalReads / (totalReads + totalWrites);
+
+  const eventsDelta = baselineEvents > 0 ? data.today.events / baselineEvents - 1 : null;
+  const tokensDelta = baselineTokens > 0 ? data.today.tokens / baselineTokens - 1 : null;
+  const costDelta = baselineCost > 0 && data.today.costCents != null
+    ? data.today.costCents / baselineCost - 1
+    : null;
+
+  const agentSeenSecs = agentStatus?.seconds_ago ?? null;
+  const agentAlive = agentSeenSecs != null && agentSeenSecs < 5 * 60;
+
+  const briefingInputs: BriefingInputs = {
+    events:        data.today.events,
+    tokens:        data.today.tokens,
+    costCents:     data.today.costCents,
+    topRepos:      data.topRepos.slice(0, 6).map((r) => ({ repo: r.label, events: r.value })),
+    topModels:     data.modelMix.slice(0, 4).map((m) => ({ model: m.label, tokens: m.value })),
+    baselineEvents,
+    baselineTokens,
+    baselineCostCents: baselineCost,
+    commits:       data.recentCommits.slice(0, 8).map((c) => c.subject),
+  };
 
   return (
-    <main style={{ padding: "0 32px 32px", maxWidth: 1100, margin: "0 auto" }}>
-      <Header me={me} active="dashboard" />
-      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-        <h1 style={{ margin: 0, fontSize: 28, fontWeight: 600, letterSpacing: "-0.5px" }}>today</h1>
-        {agentStatus && <AgentStatusBadge status={agentStatus} />}
-      </div>
-      <p style={{ color: "#666", marginTop: 4, fontSize: 13 }}>
-        the last {windowLabel} of activity across your tracked repos and AI tools.
-      </p>
-      {viewBanner}
-      {isOwnView && missedRepos.length > 0 && <MissedReposPanel repos={missedRepos} />}
+    <DashboardShell>
+      <Header
+        me={me}
+        active="dashboard"
+        agentAlive={isOwnView ? agentAlive : undefined}
+        agentSeenSecondsAgo={agentSeenSecs}
+      />
 
-      {rows.length === 0 ? (
-        <section style={{ marginTop: 32 }}>
-          <EmptyStateWelcome />
-        </section>
-      ) : (
-        <>
-          <p style={{ marginTop: 24, color: "#444" }}>
-            <strong>{totalEvents}</strong> events ·{" "}
-            {showCost && <><strong>{fmtUsd(totalCents)}</strong> spent · </>}
-            last {windowLabel}
-          </p>
-          <table style={{ marginTop: 16, borderCollapse: "collapse", width: "100%" }}>
-            <thead>
-              <tr style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>
-                {gran !== "realtime" && <th style={{ padding: "8px 0" }}>period</th>}
-                {showSource    && <th style={{ padding: "8px 0" }}>source</th>}
-                {showModel     && <th>model</th>}
-                <th style={{ textAlign: "right" }}>events</th>
-                {showTokensIn  && <th style={{ textAlign: "right" }}>tokens in</th>}
-                {showTokensOut && <th style={{ textAlign: "right" }}>tokens out</th>}
-                {showCost      && <th style={{ textAlign: "right" }}>cost</th>}
-              </tr>
-            </thead>
-            <tbody>
-              {rowsWithCost.map((r, i) => (
-                <tr key={i} style={{ borderBottom: "1px solid #eee" }}>
-                  {gran !== "realtime" && <td style={{ padding: "8px 0", fontSize: 12, color: "#666" }}>{r.bucket ?? "—"}</td>}
-                  {showSource    && <td style={{ padding: "8px 0" }}>{r.source ?? "—"}</td>}
-                  {showModel     && <td>{r.model ?? "—"}</td>}
-                  <td style={{ textAlign: "right" }}>{r.events}</td>
-                  {showTokensIn  && <td style={{ textAlign: "right" }}>{r.tokens_in ?? 0}</td>}
-                  {showTokensOut && <td style={{ textAlign: "right" }}>{r.tokens_out ?? 0}</td>}
-                  {showCost      && <td style={{ textAlign: "right" }}>{fmtUsd(r.cost_cents)}</td>}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </>
+      {peerLabel && (
+        <div style={{ marginBottom: space.x4 }}>
+          <Banner variant="info" title={`viewing ${peerLabel}'s activity`}>
+            scope filtered by active peer-share grants ·{" "}
+            <a href="/app" style={{ color: palette.cyan }}>back to your view</a>
+          </Banner>
+        </div>
       )}
 
-      <ProjectSection userId={me.id} windowLabel={windowLabel} />
-      <GitHubSection userId={me.id} />
-    </main>
-  );
-}
+      {missedRepos.length > 0 && (
+        <div style={{ marginBottom: space.x4 }}>
+          <Banner variant="warning" title="repos with commits but no agent activity">
+            {missedRepos.join(", ")} — looks like the agent isn't running there.
+          </Banner>
+        </div>
+      )}
 
-// ---------------------------------------------------------------------------
-// Agent status badge + missed-repos warning
-// ---------------------------------------------------------------------------
+      {/* Stat strip — first 1 second of value. */}
+      <div style={statStrip}>
+        <StatCard
+          accent="green"
+          label="events · 24h"
+          value={data.today.events.toLocaleString()}
+          delta={eventsDelta}
+          hint={baselineEvents ? `vs ${baselineEvents.toLocaleString()} median` : undefined}
+          sparkline={data.sparklines.events}
+        />
+        <StatCard
+          accent="cyan"
+          label="tokens · 24h"
+          value={abbrev(data.today.tokens)}
+          delta={tokensDelta}
+          hint={baselineTokens ? `vs ${abbrev(baselineTokens)} median` : undefined}
+          sparkline={data.sparklines.tokens}
+        />
+        <StatCard
+          accent="magenta"
+          label="cost · 24h"
+          value={fmtUsd(data.today.costCents)}
+          delta={costDelta}
+          hint={baselineCost ? `vs ${fmtUsd(baselineCost)} median` : undefined}
+          sparkline={data.sparklines.cost}
+        />
+        <StatCard
+          accent="amber"
+          label="commits · 24h"
+          value={data.recentCommits.length.toString()}
+          hint="last 24h"
+          sparkline={data.sparklines.commits}
+        />
+      </div>
 
-const BUCKET_STYLE: Record<HealthBucket, { fg: string; bg: string; dot: string; label: string }> = {
-  alive:  { fg: "#1a7f3a", bg: "#e7f6ec", dot: "#22c55e", label: "alive" },
-  stale:  { fg: "#8a4b00", bg: "#fff4e0", dot: "#f5b06b", label: "stale" },
-  silent: { fg: "#a02622", bg: "#fdecea", dot: "#dc2626", label: "SILENT" },
-};
+      {/* AI briefing — async-streamed via Suspense. */}
+      <div style={{ marginTop: space.x5 }}>
+        <Suspense fallback={<BriefingSkeleton />}>
+          <BriefingPanel userId={targetUserId} inputs={briefingInputs} />
+        </Suspense>
+      </div>
 
-function AgentStatusBadge({ status }: { status: AgentStatus }): ReactElement {
-  const bucket = bucketFor(status.seconds_ago);
-  const style = BUCKET_STYLE[bucket];
-  const ago = fmtAgo(status.seconds_ago);
-  const agentCount = status.agents.length;
-  const tooltip = status.agents.length === 0
-    ? "no agent has ever pinged this account — install pulse-agent and run `pulse-agent init`"
-    : status.agents.map((a) => `${a.label ?? "agent"}: ${fmtAgo(a.seconds_ago)} ago`).join(" · ");
+      {/* Anomaly badges row (numeric, instant). */}
+      {(eventAnomaly || tokenAnomaly || costAnomaly) && (
+        <div style={{ marginTop: space.x4, display: "flex", gap: space.x3, flexWrap: "wrap" }}>
+          {eventAnomaly && <AnomalyChip color={palette.green}  msg={eventAnomaly.message} />}
+          {tokenAnomaly && <AnomalyChip color={palette.cyan}   msg={tokenAnomaly.message} />}
+          {costAnomaly  && <AnomalyChip color={palette.magenta} msg={costAnomaly.message} />}
+        </div>
+      )}
 
-  return (
-    <div
-      title={tooltip}
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 8,
-        padding: "4px 10px",
-        background: style.bg,
-        color: style.fg,
-        borderRadius: 999,
-        fontSize: 12,
-        fontFamily: "ui-monospace, Menlo, monospace",
-        cursor: "help",
-      }}
-    >
-      <span style={{ width: 8, height: 8, borderRadius: 4, background: style.dot }} />
-      <span><strong>{style.label}</strong> · {ago}{agentCount > 1 ? ` (${agentCount} agents)` : ""}</span>
-    </div>
-  );
-}
-
-function EmptyStateWelcome(): ReactElement {
-  return (
-    <section style={{ marginTop: 32 }}>
-      <div style={{
-        padding: "32px 28px",
-        border: "1px solid #ececec",
-        borderRadius: 10,
-        background: "linear-gradient(180deg, #fafbfc 0%, #f5f6f7 100%)",
-      }}>
-        <h2 style={{ margin: 0, fontSize: 20, fontWeight: 600, letterSpacing: "-0.2px" }}>
-          Welcome — let&apos;s get you tracking in 60 seconds
-        </h2>
-        <p style={{ margin: "8px 0 24px", color: "#555", fontSize: 14, lineHeight: 1.55 }}>
-          One CLI command does sign-in, repo discovery, shell hook, and background service.
-          Built to be driven by Claude Code or any AI coding agent — see <a href="https://github.com/ashlrai/ashlr-pulse/blob/main/AGENTS.md" target="_blank" rel="noopener" style={{ color: "#111", borderBottom: "1px solid #ccc" }}>AGENTS.md</a>.
-        </p>
-
-        <div style={{ display: "grid", gap: 20 }}>
-          <Step n={1} title="Install the agent">
-            <Code>{`curl -fsSL https://raw.githubusercontent.com/ashlrai/ashlr-pulse/main/agent/install.sh | sh`}</Code>
-          </Step>
-          <Step n={2} title="Run the unified onboard command">
-            <Code>{`pulse-agent onboard --url https://pulse.ashlr.ai`}</Code>
-            <p style={{ margin: "6px 2px 0", color: "#666", fontSize: 12 }}>
-              Six idempotent steps: server-reach → PAT mint → repo discovery → shell hook → launchd service → github connect. Each prints a structured progress line; AI agents driving the CLI can parse them.
-            </p>
-          </Step>
-          <Step n={3} title="Connect GitHub for commits + PRs">
-            <a href="/github" style={{ display: "inline-block", padding: "8px 14px", background: "#111", color: "#fff", borderRadius: 4, fontSize: 13, textDecoration: "none" }}>
-              Connect GitHub →
-            </a>
-          </Step>
-          <Step n={4} title="Group repos into projects">
-            <a href="/projects" style={{ display: "inline-block", padding: "8px 14px", background: "transparent", color: "#111", border: "1px solid #ccc", borderRadius: 4, fontSize: 13, textDecoration: "none" }}>
-              Set up projects (auto-suggested clusters) →
-            </a>
-          </Step>
+      {/* Charts — 2 columns where it makes sense. */}
+      <div style={{ marginTop: space.x6, ...gridTwoCols }}>
+        <div style={{ gridColumn: "1 / -1" }}>
+          <ChartFrame
+            title="activity · last 14 days"
+            hint="tokens per day, stacked by source"
+            accent={palette.green}
+          >
+            {data.stackedArea.length > 0 && data.sources.length > 0 ? (
+              <StackedAreaChart
+                data={data.stackedArea}
+                series={data.sources}
+                vFmt={(v) => abbrev(Number(v))}
+              />
+            ) : (
+              <EmptyChart label="No data in the last 14 days yet." />
+            )}
+          </ChartFrame>
         </div>
 
-        <p style={{ margin: "28px 0 0", color: "#888", fontSize: 12 }}>
-          Already running an agent on another machine? It&apos;ll appear here as soon as its first heartbeat lands.
-          Want a digest tomorrow morning? Visit <a href="/settings" style={{ color: "#444", textDecoration: "underline" }}>/settings</a>.
-        </p>
+        <ChartFrame title="model mix · last 7d" hint="tokens by model" accent={palette.cyan}>
+          {data.modelMix.length > 0 ? (
+            <DonutChart
+              data={data.modelMix}
+              vFmt={(v) => abbrev(Number(v))}
+              centerValue={abbrev(data.modelMix.reduce((a, b) => a + b.value, 0))}
+              centerLabel="tokens"
+            />
+          ) : (
+            <EmptyChart label="No model data yet." />
+          )}
+        </ChartFrame>
+
+        <ChartFrame title="top repos · last 7d" hint="events" accent={palette.magenta}>
+          {data.topRepos.length > 0 ? (
+            <HBarChart data={data.topRepos} uniformColor={palette.magenta} />
+          ) : (
+            <EmptyChart label="No repo data yet." />
+          )}
+        </ChartFrame>
+
+        <ChartFrame title="cost trajectory · last 14d" hint="cumulative dollars" accent={palette.magenta}>
+          {data.costTrajectory.length > 0 ? (
+            <LineChart
+              data={data.costTrajectory.map((p) => ({ bucket: p.bucket, cost: p.cents / 100 }))}
+              series={[{ key: "cost", label: "cumulative $", color: palette.magenta }]}
+              yFmt={(v) => `$${v.toFixed(0)}`}
+              vFmt={(v) => `$${Number(v).toFixed(2)}`}
+            />
+          ) : (
+            <EmptyChart label="No cost data yet." />
+          )}
+        </ChartFrame>
+
+        <ChartFrame title="cache efficiency · last 14d" hint="read-to-write ratio" accent={palette.amber}>
+          {totalReads + totalWrites > 0 ? (
+            <CacheEfficiencyPanel cacheHit={cacheHit} efficiency={data.cacheEfficiency} />
+          ) : (
+            <EmptyChart label="No cache data yet." />
+          )}
+        </ChartFrame>
+
+        <ChartFrame title="top tools · last 7d" hint="tool calls" accent={palette.purple} minHeight={240}>
+          {data.topTools.length > 0 ? (
+            <HBarChart data={data.topTools} uniformColor={palette.purple} />
+          ) : (
+            <EmptyChart label="No tool-call data yet." />
+          )}
+        </ChartFrame>
+
+        <div style={{ gridColumn: "1 / -1" }}>
+          <ChartFrame
+            title="when you actually work · last 30d"
+            hint="hour-of-day × day-of-week — darker = more events"
+            accent={palette.green}
+            minHeight={180}
+          >
+            {data.heatmap.length > 0 ? (
+              <Heatmap cells={data.heatmap} />
+            ) : (
+              <EmptyChart label="Not enough data for a heatmap yet." />
+            )}
+          </ChartFrame>
+        </div>
       </div>
 
-      <details style={{ marginTop: 16, color: "#666", fontSize: 12 }}>
-        <summary style={{ cursor: "pointer" }}>Manual setup (no orchestrator)</summary>
-        <pre style={{ marginTop: 8, padding: 12, background: "#f6f6f6", fontSize: 12, borderRadius: 4, overflowX: "auto" }}>
-{`# 1. install
-curl -fsSL https://raw.githubusercontent.com/ashlrai/ashlr-pulse/main/agent/install.sh | sh
-
-# 2. mint PAT (browser-mediated approval)
-pulse-agent init --url https://pulse.ashlr.ai
-
-# 3. add repos to ~/.config/pulse/config.toml
-# 4. source the shell hook in ~/.zshrc
-echo 'source ~/.local/share/pulse-agent/pulse-hook.zsh' >> ~/.zshrc
-
-# 5. start the watcher
-pulse-agent run
-
-# 6. (optional) backfill last week of Claude Code
-pulse-agent backfill --since 7d`}
-        </pre>
-      </details>
-    </section>
-  );
-}
-
-function Step({ n, title, children }: { n: number; title: string; children: React.ReactNode }): ReactElement {
-  return (
-    <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
-      <span style={{
-        flexShrink: 0,
-        width: 24, height: 24, borderRadius: 12,
-        background: "#111", color: "#fff",
-        fontSize: 12, fontWeight: 600,
-        display: "inline-flex", alignItems: "center", justifyContent: "center",
-      }}>{n}</span>
-      <div style={{ flex: 1 }}>
-        <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 6 }}>{title}</div>
-        {children}
+      {/* Recent commits + activity feed. */}
+      <div style={{ marginTop: space.x6, ...gridTwoCols }}>
+        <Card>
+          <CardHeader title="recent commits · last 14d" hint={`${data.recentCommits.length} commits`} />
+          <RecentCommits commits={data.recentCommits} />
+        </Card>
+        <Card>
+          <CardHeader title="recent activity · last 50 events" />
+          <ActivityFeed feed={data.feed} />
+        </Card>
       </div>
-    </div>
+    </DashboardShell>
   );
 }
 
-function Code({ children }: { children: string }): ReactElement {
+// ─── Async briefing panel (called inside Suspense) ────────────────────
+
+async function BriefingPanel({
+  userId, inputs,
+}: { userId: string; inputs: BriefingInputs }): Promise<ReactElement> {
+  const briefing = await getOrComputeBriefing(userId, inputs);
   return (
-    <code style={{
-      display: "block",
-      padding: "10px 12px",
-      background: "#0d0d0d",
-      color: "#eaeaea",
-      fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-      fontSize: 12,
-      borderRadius: 4,
-      overflowX: "auto",
-    }}>{children}</code>
+    <Card accent={palette.cyan} style={{ background: "linear-gradient(180deg, rgba(124,208,255,0.04), transparent 60%)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: space.x2, marginBottom: space.x2 }}>
+        <span style={{
+          fontSize: 10, color: palette.cyan, letterSpacing: "0.8px",
+          textTransform: "uppercase", fontWeight: 500,
+        }}>
+          briefing · generated by Pulse {briefing.source === "fallback" && "· fallback"}
+        </span>
+        <span style={{ fontSize: 10, color: palette.textMute }}>
+          {fmtAgo(briefing.generated_at)}
+        </span>
+      </div>
+      <div style={{ fontSize: 14, lineHeight: 1.6, color: palette.text }}>
+        {briefing.text}
+      </div>
+    </Card>
   );
 }
 
-function MissedReposPanel({ repos }: { repos: string[] }): ReactElement {
+function BriefingSkeleton(): ReactElement {
   return (
-    <div
-      role="alert"
+    <Card>
+      <Skeleton height={11} width={180} />
+      <div style={{ height: 8 }} />
+      <Skeleton height={14} />
+      <div style={{ height: 6 }} />
+      <Skeleton height={14} width="80%" />
+    </Card>
+  );
+}
+
+// ─── Inline pieces ────────────────────────────────────────────────────
+
+function AnomalyChip({ color, msg }: { color: string; msg: string }): ReactElement {
+  return (
+    <span
       style={{
-        marginTop: 16,
-        background: "#fff4e0",
-        color: "#8a4b00",
-        border: "1px solid #f5c178",
-        borderRadius: 6,
-        padding: "12px 14px",
-        fontSize: 13,
+        display: "inline-flex", alignItems: "center", gap: 6,
+        padding: "5px 10px",
+        background: `${color}10`,
+        border: `1px solid ${color}40`,
+        borderRadius: 999,
+        color, fontSize: 11, letterSpacing: "0.3px",
       }}
     >
-      <strong>⚠ Agent missed {repos.length} {repos.length === 1 ? "repo" : "repos"}</strong> with GitHub commits in the last 24h but zero AI-tool activity. Usually means pulse-agent isn&apos;t running on these:
-      <div style={{ marginTop: 6, fontFamily: "ui-monospace, Menlo, monospace", fontSize: 12 }}>
-        {repos.slice(0, 8).join(" · ")}{repos.length > 8 ? ` · +${repos.length - 8} more` : ""}
+      ⚡ {msg}
+    </span>
+  );
+}
+
+function EmptyChart({ label }: { label: string }): ReactElement {
+  return (
+    <div
+      style={{
+        height:     180,
+        display:    "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        color:      palette.textMute,
+        fontSize:   12,
+        border:     `1px dashed ${palette.border}`,
+        borderRadius: 6,
+      }}
+    >
+      {label}
+    </div>
+  );
+}
+
+function CacheEfficiencyPanel({
+  cacheHit, efficiency,
+}: {
+  cacheHit: number;
+  efficiency: { bucket: string; ratio: number }[];
+}): ReactElement {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: space.x4 }}>
+      <RadialGauge value={cacheHit} label="cache hit (14d)" color={palette.amber} size={130} />
+      <div style={{ flex: 1, minWidth: 0, height: 130 }}>
+        <LineChart
+          data={efficiency}
+          series={[{ key: "ratio", label: "read/write", color: palette.amber }]}
+          yFmt={(v) => v.toFixed(1)}
+          vFmt={(v) => `${Number(v).toFixed(2)}×`}
+          height={130}
+        />
       </div>
     </div>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Project rollup panel — group activity by project the user owns.
-// Silent when the user has no projects defined.
-// ---------------------------------------------------------------------------
-
-interface ProjectRollupRow {
-  project_id: string;
-  project_name: string;
-  project_kind: string;
-  repos_count: number;
-  events: number;
-  tokens: number;
-  cost_cents: number;
-}
-
-async function ProjectSection({
-  userId,
-  windowLabel,
-}: {
-  userId: string;
-  windowLabel: string;
-}): Promise<ReactElement | null> {
-  const db = sql();
-  // Defense in depth — even though postgres-js's tagged template
-  // parameterizes ${intervalSql} below, we verify the string is one of
-  // the values windowForGranularity is documented to emit before going
-  // anywhere near the DB. Catches a future Granularity-union expansion.
-  if (!ALLOWED_WINDOWS.has(windowLabel)) return null;
-  const intervalSql = windowLabel;
-  // First check if the user has any projects at all — short-circuit if not.
-  const [{ project_count }] = await db<{ project_count: number }[]>`
-    SELECT COUNT(*)::int AS project_count
-    FROM project p
-    JOIN membership m ON m.org_id = p.org_id AND m.user_id = ${userId}
-  `;
-  if (project_count === 0) return null;
-
-  const rollups = await db<ProjectRollupRow[]>`
-    SELECT
-      p.id::text                    AS project_id,
-      p.name                        AS project_name,
-      p.kind                        AS project_kind,
-      COUNT(DISTINCT pr.repo_name)::int      AS repos_count,
-      COUNT(*)::int                 AS events,
-      COALESCE(SUM(COALESCE(ae.tokens_input, 0) + COALESCE(ae.tokens_output, 0))::int, 0) AS tokens,
-      0                             AS cost_cents
-    FROM project p
-    JOIN membership m  ON m.org_id = p.org_id AND m.user_id = ${userId}
-    JOIN project_repo pr ON pr.project_id = p.id
-    JOIN activity_event ae ON ae.repo_name = pr.repo_name AND ae.user_id = ${userId}
-    WHERE ae.ts > NOW() - ${intervalSql}::interval
-    GROUP BY p.id, p.name, p.kind
-    ORDER BY tokens DESC
-  `;
-
-  if (rollups.length === 0) return null;
-
-  // Cost is computed per-row in JS via pricing.ts but we don't have model here.
-  // For the dashboard we render tokens-only at the project level — the existing
-  // by-source × model table beneath gives the per-model cost breakdown.
+function RecentCommits({
+  commits,
+}: { commits: { subject: string; repo: string; sha: string; ts: string }[] }): ReactElement {
+  if (commits.length === 0) {
+    return <div style={{ color: palette.textMute, fontSize: 12 }}>No recent commits.</div>;
+  }
   return (
-    <section style={{ marginTop: 32 }}>
-      <h2 style={{ fontSize: 16, marginTop: 0, marginBottom: 12 }}>by project</h2>
-      <table style={{ borderCollapse: "collapse", width: "100%" }}>
-        <thead>
-          <tr style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>
-            <th style={{ padding: "8px 0" }}>project</th>
-            <th style={{ padding: "8px 0", color: "#888", fontWeight: 400 }}>kind</th>
-            <th style={{ textAlign: "right" }}>repos</th>
-            <th style={{ textAlign: "right" }}>events</th>
-            <th style={{ textAlign: "right" }}>tokens</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rollups.map((r) => (
-            <tr key={r.project_id} style={{ borderBottom: "1px solid #eee" }}>
-              <td style={{ padding: "8px 0" }}>
-                <a href={`/projects#${r.project_id}`} style={{ color: "#111", textDecoration: "none", fontWeight: 500 }}>
-                  {r.project_name}
-                </a>
-              </td>
-              <td style={{ color: "#888", fontSize: 12 }}>{r.project_kind}</td>
-              <td style={{ textAlign: "right" }}>{r.repos_count}</td>
-              <td style={{ textAlign: "right" }}>{r.events}</td>
-              <td style={{ textAlign: "right" }}>{r.tokens.toLocaleString()}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </section>
+    <ul style={{ listStyle: "none", padding: 0, margin: 0, fontSize: 12 }}>
+      {commits.map((c) => (
+        <li
+          key={c.sha}
+          style={{
+            display: "flex", alignItems: "baseline", gap: space.x2,
+            padding: "8px 0",
+            borderBottom: `1px dashed ${palette.border}`,
+          }}
+        >
+          <code style={{ color: palette.green, fontSize: 10 }}>{c.sha.slice(0, 7)}</code>
+          <span style={{ color: palette.textDim, fontSize: 11, minWidth: 110, flexShrink: 0 }}>
+            {c.repo.split("/").pop()}
+          </span>
+          <span style={{ color: palette.text, flex: 1 }}>{c.subject}</span>
+          <span style={{ color: palette.textMute, fontSize: 10 }}>{fmtAgo(new Date(c.ts))}</span>
+        </li>
+      ))}
+    </ul>
   );
 }
 
-// ---------------------------------------------------------------------------
-// GitHub events panel — pulled from github_event for the current user.
-// Renders quietly to nothing when the user hasn't connected GitHub yet.
-// ---------------------------------------------------------------------------
-
-interface GitHubSummaryRow {
-  kind: string;
-  events: number;
-}
-interface GitHubRecentRow {
-  ts: string;
-  kind: string;
-  actor_login: string;
-  full_name: string;
-  pr_number: number | null;
-  message_first_line: string | null;
-}
-
-async function GitHubSection({ userId }: { userId: string }): Promise<ReactElement | null> {
-  try {
-    const db = sql();
-    const [account] = await db<{ id: string; github_login: string; last_synced_at: string | null }[]>`
-      SELECT id::text AS id, github_login, last_synced_at::text AS last_synced_at
-      FROM github_account WHERE user_id = ${userId} LIMIT 1
-    `;
-    if (!account) return null;
-
-    const summary = await db<GitHubSummaryRow[]>`
-      SELECT kind, COUNT(*)::int AS events
-      FROM github_event
-      WHERE account_id = ${account.id} AND ts >= NOW() - INTERVAL '7 days'
-      GROUP BY kind ORDER BY events DESC
-    `;
-    const recent = await db<GitHubRecentRow[]>`
-      SELECT ge.ts::text AS ts, ge.kind, ge.actor_login,
-             gr.full_name, ge.pr_number, ge.message_first_line
-      FROM github_event ge
-      JOIN github_repo gr ON gr.id = ge.repo_id
-      WHERE ge.account_id = ${account.id}
-      ORDER BY ge.ts DESC
-      LIMIT 12
-    `;
-
-    const total = summary.reduce((a, r) => a + r.events, 0);
-    return (
-      <section style={{ marginTop: 48, paddingTop: 24, borderTop: "1px solid #eee" }}>
-        <h2 style={{ fontSize: 16, marginTop: 0 }}>
-          github · @{account.github_login}
-          <span style={{ color: "#666", fontWeight: 400, marginLeft: 8 }}>
-            {total} events (last 7d)
-            {account.last_synced_at && ` · synced ${new Date(account.last_synced_at).toISOString().slice(0, 16).replace("T", " ")}`}
-          </span>
-        </h2>
-        {total === 0 ? (
-          <p style={{ color: "#888" }}>
-            no events yet — <a href="/github">enable repos and run a sync</a>.
-          </p>
-        ) : (
-          <>
-            <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 16 }}>
-              {summary.map((s) => (
-                <div key={s.kind} style={{ fontSize: 13, color: "#444" }}>
-                  <strong>{s.events}</strong> {s.kind.replace(/_/g, " ")}
-                </div>
-              ))}
-            </div>
-            <table style={{ borderCollapse: "collapse", width: "100%" }}>
-              <thead>
-                <tr style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>
-                  <th style={{ padding: "8px 0", fontSize: 13 }}>when</th>
-                  <th style={{ fontSize: 13 }}>repo</th>
-                  <th style={{ fontSize: 13 }}>kind</th>
-                  <th style={{ fontSize: 13 }}>who</th>
-                  <th style={{ fontSize: 13 }}>what</th>
-                </tr>
-              </thead>
-              <tbody>
-                {recent.map((r, i) => (
-                  <tr key={i} style={{ borderBottom: "1px solid #f0f0f0" }}>
-                    <td style={{ padding: "6px 0", fontSize: 12, color: "#666" }}>
-                      {new Date(r.ts).toISOString().slice(5, 16).replace("T", " ")}
-                    </td>
-                    <td style={{ fontSize: 12 }}>{r.full_name}</td>
-                    <td style={{ fontSize: 12 }}>{r.kind.replace(/_/g, " ")}</td>
-                    <td style={{ fontSize: 12 }}>@{r.actor_login}</td>
-                    <td style={{ fontSize: 12, color: "#444" }}>
-                      {r.pr_number ? `#${r.pr_number} · ` : ""}
-                      {r.message_first_line ?? ""}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </>
-        )}
-      </section>
-    );
-  } catch {
-    // github_event table may not exist yet (pre-0004 deploy). Silent.
-    return null;
+function ActivityFeed({ feed }: { feed: import("@/lib/dashboard-data").FeedRow[] }): ReactElement {
+  if (feed.length === 0) {
+    return <div style={{ color: palette.textMute, fontSize: 12 }}>No recent activity.</div>;
   }
+  return (
+    <ul style={{ listStyle: "none", padding: 0, margin: 0, fontSize: 11 }}>
+      {feed.map((r, i) => (
+        <li
+          key={i}
+          style={{
+            display: "grid",
+            gridTemplateColumns: "60px 70px 1fr 70px 60px",
+            gap: 8,
+            alignItems: "baseline",
+            padding: "5px 0",
+            borderBottom: `1px dashed ${palette.border}`,
+          }}
+        >
+          <span style={{ color: palette.textMute, fontSize: 10 }}>
+            {fmtAgoShort(new Date(r.ts))}
+          </span>
+          <span style={{ color: palette.cyan, fontSize: 10 }}>{r.source}</span>
+          <span style={{ color: palette.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {r.repo ?? "—"}
+            {r.model && <span style={{ color: palette.textDim, marginLeft: 8 }}>· {r.model}</span>}
+          </span>
+          <span style={{ color: palette.textDim, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+            {abbrev((r.tokens_input ?? 0) + (r.tokens_output ?? 0))}
+          </span>
+          <span style={{ color: palette.magenta, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+            {fmtUsd(r.costCents)}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────
+
+const statStrip: React.CSSProperties = {
+  display:        "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))",
+  gap:            space.x3,
+};
+
+const gridTwoCols: React.CSSProperties = {
+  display:        "grid",
+  gridTemplateColumns: "1fr 1fr",
+  gap:            space.x4,
+};
+
+function abbrev(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000)     return `${(n / 1_000).toFixed(1)}k`;
+  return `${n}`;
+}
+
+function median(arr: number[]): number {
+  if (arr.length === 0) return 0;
+  const sorted = [...arr].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? (sorted[mid - 1] + sorted[mid]) / 2
+    : sorted[mid];
+}
+
+function fmtAgo(d: Date): string {
+  const s = Math.max(0, Math.round((Date.now() - d.getTime()) / 1000));
+  if (s < 60)     return `${s}s ago`;
+  if (s < 3600)   return `${Math.round(s / 60)}m ago`;
+  if (s < 86400)  return `${Math.round(s / 3600)}h ago`;
+  return `${Math.round(s / 86400)}d ago`;
+}
+
+function fmtAgoShort(d: Date): string {
+  const s = Math.max(0, Math.round((Date.now() - d.getTime()) / 1000));
+  if (s < 60)    return `${s}s`;
+  if (s < 3600)  return `${Math.round(s / 60)}m`;
+  if (s < 86400) return `${Math.round(s / 3600)}h`;
+  return `${Math.round(s / 86400)}d`;
+}
+
+function buildScopeFilter(grants: PeerShareRow[]): ScopeFilter {
+  // Build a UNION of OR-clauses across all grants.
+  // realtime/daily/weekly/monthly granularity is handled at dashboard
+  // load time elsewhere — this just narrows by scope_type/scope_value.
+  let pIdx = 2; // $1 is user_id, scope params start at $2
+  const ors: string[] = [];
+  const params: (string | number)[] = [];
+
+  for (const g of grants) {
+    if (g.scope_type === "all") {
+      // No restriction; remove anything else and break.
+      return { repoClauseSql: "", repoParams: [] };
+    }
+    if (g.scope_type === "repo_pattern" && g.scope_value) {
+      ors.push(`repo_name LIKE $${pIdx++}`);
+      params.push(g.scope_value);
+    }
+    // project scope is handled via project_repo join — for now skip
+    // (the existing implementation also required a join).
+  }
+
+  if (ors.length === 0) return { repoClauseSql: "", repoParams: [] };
+  return {
+    repoClauseSql: `AND (${ors.join(" OR ")})`,
+    repoParams: params,
+  };
 }

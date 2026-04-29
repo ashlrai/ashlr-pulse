@@ -1,9 +1,9 @@
 /**
  * /settings — user preferences (currently: digest).
  *
- * Server component + server action — same pattern as /share. Posts to
- * the JSON API at /api/settings/digest so external clients (mobile,
- * the agent's settings command) can use the same surface.
+ * Server component + server action. Posts to the JSON API at
+ * /api/settings/digest so external clients (mobile, the agent's
+ * settings command) can use the same surface.
  */
 
 import type { ReactElement } from "react";
@@ -11,15 +11,18 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { sql } from "@/lib/db";
 import { currentUser } from "@/lib/current-user";
+
 import { Header } from "@/components/Header";
+import { DashboardShell } from "@/components/ui/DashboardShell";
+import { Card, CardHeader } from "@/components/ui/Card";
+import { Banner } from "@/components/ui/Banner";
+import { Button } from "@/components/ui/Button";
+import { Input, Field } from "@/components/ui/Input";
+import { palette, space } from "@/lib/theme";
 
 export const dynamic = "force-dynamic";
 
-interface SearchParams {
-  ok?: string;
-  error?: string;
-  test_sent?: string;
-}
+interface SearchParams { ok?: string; error?: string; test_sent?: string }
 
 interface Prefs {
   digest_enabled: boolean;
@@ -48,7 +51,6 @@ async function updateDigestAction(formData: FormData): Promise<void> {
   const emailRaw = String(formData.get("email") ?? "").trim();
   const email = emailRaw === "" ? null : emailRaw;
 
-  // Validate the TZ before writing.
   try {
     new Intl.DateTimeFormat("en-US", { timeZone: tz });
   } catch {
@@ -72,18 +74,17 @@ async function sendTestDigestAction(): Promise<void> {
   const me = await currentUser();
   if (!me) redirect("/login");
 
-  // Defer to the lib so the email matches what the cron sends. We wipe
-  // last_digest_sent_at first so buildDigest fires for "today" — and we
-  // restore it after so we don't suppress tomorrow's actual digest.
   const { buildDigest } = await import("@/lib/digest");
   const { renderDigestEmail } = await import("@/lib/digest-render");
+  const { briefingForDigest } = await import("@/lib/briefing");
   const { sendEmail } = await import("@/lib/email");
 
   const payload = await buildDigest(me.id);
   if (!payload) redirect("/settings?error=user+not+found");
   if (!payload) return;
 
-  const rendered = renderDigestEmail(payload);
+  const briefing = await briefingForDigest(payload);
+  const rendered = renderDigestEmail(payload, { briefing });
   const r = await sendEmail({
     to: payload.email,
     subject: `[test] ${rendered.subject}`,
@@ -102,126 +103,82 @@ async function sendTestDigestAction(): Promise<void> {
 
 export default async function SettingsPage({
   searchParams,
-}: {
-  searchParams: Promise<SearchParams>;
-}): Promise<ReactElement> {
+}: { searchParams: Promise<SearchParams> }): Promise<ReactElement> {
   const me = await currentUser();
   if (!me) redirect("/login");
 
   const params = await searchParams;
   const prefs = await loadPrefs(me.id);
-  const fallbackEmail = me.email;
 
   return (
-    <div style={{ maxWidth: 720, margin: "0 auto", padding: "0 24px", fontFamily: "ui-monospace, Menlo, monospace" }}>
+    <DashboardShell maxWidth={760}>
       <Header me={me} active="settings" />
-      <h1 style={{ fontSize: 24, fontWeight: 600, margin: "8px 0 4px" }}>Settings</h1>
-      <div style={{ color: "#666", fontSize: 13, marginBottom: 24 }}>
-        Daily digest preferences. The digest goes out at 9:00 in your timezone.
+      <h1 style={pageTitle}>Settings</h1>
+      <div style={pageSub}>Daily digest preferences. The digest goes out at 9:00 in your timezone.</div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: space.x4 }}>
+        {params.ok && <Banner variant="success">Saved.</Banner>}
+        {params.test_sent && <Banner variant="success">Test digest sent — check your inbox.</Banner>}
+        {params.error && <Banner variant="danger">{params.error}</Banner>}
+
+        <form action={updateDigestAction}>
+          <Card>
+            <CardHeader title="daily digest" hint="email summary of your activity" />
+
+            <Field label="Send me a digest each morning">
+              <label style={{ display: "inline-flex", alignItems: "center", gap: 10, fontSize: 13, color: palette.text }}>
+                <input
+                  type="checkbox"
+                  name="enabled"
+                  defaultChecked={prefs.digest_enabled}
+                  style={{ accentColor: palette.green, width: 16, height: 16 }}
+                />
+                <span style={{ color: prefs.digest_enabled ? palette.green : palette.textDim }}>
+                  {prefs.digest_enabled ? "enabled" : "disabled"}
+                </span>
+              </label>
+            </Field>
+
+            <Field label="Timezone (IANA, e.g. America/Los_Angeles)">
+              <Input type="text" name="tz" defaultValue={prefs.digest_tz} placeholder="UTC" />
+            </Field>
+
+            <Field
+              label="Email override"
+              hint={`default: ${me.email}`}
+            >
+              <Input type="email" name="email" defaultValue={prefs.digest_email ?? ""} placeholder={me.email} />
+            </Field>
+
+            <div style={{ display: "flex", gap: space.x3, alignItems: "center", marginTop: space.x4 }}>
+              <Button type="submit" variant="primary">Save preferences</Button>
+              {prefs.last_digest_sent_at && (
+                <span style={{ color: palette.textMute, fontSize: 11 }}>
+                  last sent {new Date(prefs.last_digest_sent_at).toISOString().slice(0, 16).replace("T", " ")}Z
+                </span>
+              )}
+            </div>
+          </Card>
+        </form>
+
+        <form action={sendTestDigestAction}>
+          <Card>
+            <CardHeader title="send a test digest" />
+            <p style={{ color: palette.textDim, fontSize: 12, lineHeight: 1.6, margin: `0 0 ${space.x3}px` }}>
+              Renders against today and emails you the result. Doesn&apos;t affect tomorrow&apos;s scheduled send.
+            </p>
+            <Button type="submit" variant="secondary">Send test</Button>
+          </Card>
+        </form>
       </div>
-
-      {params.ok && <Notice tone="ok">Saved.</Notice>}
-      {params.test_sent && <Notice tone="ok">Test digest sent — check your inbox.</Notice>}
-      {params.error && <Notice tone="err">{params.error}</Notice>}
-
-      <form action={updateDigestAction} style={card}>
-        <h2 style={h2}>Daily digest</h2>
-
-        <Row label="Send me a digest each morning">
-          <label style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-            <input
-              type="checkbox"
-              name="enabled"
-              defaultChecked={prefs.digest_enabled}
-              style={{ accentColor: "#111" }}
-            />
-            <span>{prefs.digest_enabled ? "enabled" : "disabled"}</span>
-          </label>
-        </Row>
-
-        <Row label="Timezone (IANA, e.g. America/Los_Angeles)">
-          <input
-            type="text"
-            name="tz"
-            defaultValue={prefs.digest_tz}
-            placeholder="UTC"
-            style={input}
-          />
-        </Row>
-
-        <Row label={`Email override (default: ${fallbackEmail})`}>
-          <input
-            type="email"
-            name="email"
-            defaultValue={prefs.digest_email ?? ""}
-            placeholder={fallbackEmail}
-            style={input}
-          />
-        </Row>
-
-        <div style={{ display: "flex", gap: 12, marginTop: 16, alignItems: "center" }}>
-          <button type="submit" style={primaryBtn}>Save</button>
-          {prefs.last_digest_sent_at && (
-            <span style={{ color: "#888", fontSize: 12 }}>
-              last sent {new Date(prefs.last_digest_sent_at).toISOString().slice(0, 16).replace("T", " ")}Z
-            </span>
-          )}
-        </div>
-      </form>
-
-      <form action={sendTestDigestAction} style={{ ...card, marginTop: 16 }}>
-        <h2 style={h2}>Send a test digest</h2>
-        <p style={{ color: "#666", fontSize: 13, margin: "0 0 12px" }}>
-          Renders against today and emails you the result. Doesn&apos;t affect tomorrow&apos;s scheduled send.
-        </p>
-        <button type="submit" style={primaryBtn}>Send test</button>
-      </form>
-    </div>
+    </DashboardShell>
   );
 }
 
-function Notice({ tone, children }: { tone: "ok" | "err"; children: React.ReactNode }): ReactElement {
-  const bg = tone === "ok" ? "#e7f6ec" : "#fdecea";
-  const fg = tone === "ok" ? "#1a7f3a" : "#a02622";
-  return (
-    <div style={{ background: bg, color: fg, padding: "10px 12px", borderRadius: 6, marginBottom: 16, fontSize: 13 }}>
-      {children}
-    </div>
-  );
-}
-
-function Row({ label, children }: { label: string; children: React.ReactNode }): ReactElement {
-  return (
-    <label style={{ display: "block", marginBottom: 14 }}>
-      <div style={{ fontSize: 12, color: "#666", marginBottom: 4 }}>{label}</div>
-      {children}
-    </label>
-  );
-}
-
-const card: React.CSSProperties = {
-  border: "1px solid #ececec",
-  borderRadius: 8,
-  padding: 20,
-  background: "#fff",
+const pageTitle: React.CSSProperties = {
+  fontSize: 22, fontWeight: 600, margin: `${space.x2}px 0 ${space.x05}px`,
+  color: palette.text, letterSpacing: "-0.5px",
 };
-const h2: React.CSSProperties = { fontSize: 14, fontWeight: 600, margin: "0 0 16px", textTransform: "uppercase", letterSpacing: "0.08em" };
-const input: React.CSSProperties = {
-  width: "100%",
-  padding: "8px 10px",
-  border: "1px solid #d0d0d0",
-  borderRadius: 4,
-  fontSize: 13,
-  fontFamily: "inherit",
-  background: "#fff",
-};
-const primaryBtn: React.CSSProperties = {
-  background: "#111",
-  color: "#fff",
-  border: "none",
-  borderRadius: 4,
-  padding: "8px 16px",
-  fontSize: 13,
-  fontFamily: "inherit",
-  cursor: "pointer",
+const pageSub: React.CSSProperties = {
+  color: palette.textDim, fontSize: 13, marginBottom: space.x5,
 };

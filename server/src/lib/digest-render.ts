@@ -22,18 +22,34 @@ export interface RenderedEmail {
 }
 
 const COLORS = {
-  bg: "#0b0f12",
-  panel: "#11171b",
-  rule: "#1c2429",
-  text: "#d8e0e6",
-  dim: "#7a8a96",
-  accent: "#7af5d3",
+  bg: "#050505",
+  panel: "#0b0b0c",
+  rule: "#1f1f22",
+  text: "#e8e8e8",
+  dim: "#888",
+  accent: "#7CFFA0",   // green — main accent
+  magenta: "#FF60D6",  // CTA accent
+  cyan: "#7CD0FF",     // tools
+  amber: "#FFE07A",
 };
 
-export function renderDigestEmail(payload: DigestPayload): RenderedEmail {
+const APP_URL =
+  process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ||
+  "https://pulse.ashlr.ai";
+
+/** Optional one-liner narrative summary, prepended above the panels. */
+export interface DigestRenderOptions {
+  /** Plain-text briefing line. If null/empty, renders nothing. */
+  briefing?: string | null;
+}
+
+export function renderDigestEmail(
+  payload: DigestPayload,
+  opts: DigestRenderOptions = {},
+): RenderedEmail {
   const subject = subjectFor(payload);
-  const text = renderText(payload);
-  const html = renderHtml(payload);
+  const text = renderText(payload, opts);
+  const html = renderHtml(payload, opts);
   return { subject, html, text };
 }
 
@@ -57,10 +73,14 @@ function fmtTokens(n: number): string {
 // Plain text
 // ---------------------------------------------------------------------------
 
-function renderText(d: DigestPayload): string {
+function renderText(d: DigestPayload, opts: DigestRenderOptions): string {
   const lines: string[] = [];
   lines.push(`pulse — ${d.dateLabel}`);
   lines.push("");
+  if (opts.briefing) {
+    lines.push(opts.briefing);
+    lines.push("");
+  }
 
   if (d.empty) {
     lines.push("Quiet day. No activity recorded.");
@@ -134,6 +154,7 @@ function renderText(d: DigestPayload): string {
 
   lines.push("");
   lines.push("---");
+  lines.push(`open dashboard: ${APP_URL}/app`);
   lines.push("manage digest preferences: /settings");
   return lines.join("\n");
 }
@@ -147,36 +168,62 @@ function pad(s: string, n: number): string {
 // HTML
 // ---------------------------------------------------------------------------
 
-function renderHtml(d: DigestPayload): string {
+function renderHtml(d: DigestPayload, opts: DigestRenderOptions): string {
   const styles = `
     body { background: ${COLORS.bg}; color: ${COLORS.text}; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; margin: 0; padding: 24px; }
     .wrap { max-width: 640px; margin: 0 auto; }
-    h1, h2 { color: ${COLORS.accent}; font-weight: 500; letter-spacing: 0.01em; }
-    h1 { font-size: 18px; margin: 0 0 4px; }
-    h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.12em; margin: 24px 0 8px; }
-    .date { color: ${COLORS.dim}; font-size: 13px; margin-bottom: 24px; }
-    table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    th { text-align: left; color: ${COLORS.dim}; font-weight: 400; padding: 6px 8px; border-bottom: 1px solid ${COLORS.rule}; }
-    td { padding: 6px 8px; border-bottom: 1px solid ${COLORS.rule}; }
+    .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+    .brand-name { color: ${COLORS.text}; font-size: 18px; font-weight: 600; letter-spacing: -0.3px; }
+    h2 { color: ${COLORS.accent}; font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.12em; margin: 24px 0 8px; }
+    .date { color: ${COLORS.dim}; font-size: 12px; margin-bottom: 16px; }
+    .briefing { background: rgba(124,208,255,0.04); border-left: 2px solid ${COLORS.cyan}; color: ${COLORS.text}; font-size: 13px; line-height: 1.6; padding: 12px 14px; margin: 0 0 24px; border-radius: 4px; }
+    .briefing-label { color: ${COLORS.cyan}; font-size: 10px; text-transform: uppercase; letter-spacing: 0.8px; display: block; margin-bottom: 6px; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th { text-align: left; color: ${COLORS.dim}; font-weight: 400; padding: 6px 8px; border-bottom: 1px solid ${COLORS.rule}; text-transform: uppercase; letter-spacing: 0.5px; font-size: 10px; }
+    td { padding: 6px 8px; border-bottom: 1px solid ${COLORS.rule}; color: ${COLORS.text}; }
     td.num { text-align: right; font-variant-numeric: tabular-nums; }
-    .panel { background: ${COLORS.panel}; border: 1px solid ${COLORS.rule}; border-radius: 6px; padding: 12px; margin-bottom: 16px; }
+    .panel { background: ${COLORS.panel}; border: 1px solid ${COLORS.rule}; border-radius: 6px; padding: 12px 14px; margin-bottom: 12px; }
     .peer { margin-top: 8px; }
-    .peer-email { color: ${COLORS.accent}; font-size: 12px; margin-bottom: 6px; }
-    .warn { color: #f5b06b; font-size: 12px; margin-top: 12px; }
-    .footer { color: ${COLORS.dim}; font-size: 11px; margin-top: 32px; border-top: 1px solid ${COLORS.rule}; padding-top: 12px; }
+    .peer-email { color: ${COLORS.magenta}; font-size: 11px; margin-bottom: 6px; }
+    .warn { color: ${COLORS.amber}; font-size: 11px; margin-top: 12px; }
+    .cta { display: inline-block; padding: 10px 18px; background: ${COLORS.magenta}; color: #0a0a0a; border-radius: 6px; font-weight: 500; font-size: 13px; text-decoration: none; }
+    .cta-row { text-align: center; margin: 28px 0 12px; }
+    .footer { color: ${COLORS.dim}; font-size: 10px; margin-top: 12px; padding-top: 12px; border-top: 1px solid ${COLORS.rule}; text-align: center; letter-spacing: 0.4px; }
     a { color: ${COLORS.accent}; text-decoration: none; }
   `;
 
   const head = `<head><meta charset="utf-8"><style>${styles}</style></head>`;
+  const header = `
+    <div class="brand">
+      <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true">
+        <circle cx="11" cy="11" r="9" stroke="${COLORS.accent}" stroke-width="1.2" fill="none"/>
+        <path d="M11 4 L18 11 L11 18 L4 11 Z" stroke="${COLORS.magenta}" stroke-width="1.2" fill="none"/>
+        <circle cx="11" cy="11" r="1.6" fill="${COLORS.accent}"/>
+      </svg>
+      <span class="brand-name">Pulse</span>
+    </div>
+    <div class="date">${esc(d.dateLabel)}</div>
+  `;
+
+  const briefing = opts.briefing
+    ? `<div class="briefing"><span class="briefing-label">briefing · generated by Pulse</span>${esc(opts.briefing)}</div>`
+    : "";
+
+  const cta = `
+    <div class="cta-row">
+      <a class="cta" href="${APP_URL}/app">open dashboard →</a>
+    </div>
+  `;
 
   if (d.empty) {
     return `<!doctype html><html>${head}<body><div class="wrap">
-      <h1>pulse</h1>
-      <div class="date">${esc(d.dateLabel)}</div>
+      ${header}
+      ${briefing}
       <div class="panel">Quiet day. No activity recorded.<br><br>
         If you expected to see something here, run <code>pulse-agent doctor</code> to confirm the agent is running.
       </div>
-      <div class="footer">manage at <a href="/settings">/settings</a></div>
+      ${cta}
+      <div class="footer">manage digest preferences at <a href="${APP_URL}/settings">/settings</a></div>
     </div></body></html>`;
   }
 
@@ -184,11 +231,12 @@ function renderHtml(d: DigestPayload): string {
   const peersBlock = renderPeersBlockHtml(d.peers);
 
   return `<!doctype html><html>${head}<body><div class="wrap">
-    <h1>pulse</h1>
-    <div class="date">${esc(d.dateLabel)}</div>
+    ${header}
+    ${briefing}
     ${selfBlock}
     ${peersBlock}
-    <div class="footer">manage digest preferences at <a href="/settings">/settings</a></div>
+    ${cta}
+    <div class="footer">manage digest preferences at <a href="${APP_URL}/settings">/settings</a></div>
   </div></body></html>`;
 }
 

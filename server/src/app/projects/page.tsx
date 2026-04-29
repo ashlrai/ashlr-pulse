@@ -7,8 +7,7 @@
 import type { ReactElement } from "react";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { currentUser } from "@/lib/current-user";
-import { ensureDefaultOrg } from "@/lib/current-user";
+import { currentUser, ensureDefaultOrg } from "@/lib/current-user";
 import {
   listProjects,
   createProject,
@@ -18,7 +17,14 @@ import {
   listUnassignedRepos,
   clusterByPrefix,
 } from "@/lib/project-db";
+
 import { Header } from "@/components/Header";
+import { DashboardShell } from "@/components/ui/DashboardShell";
+import { Card, CardHeader } from "@/components/ui/Card";
+import { Banner } from "@/components/ui/Banner";
+import { Button } from "@/components/ui/Button";
+import { Input, Select, Field } from "@/components/ui/Input";
+import { palette, radius, space } from "@/lib/theme";
 
 export const dynamic = "force-dynamic";
 
@@ -67,7 +73,6 @@ async function removeRepoAction(formData: FormData): Promise<void> {
   revalidatePath("/projects");
 }
 
-/** Assign one repo to an existing project from the unassigned-repos list. */
 async function assignRepoAction(formData: FormData): Promise<void> {
   "use server";
   const me = await currentUser();
@@ -79,7 +84,6 @@ async function assignRepoAction(formData: FormData): Promise<void> {
   revalidatePath("/projects");
 }
 
-/** Create a project from a prefix cluster + bulk-assign all matched repos. */
 async function createFromPrefixAction(formData: FormData): Promise<void> {
   "use server";
   const me = await currentUser();
@@ -115,122 +119,181 @@ export default async function ProjectsPage({
   const { ok, error } = await searchParams;
 
   return (
-    <main style={{ padding: "0 32px 32px", maxWidth: 900, margin: "0 auto" }}>
+    <DashboardShell maxWidth={960}>
       <Header me={me} active="projects" />
-      <h1 style={{ margin: 0, fontSize: 28, fontWeight: 600, letterSpacing: "-0.5px" }}>projects</h1>
-      <p style={{ color: "#666", marginTop: 4, fontSize: 13 }}>
-        group repos into SaaS / client / internal / experiment buckets so the dashboard rolls up by line of work.
+      <h1 style={pageTitle}>projects</h1>
+      <p style={pageSub}>
+        group repos into saas / client / internal / experiment buckets so the dashboard rolls up by line of work.
       </p>
 
-      {ok && <p style={{ color: "#080" }}>project created.</p>}
-      {error && <p style={{ color: "#c00" }}>error: {error}</p>}
+      <div style={{ display: "flex", flexDirection: "column", gap: space.x4 }}>
+        {ok && <Banner variant="success">{ok.replace(/\+/g, " ")}</Banner>}
+        {error && <Banner variant="danger">{error.replace(/\+/g, " ")}</Banner>}
 
-      <h2 style={{ fontSize: 16, marginTop: 32 }}>new project</h2>
-      <form action={createProjectAction} style={{ display: "flex", gap: 8, alignItems: "flex-end", maxWidth: 580 }}>
-        <label style={{ flex: 2 }}>
-          name
-          <input name="name" type="text" required placeholder="my-saas" style={inp} />
-        </label>
-        <label style={{ flex: 1 }}>
-          kind
-          <select name="kind" defaultValue="internal" style={inp}>
-            {VALID_KINDS.map((k) => <option key={k} value={k}>{k}</option>)}
-          </select>
-        </label>
-        <button type="submit" style={btn}>create</button>
-      </form>
+        <form action={createProjectAction}>
+          <Card>
+            <CardHeader title="new project" />
+            <div style={{ display: "flex", gap: space.x3, alignItems: "flex-end" }}>
+              <div style={{ flex: 2 }}>
+                <Field label="name">
+                  <Input name="name" type="text" required placeholder="my-saas" />
+                </Field>
+              </div>
+              <div style={{ flex: 1 }}>
+                <Field label="kind">
+                  <Select name="kind" defaultValue="internal">
+                    {VALID_KINDS.map((k) => <option key={k} value={k}>{k}</option>)}
+                  </Select>
+                </Field>
+              </div>
+              <Button type="submit" variant="primary" style={{ marginBottom: space.x4 }}>create</Button>
+            </div>
+          </Card>
+        </form>
 
-      {clusters.length > 0 && (
-        <>
-          <h2 style={{ fontSize: 16, marginTop: 32 }}>suggested projects</h2>
-          <p style={{ color: "#888", fontSize: 12, marginTop: 4 }}>
-            we found groups of unassigned repos that share a common prefix — one click to create the project + bulk-assign.
-          </p>
-          {clusters.map((c) => (
-            <form
-              key={c.prefix}
-              action={createFromPrefixAction}
-              style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8, padding: "10px 12px", border: "1px dashed #c0c8cc", borderRadius: 4, background: "#fafbfc" }}
-            >
-              <code style={{ background: "#f1f3f5", padding: "2px 6px", borderRadius: 3 }}>{c.prefix}-*</code>
-              <span style={{ fontSize: 12, color: "#666", flex: 1 }}>
-                {c.repos.length} repos: {c.repos.slice(0, 3).join(", ")}{c.repos.length > 3 ? `, +${c.repos.length - 3} more` : ""}
-              </span>
-              {c.repos.map((r) => <input key={r} type="hidden" name="repos" value={r} />)}
-              <input type="hidden" name="name" value={c.prefix} />
-              <select name="kind" defaultValue={c.prefix.startsWith("client") ? "client" : "saas"} style={{ ...inp, marginTop: 0, width: 110, padding: 6 }}>
-                {VALID_KINDS.map((k) => <option key={k} value={k}>{k}</option>)}
-              </select>
-              <button type="submit" style={{ ...btn, padding: "8px 12px", fontSize: 12 }}>
-                create + add {c.repos.length}
-              </button>
-            </form>
-          ))}
-        </>
-      )}
-
-      {unassigned.length > 0 && projects.length > 0 && (
-        <>
-          <h2 style={{ fontSize: 16, marginTop: 32 }}>unassigned repos ({unassigned.length})</h2>
-          <p style={{ color: "#888", fontSize: 12, marginTop: 4 }}>
-            repos we&apos;ve seen activity for that aren&apos;t in any project. assign individually:
-          </p>
-          <ul style={{ margin: "8px 0 0", padding: 0, listStyle: "none" }}>
-            {unassigned.map((r) => (
-              <li key={r} style={{ display: "flex", gap: 8, alignItems: "center", padding: "4px 0", fontSize: 13 }}>
-                <code style={{ flex: 1 }}>{r}</code>
-                <form action={assignRepoAction} style={{ display: "flex", gap: 6 }}>
-                  <input type="hidden" name="repo_name" value={r} />
-                  <select name="project_id" required style={{ ...inp, marginTop: 0, padding: 4, fontSize: 12, width: 180 }}>
-                    <option value="">— assign to —</option>
-                    {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                  </select>
-                  <button type="submit" style={{ ...btn, padding: "4px 10px", fontSize: 11 }}>assign</button>
+        {clusters.length > 0 && (
+          <Card>
+            <CardHeader
+              title="suggested projects"
+              hint="groups of unassigned repos that share a common prefix — one click to bulk-assign"
+            />
+            <div style={{ display: "flex", flexDirection: "column", gap: space.x2 }}>
+              {clusters.map((c) => (
+                <form
+                  key={c.prefix}
+                  action={createFromPrefixAction}
+                  style={{
+                    display: "flex", gap: space.x2, alignItems: "center",
+                    padding: `${space.x2}px ${space.x3}px`,
+                    border: `1px dashed ${palette.border}`,
+                    borderRadius: radius.md,
+                    background: palette.bgRaised,
+                  }}
+                >
+                  <code style={prefixChip}>{c.prefix}-*</code>
+                  <span style={{ fontSize: 12, color: palette.textDim, flex: 1 }}>
+                    {c.repos.length} repos: {c.repos.slice(0, 3).join(", ")}
+                    {c.repos.length > 3 ? `, +${c.repos.length - 3} more` : ""}
+                  </span>
+                  {c.repos.map((r) => <input key={r} type="hidden" name="repos" value={r} />)}
+                  <input type="hidden" name="name" value={c.prefix} />
+                  <Select
+                    name="kind"
+                    defaultValue={c.prefix.startsWith("client") ? "client" : "saas"}
+                    style={{ width: 120 }}
+                  >
+                    {VALID_KINDS.map((k) => <option key={k} value={k}>{k}</option>)}
+                  </Select>
+                  <Button type="submit" variant="primary" size="sm">
+                    create + add {c.repos.length}
+                  </Button>
                 </form>
-              </li>
-            ))}
-          </ul>
-        </>
-      )}
+              ))}
+            </div>
+          </Card>
+        )}
 
-      <h2 style={{ fontSize: 16, marginTop: 32 }}>your projects</h2>
-      {projects.length === 0 ? (
-        <p style={{ color: "#888" }}>no projects yet.</p>
-      ) : (
-        projects.map((p) => (
-          <div key={p.id} style={{ marginTop: 20, padding: 16, border: "1px solid #ddd", borderRadius: 4 }}>
-            <p style={{ margin: 0, fontWeight: 600 }}>{p.name} <span style={{ color: "#888", fontWeight: 400, fontSize: 12 }}>({p.kind})</span></p>
-            <p style={{ margin: "4px 0 8px", fontSize: 12, color: "#888" }}>id: {p.id}</p>
+        {unassigned.length > 0 && projects.length > 0 && (
+          <Card>
+            <CardHeader
+              title={`unassigned repos · ${unassigned.length}`}
+              hint="repos we've seen activity for that aren't in any project — assign individually"
+            />
+            <ul style={{ margin: 0, padding: 0, listStyle: "none" }}>
+              {unassigned.map((r) => (
+                <li
+                  key={r}
+                  style={{
+                    display: "flex", gap: space.x2, alignItems: "center",
+                    padding: "6px 0", fontSize: 12,
+                    borderBottom: `1px dashed ${palette.border}`,
+                  }}
+                >
+                  <code style={{ flex: 1, color: palette.text }}>{r}</code>
+                  <form action={assignRepoAction} style={{ display: "flex", gap: 6 }}>
+                    <input type="hidden" name="repo_name" value={r} />
+                    <Select name="project_id" required style={{ width: 200, padding: "4px 28px 4px 8px", fontSize: 11 }}>
+                      <option value="">— assign to —</option>
+                      {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                    </Select>
+                    <Button type="submit" variant="secondary" size="sm">assign</Button>
+                  </form>
+                </li>
+              ))}
+            </ul>
+          </Card>
+        )}
 
-            {/* repo list */}
-            {p.repos.length > 0 && (
-              <ul style={{ margin: "0 0 8px", paddingLeft: 16 }}>
-                {p.repos.map((r) => (
-                  <li key={r} style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 8 }}>
-                    <code>{r}</code>
-                    <form action={removeRepoAction} style={{ display: "inline" }}>
-                      <input type="hidden" name="project_id" value={p.id} />
-                      <input type="hidden" name="repo_name" value={r} />
-                      <button type="submit" style={revokeBtn}>remove</button>
-                    </form>
-                  </li>
-                ))}
-              </ul>
-            )}
+        <Card>
+          <CardHeader title={`your projects · ${projects.length}`} />
+          {projects.length === 0 ? (
+            <p style={{ color: palette.textMute, fontSize: 13, margin: 0 }}>
+              no projects yet — create one above or accept a suggestion.
+            </p>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: space.x3 }}>
+              {projects.map((p) => (
+                <div
+                  key={p.id}
+                  style={{
+                    padding: `${space.x3}px ${space.x4}px`,
+                    background: palette.bgRaised,
+                    border: `1px solid ${palette.border}`,
+                    borderRadius: radius.md,
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+                    <span style={{ fontWeight: 600, color: palette.text }}>{p.name}</span>
+                    <span style={{ fontSize: 11, color: palette.textDim, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                      {p.kind}
+                    </span>
+                  </div>
+                  <p style={{ margin: "4px 0 8px", fontSize: 11, color: palette.textMute }}>
+                    {p.id}
+                  </p>
 
-            {/* add repo */}
-            <form action={addRepoAction} style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
-              <input type="hidden" name="project_id" value={p.id} />
-              <input name="repo_name" type="text" placeholder="owner/repo" style={{ ...inp, marginTop: 0, width: 220 }} />
-              <button type="submit" style={{ ...btn, padding: "8px 12px", fontSize: 12 }}>add repo</button>
-            </form>
-          </div>
-        ))
-      )}
-    </main>
+                  {p.repos.length > 0 && (
+                    <ul style={{ margin: "0 0 8px", padding: 0, listStyle: "none" }}>
+                      {p.repos.map((r) => (
+                        <li
+                          key={r}
+                          style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, padding: "3px 0" }}
+                        >
+                          <code style={{ color: palette.green }}>{r}</code>
+                          <form action={removeRepoAction} style={{ display: "inline" }}>
+                            <input type="hidden" name="project_id" value={p.id} />
+                            <input type="hidden" name="repo_name" value={r} />
+                            <Button type="submit" variant="danger" size="sm">remove</Button>
+                          </form>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+
+                  <form action={addRepoAction} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <input type="hidden" name="project_id" value={p.id} />
+                    <Input name="repo_name" type="text" placeholder="owner/repo" style={{ width: 240 }} />
+                    <Button type="submit" variant="secondary" size="sm">add repo</Button>
+                  </form>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+      </div>
+    </DashboardShell>
   );
 }
 
-const inp: React.CSSProperties = { display: "block", width: "100%", padding: 8, fontSize: 13, fontFamily: "inherit", border: "1px solid #ccc", borderRadius: 4, marginTop: 4 };
-const btn: React.CSSProperties = { padding: "10px 14px", fontSize: 13, fontFamily: "inherit", background: "#111", color: "#fff", border: 0, borderRadius: 4, cursor: "pointer" };
-const revokeBtn: React.CSSProperties = { padding: "2px 6px", fontSize: 11, background: "transparent", color: "#c00", border: "1px solid #c00", borderRadius: 3, cursor: "pointer" };
+const pageTitle: React.CSSProperties = {
+  fontSize: 22, fontWeight: 600, margin: `${space.x2}px 0 ${space.x05}px`,
+  color: palette.text, letterSpacing: "-0.5px",
+};
+const pageSub: React.CSSProperties = {
+  color: palette.textDim, fontSize: 13, marginBottom: space.x5,
+};
+const prefixChip: React.CSSProperties = {
+  background: palette.bgSurface, color: palette.green,
+  padding: "3px 8px", borderRadius: radius.sm,
+  fontSize: 11, letterSpacing: "0.3px",
+};

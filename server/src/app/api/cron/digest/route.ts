@@ -26,6 +26,7 @@ import {
   pickDueUsers,
 } from "@/lib/digest";
 import { renderDigestEmail } from "@/lib/digest-render";
+import { briefingForDigest } from "@/lib/briefing";
 import { log } from "@/lib/logger";
 import { safeEqual } from "@/lib/timing-safe";
 
@@ -76,7 +77,8 @@ export async function POST(req: Request): Promise<Response> {
         continue;
       }
 
-      const rendered = renderDigestEmail(payload);
+      const briefing = await briefingForDigest(payload);
+      const rendered = renderDigestEmail(payload, { briefing });
       const r = await sendEmail({
         to: payload.email,
         subject: rendered.subject,

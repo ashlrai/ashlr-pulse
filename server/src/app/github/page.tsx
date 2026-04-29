@@ -11,10 +11,16 @@ import type { ReactElement } from "react";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { currentUser } from "@/lib/current-user";
-import { getAccountForUser, listEnabledRepos, setRepoEnabled } from "@/lib/github-account-db";
+import { getAccountForUser, setRepoEnabled } from "@/lib/github-account-db";
 import { syncAccount } from "@/lib/github-sync";
 import { sql } from "@/lib/db";
+
 import { Header } from "@/components/Header";
+import { DashboardShell } from "@/components/ui/DashboardShell";
+import { Card, CardHeader } from "@/components/ui/Card";
+import { Banner } from "@/components/ui/Banner";
+import { Button } from "@/components/ui/Button";
+import { palette, radius, space } from "@/lib/theme";
 
 async function syncNowAction(): Promise<void> {
   "use server";
@@ -65,9 +71,7 @@ async function loadAllRepos(accountId: string): Promise<RepoListRow[]> {
 
 export default async function GitHubPage({
   searchParams,
-}: {
-  searchParams: Promise<{ ok?: string; error?: string }>;
-}): Promise<ReactElement> {
+}: { searchParams: Promise<{ ok?: string; error?: string }> }): Promise<ReactElement> {
   const me = await currentUser();
   if (!me) redirect("/login");
 
@@ -75,158 +79,166 @@ export default async function GitHubPage({
   const { ok, error } = await searchParams;
 
   return (
-    <main style={{ padding: "0 32px 32px", maxWidth: 960, margin: "0 auto" }}>
+    <DashboardShell maxWidth={1000}>
       <Header me={me} active="github" />
-      <h1 style={{ margin: 0, fontSize: 28, fontWeight: 600, letterSpacing: "-0.5px" }}>github</h1>
-      <p style={{ color: "#666", marginTop: 4, fontSize: 13 }}>
+      <h1 style={pageTitle}>github</h1>
+      <p style={pageSub}>
         connect your account to ingest commits, PRs, and reviews into the dashboard.
       </p>
 
-      {ok && <p style={{ color: "#080" }}>connected.</p>}
-      {error && <p style={{ color: "#c00" }}>error: {error}</p>}
-
-      {!account ? (
-        <NotConnected />
-      ) : (
-        <Connected account={account} />
-      )}
-    </main>
+      <div style={{ display: "flex", flexDirection: "column", gap: space.x4 }}>
+        {ok && <Banner variant="success">connected.</Banner>}
+        {error && <Banner variant="danger">{error.replace(/\+/g, " ")}</Banner>}
+        {!account ? <NotConnected /> : <Connected account={account} />}
+      </div>
+    </DashboardShell>
   );
 }
 
 function NotConnected(): ReactElement {
   return (
-    <section style={{ marginTop: 32 }}>
-      <p>
-        Connect your GitHub account to start ingesting commits, PRs, and
-        reviews. We request: <code>read:user</code>, <code>repo</code>,{" "}
-        <code>read:org</code>.
+    <Card>
+      <CardHeader title="not connected" />
+      <p style={{ color: palette.text, fontSize: 13, lineHeight: 1.7, marginTop: 0 }}>
+        Connect your GitHub account to start ingesting commits, PRs, and reviews.
+        We request: <code style={inlineCode}>read:user</code>{" "}
+        <code style={inlineCode}>repo</code>{" "}
+        <code style={inlineCode}>read:org</code>.
       </p>
-      <p style={{ color: "#666", fontSize: 13 }}>
-        Privacy floor: we ingest event metadata (commit SHAs, PR numbers, state,
-        diff <em>counts</em>) — never commit bodies, PR descriptions, review
-        comment text, or issue bodies.
+      <p style={{ color: palette.textDim, fontSize: 12, lineHeight: 1.7 }}>
+        Privacy floor: we ingest event metadata (commit SHAs, PR numbers, state, diff <em>counts</em>)
+        — never commit bodies, PR descriptions, review comment text, or issue bodies.
       </p>
-      <a href="/api/github/oauth/start" style={primaryBtn}>connect github</a>
-    </section>
+      <a
+        href="/api/github/oauth/start"
+        style={{
+          display: "inline-flex", padding: "9px 16px", marginTop: space.x2,
+          background: palette.magenta, color: "#0a0a0a",
+          border: "none", borderRadius: radius.md,
+          fontWeight: 500, fontSize: 13, textDecoration: "none",
+        }}
+      >
+        connect github
+      </a>
+    </Card>
   );
 }
 
 async function Connected({
   account,
-}: {
-  account: NonNullable<Awaited<ReturnType<typeof getAccountForUser>>>;
-}): Promise<ReactElement> {
+}: { account: NonNullable<Awaited<ReturnType<typeof getAccountForUser>>> }): Promise<ReactElement> {
   const repos = await loadAllRepos(account.id);
   const enabled = repos.filter((r) => r.enabled);
   const disabled = repos.filter((r) => !r.enabled);
+
   return (
-    <section style={{ marginTop: 32 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-        {account.avatar_url && (
-          <img src={account.avatar_url} alt="" width={40} height={40} style={{ borderRadius: 20 }} />
-        )}
-        <div>
-          <div>
-            <strong>@{account.github_login}</strong> · scopes:{" "}
-            <code>{account.scopes.join(", ")}</code>
+    <>
+      <Card>
+        <div style={{ display: "flex", alignItems: "center", gap: space.x3 }}>
+          {account.avatar_url && (
+            <img
+              src={account.avatar_url} alt="" width={44} height={44}
+              style={{ borderRadius: 22, border: `1px solid ${palette.border}` }}
+            />
+          )}
+          <div style={{ flex: 1 }}>
+            <div style={{ color: palette.text, fontSize: 14 }}>
+              <strong style={{ color: palette.green }}>@{account.github_login}</strong>
+              <span style={{ color: palette.textDim }}> · scopes: </span>
+              <code style={inlineCode}>{account.scopes.join(", ")}</code>
+            </div>
+            <div style={{ color: palette.textDim, fontSize: 12, marginTop: 4 }}>
+              {account.last_synced_at
+                ? <>last synced: <code style={inlineCode}>{new Date(account.last_synced_at).toISOString().slice(0, 19).replace("T", " ")}Z</code></>
+                : "never synced"}
+            </div>
           </div>
-          <div style={{ color: "#666", fontSize: 13 }}>
-            {account.last_synced_at
-              ? <>last synced: <code>{new Date(account.last_synced_at).toISOString().slice(0, 19).replace("T", " ")}Z</code></>
-              : "never synced"}
-          </div>
+          <form action={syncNowAction}>
+            <Button type="submit" variant="primary">sync now</Button>
+          </form>
         </div>
-      </div>
 
-      {account.sync_error && <SyncErrorBanner error={account.sync_error} />}
+        {account.sync_error && (
+          <div style={{ marginTop: space.x3 }}>
+            <SyncErrorBanner error={account.sync_error} />
+          </div>
+        )}
+      </Card>
 
-      <form action={syncNowAction} style={{ marginTop: 16 }}>
-        <button type="submit" style={primaryBtn}>sync now</button>
-      </form>
-
-      <h2 style={{ fontSize: 16, marginTop: 32 }}>tracked repos ({enabled.length})</h2>
-      <RepoTable rows={enabled} />
+      <Card>
+        <CardHeader title={`tracked repos · ${enabled.length}`} />
+        <RepoTable rows={enabled} />
+      </Card>
 
       {disabled.length > 0 && (
-        <details style={{ marginTop: 16 }}>
-          <summary style={{ cursor: "pointer" }}>
-            disabled repos ({disabled.length})
-          </summary>
-          <RepoTable rows={disabled} />
-        </details>
+        <Card>
+          <details>
+            <summary
+              style={{
+                cursor: "pointer", color: palette.textDim, fontSize: 12,
+                textTransform: "uppercase", letterSpacing: "0.8px", fontWeight: 500,
+              }}
+            >
+              disabled repos · {disabled.length}
+            </summary>
+            <div style={{ marginTop: space.x3 }}>
+              <RepoTable rows={disabled} />
+            </div>
+          </details>
+        </Card>
       )}
-    </section>
+    </>
   );
 }
 
-/**
- * Detect "your token doesn't work anymore" errors. The github-sync layer
- * formats these as "github auth failed (token revoked?): …", and the
- * raw GitHub responses include 401 / "Bad credentials" / "expired".
- * Anything else gets a generic banner without the Reconnect CTA.
- */
 function isAuthError(msg: string): boolean {
   const m = msg.toLowerCase();
   return (
-    m.includes("auth") ||
-    m.includes("401") ||
-    m.includes("bad credentials") ||
-    m.includes("token") ||
-    m.includes("revoked") ||
-    m.includes("expired") ||
+    m.includes("auth") || m.includes("401") || m.includes("bad credentials") ||
+    m.includes("token") || m.includes("revoked") || m.includes("expired") ||
     m.includes("missing token")
   );
 }
 
 function SyncErrorBanner({ error }: { error: string }): ReactElement {
   const auth = isAuthError(error);
-  const bg = auth ? "#fff4e0" : "#fdecea";
-  const fg = auth ? "#8a4b00" : "#a02622";
-  const border = auth ? "#f5c178" : "#f5b1ae";
   return (
-    <div
-      role="alert"
-      style={{
-        marginTop: 16,
-        background: bg,
-        color: fg,
-        border: `1px solid ${border}`,
-        borderRadius: 6,
-        padding: "12px 14px",
-        fontSize: 13,
-        display: "flex",
-        flexDirection: "column",
-        gap: 10,
-      }}
+    <Banner
+      variant={auth ? "warning" : "danger"}
+      title={auth ? "GitHub access needs to be re-authorized" : "Last sync failed"}
     >
-      <div>
-        <strong>{auth ? "GitHub access needs to be re-authorized." : "Last sync failed."}</strong>
-        {" "}
+      <div style={{ marginBottom: 8 }}>
         {auth
-          ? "Your token may have been revoked or expired — your dashboard data is now stale until you reconnect."
+          ? "Your token may have been revoked or expired — dashboard data is stale until you reconnect."
           : "We'll retry on the next cron tick; if it keeps failing, paste the error to support."}
       </div>
-      <div style={{ fontFamily: "ui-monospace, Menlo, monospace", fontSize: 12, opacity: 0.8 }}>
+      <code style={{ ...inlineCode, fontSize: 11, opacity: 0.85, display: "block", padding: "6px 8px" }}>
         {error}
-      </div>
+      </code>
       {auth && (
-        <a href="/api/github/oauth/start" style={{ ...primaryBtn, alignSelf: "flex-start" }}>
+        <a
+          href="/api/github/oauth/start"
+          style={{
+            display: "inline-flex", marginTop: 10, padding: "6px 12px",
+            background: palette.amber, color: "#0a0a0a",
+            borderRadius: radius.sm, fontSize: 12, fontWeight: 500, textDecoration: "none",
+          }}
+        >
           reconnect github
         </a>
       )}
-    </div>
+    </Banner>
   );
 }
 
 function RepoTable({ rows }: { rows: RepoListRow[] }): ReactElement {
   if (rows.length === 0) {
-    return <p style={{ color: "#888" }}>none.</p>;
+    return <p style={{ color: palette.textMute, fontSize: 12 }}>none.</p>;
   }
   return (
-    <table style={{ borderCollapse: "collapse", width: "100%", marginTop: 8 }}>
+    <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
       <thead>
-        <tr style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>
+        <tr style={{ textAlign: "left", borderBottom: `1px solid ${palette.border}` }}>
           <th style={th}>repo</th>
           <th style={th}>branch</th>
           <th style={th}>vis</th>
@@ -236,22 +248,33 @@ function RepoTable({ rows }: { rows: RepoListRow[] }): ReactElement {
       </thead>
       <tbody>
         {rows.map((r) => (
-          <tr key={r.id} style={{ borderBottom: "1px solid #eee" }}>
-            <td style={td}>{r.full_name}{r.is_fork ? " (fork)" : ""}</td>
-            <td style={td}>{r.default_branch ?? "—"}</td>
-            <td style={td}>{r.is_private ? "private" : "public"}</td>
+          <tr key={r.id} style={{ borderBottom: `1px dashed ${palette.border}` }}>
             <td style={td}>
-              {r.last_event_ts
-                ? new Date(r.last_event_ts).toISOString().slice(0, 16).replace("T", " ")
-                : "—"}
+              <code style={{ color: palette.text }}>
+                {r.full_name}
+              </code>
+              {r.is_fork && <span style={{ color: palette.textMute, marginLeft: 6 }}>(fork)</span>}
             </td>
             <td style={td}>
+              <code style={{ color: palette.cyan }}>{r.default_branch ?? "—"}</code>
+            </td>
+            <td style={td}>
+              <span style={{ color: r.is_private ? palette.amber : palette.green }}>
+                {r.is_private ? "private" : "public"}
+              </span>
+            </td>
+            <td style={td}>
+              {r.last_event_ts
+                ? <code style={{ color: palette.textDim }}>{new Date(r.last_event_ts).toISOString().slice(0, 16).replace("T", " ")}</code>
+                : <span style={{ color: palette.textMute }}>—</span>}
+            </td>
+            <td style={{ ...td, textAlign: "right" }}>
               <form action={toggleRepoAction}>
                 <input type="hidden" name="id" value={r.id} />
                 <input type="hidden" name="enabled" value={String(r.enabled)} />
-                <button type="submit" style={r.enabled ? secondaryBtn : primaryBtn}>
+                <Button type="submit" variant={r.enabled ? "ghost" : "secondary"} size="sm">
                   {r.enabled ? "disable" : "enable"}
-                </button>
+                </Button>
               </form>
             </td>
           </tr>
@@ -261,32 +284,20 @@ function RepoTable({ rows }: { rows: RepoListRow[] }): ReactElement {
   );
 }
 
-const primaryBtn: React.CSSProperties = {
-  padding: "8px 14px",
-  fontSize: 13,
-  fontFamily: "inherit",
-  background: "#111",
-  color: "#fff",
-  border: 0,
-  borderRadius: 4,
-  cursor: "pointer",
-  textDecoration: "none",
-  display: "inline-block",
+const pageTitle: React.CSSProperties = {
+  fontSize: 22, fontWeight: 600, margin: `${space.x2}px 0 ${space.x05}px`,
+  color: palette.text, letterSpacing: "-0.5px",
 };
-const secondaryBtn: React.CSSProperties = {
-  ...primaryBtn,
-  background: "transparent",
-  color: "#444",
-  border: "1px solid #ccc",
+const pageSub: React.CSSProperties = {
+  color: palette.textDim, fontSize: 13, marginBottom: space.x5,
 };
-const linkBtn: React.CSSProperties = {
-  background: "none",
-  border: "none",
-  cursor: "pointer",
-  color: "#666",
-  fontSize: "inherit",
-  padding: 0,
-  textDecoration: "underline",
+const inlineCode: React.CSSProperties = {
+  background: palette.bgRaised, color: palette.cyan,
+  padding: "1px 6px", borderRadius: 3, fontSize: "0.92em",
 };
-const th: React.CSSProperties = { padding: "8px 4px", fontSize: 13 };
-const td: React.CSSProperties = { padding: "8px 4px", fontSize: 13 };
+const th: React.CSSProperties = {
+  padding: "8px 6px", color: palette.textDim,
+  fontSize: 11, fontWeight: 500, letterSpacing: "0.5px",
+  textTransform: "uppercase",
+};
+const td: React.CSSProperties = { padding: "8px 6px", color: palette.text };

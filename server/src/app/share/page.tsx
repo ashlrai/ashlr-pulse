@@ -12,20 +12,25 @@ import type { ReactElement } from "react";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { currentUser } from "@/lib/current-user";
-import { Header } from "@/components/Header";
 import {
   listGrantsOwnedBy,
   listGrantsForViewer,
   revokeShare,
-  type PeerShareRow,
-} from "@/lib/peer-share-db";
-import { validateFields, SHAREABLE_FIELDS } from "@/lib/peer-share-guard";
-import { createInvite, listInvitesByOwner, type InviteRow } from "@/lib/invite-db";
-import {
   createPeerShare,
   findUserByEmail,
+  type PeerShareRow,
   type CreatePeerShareInput,
 } from "@/lib/peer-share-db";
+import { validateFields, SHAREABLE_FIELDS } from "@/lib/peer-share-guard";
+import { createInvite, listInvitesByOwner } from "@/lib/invite-db";
+
+import { Header } from "@/components/Header";
+import { DashboardShell } from "@/components/ui/DashboardShell";
+import { Card, CardHeader } from "@/components/ui/Card";
+import { Banner } from "@/components/ui/Banner";
+import { Button } from "@/components/ui/Button";
+import { Input, Select, Field } from "@/components/ui/Input";
+import { palette, radius, space } from "@/lib/theme";
 
 const DEFAULT_FIELDS = ["ts", "source", "model", "tokens_input", "tokens_output", "repo_name"];
 
@@ -41,23 +46,17 @@ async function createShareAction(formData: FormData): Promise<void> {
   const fields = formData.getAll("fields").map(String);
 
   const guard = validateFields(fields);
-  if (!guard.ok) {
-    redirect(`/share?error=${encodeURIComponent(guard.error)}`);
-  }
-  if (!guard.ok) return; // narrowing for TS
+  if (!guard.ok) redirect(`/share?error=${encodeURIComponent(guard.error)}`);
+  if (!guard.ok) return;
 
   const viewer = await findUserByEmail(viewer_email);
   if (!viewer) {
     redirect(
-      `/share?error=${encodeURIComponent(
-        `no user with email ${viewer_email} — they must sign in to Pulse first`,
-      )}`,
+      `/share?error=${encodeURIComponent(`no user with email ${viewer_email} — they must sign in to Pulse first`)}`,
     );
   }
   if (!viewer) return;
-  if (viewer.id === me.id) {
-    redirect("/share?error=cannot+share+with+yourself");
-  }
+  if (viewer.id === me.id) redirect("/share?error=cannot+share+with+yourself");
 
   const input: CreatePeerShareInput = {
     owner_id: me.id,
@@ -115,9 +114,6 @@ async function createInviteAction(formData: FormData): Promise<void> {
     suggested_granularity: granularity as "realtime" | "daily" | "weekly" | "monthly" | null,
     suggested_fields: suggestedFields,
   });
-  // Redirect with the token so the page can render a copyable URL block.
-  // The token in the URL is intentional: /share is auth'd, only the
-  // owner sees their own invite tokens.
   revalidatePath("/share");
   redirect(`/share?invite=${invite.token}`);
 }
@@ -138,167 +134,202 @@ export default async function SharePage({
   const { ok, error, invite: justCreatedToken } = await searchParams;
   const justCreated = justCreatedToken ? invites.find((i) => i.token === justCreatedToken) : undefined;
   const origin = process.env.NEXT_PUBLIC_APP_URL ?? "";
+  const outstanding = invites.filter((i) => !i.accepted_at && new Date(i.expires_at).getTime() > Date.now());
 
   return (
-    <main style={{ padding: "0 32px 32px", maxWidth: 960, margin: "0 auto" }}>
+    <DashboardShell maxWidth={1000}>
       <Header me={me} active="share" />
-      <h1 style={{ margin: 0, fontSize: 28, fontWeight: 600, letterSpacing: "-0.5px" }}>sharing</h1>
-      <p style={{ color: "#666", marginTop: 4, fontSize: 13 }}>
+      <h1 style={pageTitle}>sharing</h1>
+      <p style={pageSub}>
         configurable, revocable peer-visibility — granted per repo glob, granularity, and column whitelist.
       </p>
 
-      {ok && <p style={{ color: "#080" }}>grant created.</p>}
-      {error && <p style={{ color: "#c00" }}>error: {error}</p>}
+      <div style={{ display: "flex", flexDirection: "column", gap: space.x4 }}>
+        {ok && <Banner variant="success">grant created.</Banner>}
+        {error && <Banner variant="danger">{error.replace(/\+/g, " ")}</Banner>}
 
-      {justCreated && (
-        <div style={inviteBanner}>
-          <div style={{ fontSize: 12, color: "#666", textTransform: "uppercase", letterSpacing: "0.1em" }}>invite created</div>
-          <div style={{ marginTop: 4, fontSize: 14 }}>
-            Send this URL to your cofounder. Single-use, expires in 7 days. They sign in with GitHub at the link, peer-share is auto-suggested with the defaults you picked.
-          </div>
-          <code style={inviteUrlBox}>{origin}/accept-invite/{justCreated.token}</code>
-          {justCreated.label && <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>label: {justCreated.label}</div>}
-        </div>
-      )}
+        {justCreated && (
+          <Banner variant="success" title="invite created">
+            <div style={{ marginBottom: 8 }}>
+              Send this URL to your cofounder. Single-use, expires in 7 days. They sign in with GitHub on their own device.
+            </div>
+            <code style={inviteUrlBox}>{origin}/accept-invite/{justCreated.token}</code>
+            {justCreated.label && (
+              <div style={{ marginTop: 6, color: palette.textDim, fontSize: 11 }}>
+                label: {justCreated.label}
+              </div>
+            )}
+          </Banner>
+        )}
 
-      <h2 style={{ fontSize: 16, marginTop: 32 }}>invite a cofounder</h2>
-      <p style={{ color: "#666", fontSize: 12, marginTop: 4, marginBottom: 12 }}>
-        Generates a one-shot link. The invitee signs in with GitHub on their own device — Pulse never holds their credentials.
-      </p>
-      <form action={createInviteAction} style={{ display: "grid", gap: 8, maxWidth: 520 }}>
-        <label>
-          label (optional, helps you tell invites apart)
-          <input name="label" type="text" placeholder="for kara" maxLength={120} style={inp} />
-        </label>
-        <div style={{ display: "flex", gap: 8 }}>
-          <label style={{ flex: 1 }}>
-            suggested scope
-            <select name="invite_scope_type" defaultValue="repo_pattern" style={inp}>
-              <option value="all">all repos</option>
-              <option value="repo_pattern">repo glob (e.g. client-*)</option>
-              <option value="project">project id</option>
-            </select>
-          </label>
-          <label style={{ flex: 2 }}>
-            scope value
-            <input name="invite_scope_value" placeholder="ashlr-*" style={inp} />
-          </label>
-        </div>
-        <label>
-          suggested granularity
-          <select name="invite_granularity" defaultValue="daily" style={inp}>
-            <option value="realtime">realtime</option>
-            <option value="daily">daily</option>
-            <option value="weekly">weekly</option>
-            <option value="monthly">monthly</option>
-          </select>
-        </label>
-        <fieldset style={{ border: "1px solid #ddd", padding: 12, borderRadius: 4 }}>
-          <legend>suggested fields</legend>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4, marginTop: 4 }}>
-            {[...SHAREABLE_FIELDS].sort().map((f) => (
-              <label key={f} style={{ fontSize: 13 }}>
-                <input
-                  type="checkbox"
-                  name="invite_fields"
-                  value={f}
-                  defaultChecked={DEFAULT_FIELDS.includes(f)}
-                />{" "}
-                {f}
-              </label>
-            ))}
-          </div>
-        </fieldset>
-        <button type="submit" style={btn}>generate invite link</button>
-      </form>
+        <form action={createInviteAction}>
+          <Card>
+            <CardHeader title="invite a cofounder" hint="generates a one-shot link · expires in 7 days" />
+            <Field label="label (optional)">
+              <Input name="label" type="text" placeholder="for kara" maxLength={120} />
+            </Field>
+            <div style={{ display: "flex", gap: space.x3 }}>
+              <div style={{ flex: 1 }}>
+                <Field label="suggested scope">
+                  <Select name="invite_scope_type" defaultValue="repo_pattern">
+                    <option value="all">all repos</option>
+                    <option value="repo_pattern">repo glob (e.g. client-*)</option>
+                    <option value="project">project id</option>
+                  </Select>
+                </Field>
+              </div>
+              <div style={{ flex: 2 }}>
+                <Field label="scope value">
+                  <Input name="invite_scope_value" placeholder="ashlr-*" />
+                </Field>
+              </div>
+            </div>
+            <Field label="suggested granularity">
+              <Select name="invite_granularity" defaultValue="daily">
+                <option value="realtime">realtime</option>
+                <option value="daily">daily</option>
+                <option value="weekly">weekly</option>
+                <option value="monthly">monthly</option>
+              </Select>
+            </Field>
+            <FieldsetCheckboxes name="invite_fields" label="suggested fields" />
+            <Button type="submit" variant="primary" style={{ marginTop: space.x3 }}>generate invite link</Button>
+          </Card>
+        </form>
 
-      {invites.filter((i) => !i.accepted_at && new Date(i.expires_at).getTime() > Date.now()).length > 0 && (
-        <>
-          <h3 style={{ fontSize: 14, marginTop: 24, color: "#666", fontWeight: 500 }}>outstanding invites</h3>
-          <ul style={{ margin: "8px 0 0", padding: 0, listStyle: "none" }}>
-            {invites
-              .filter((i) => !i.accepted_at && new Date(i.expires_at).getTime() > Date.now())
-              .map((i) => (
-                <li key={i.token} style={{ fontSize: 12, color: "#666", padding: "4px 0", fontFamily: "ui-monospace, Menlo, monospace" }}>
-                  {origin}/accept-invite/{i.token}
-                  {i.label && <span style={{ color: "#888" }}> · {i.label}</span>}
-                  <span style={{ color: "#aaa" }}> · expires {new Date(i.expires_at).toISOString().slice(0, 10)}</span>
+        {outstanding.length > 0 && (
+          <Card>
+            <CardHeader title={`outstanding invites · ${outstanding.length}`} />
+            <ul style={{ margin: 0, padding: 0, listStyle: "none" }}>
+              {outstanding.map((i) => (
+                <li
+                  key={i.token}
+                  style={{
+                    padding: "6px 0", borderBottom: `1px dashed ${palette.border}`,
+                    fontSize: 11, color: palette.textDim,
+                  }}
+                >
+                  <code style={{ color: palette.green, wordBreak: "break-all" }}>
+                    {origin}/accept-invite/{i.token}
+                  </code>
+                  {i.label && <span> · {i.label}</span>}
+                  <span style={{ color: palette.textMute }}> · expires {new Date(i.expires_at).toISOString().slice(0, 10)}</span>
                 </li>
               ))}
-          </ul>
-        </>
+            </ul>
+          </Card>
+        )}
+
+        <form action={createShareAction}>
+          <Card>
+            <CardHeader
+              title="new grant"
+              hint="grant a peer who has already signed in to Pulse"
+            />
+            <Field label="viewer email">
+              <Input name="viewer_email" type="email" required />
+            </Field>
+            <div style={{ display: "flex", gap: space.x3 }}>
+              <div style={{ flex: 1 }}>
+                <Field label="scope">
+                  <Select name="scope_type" defaultValue="all">
+                    <option value="all">all repos</option>
+                    <option value="repo_pattern">repo glob (e.g. client-*)</option>
+                    <option value="project">project id</option>
+                  </Select>
+                </Field>
+              </div>
+              <div style={{ flex: 2 }}>
+                <Field label="scope value (blank for all)">
+                  <Input name="scope_value" placeholder="client-*" />
+                </Field>
+              </div>
+            </div>
+            <Field label="granularity">
+              <Select name="granularity" defaultValue="weekly">
+                <option value="realtime">realtime</option>
+                <option value="daily">daily</option>
+                <option value="weekly">weekly</option>
+                <option value="monthly">monthly</option>
+              </Select>
+            </Field>
+            <FieldsetCheckboxes
+              name="fields"
+              label="fields (whitelist)"
+              footnote="prompts, completions, and raw spans are never shareable — not on this list, not on any list."
+            />
+            <Button type="submit" variant="primary" style={{ marginTop: space.x3 }}>create grant</Button>
+          </Card>
+        </form>
+
+        <Card>
+          <CardHeader title={`grants you've issued · ${owned.length}`} />
+          <GrantTable rows={owned} side="owned" />
+        </Card>
+
+        <Card>
+          <CardHeader title={`grants you've been given · ${granted.length}`} />
+          <GrantTable rows={granted} side="granted" />
+        </Card>
+      </div>
+    </DashboardShell>
+  );
+}
+
+function FieldsetCheckboxes({
+  name, label, footnote,
+}: { name: string; label: string; footnote?: string }): ReactElement {
+  return (
+    <fieldset
+      style={{
+        border: `1px solid ${palette.border}`,
+        background: palette.bgRaised,
+        padding: space.x3,
+        borderRadius: radius.md,
+        marginBottom: space.x4,
+      }}
+    >
+      <legend
+        style={{
+          padding: "0 6px", fontSize: 11, color: palette.textDim,
+          textTransform: "uppercase", letterSpacing: "0.8px", fontWeight: 500,
+        }}
+      >
+        {label}
+      </legend>
+      {footnote && (
+        <p style={{ margin: 0, color: palette.textMute, fontSize: 11, lineHeight: 1.5 }}>
+          {footnote}
+        </p>
       )}
-
-      <h2 style={{ fontSize: 16, marginTop: 32 }}>new grant</h2>
-      <form action={createShareAction} style={{ display: "grid", gap: 8, maxWidth: 520 }}>
-        <label>
-          viewer email
-          <input name="viewer_email" type="email" required style={inp} />
-        </label>
-        <div style={{ display: "flex", gap: 8 }}>
-          <label style={{ flex: 1 }}>
-            scope
-            <select name="scope_type" defaultValue="all" style={inp}>
-              <option value="all">all repos</option>
-              <option value="repo_pattern">repo glob (e.g. client-*)</option>
-              <option value="project">project id</option>
-            </select>
+      <div style={{
+        display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4, marginTop: footnote ? 8 : 0,
+      }}>
+        {[...SHAREABLE_FIELDS].sort().map((f) => (
+          <label key={f} style={{ fontSize: 12, color: palette.text, display: "inline-flex", alignItems: "center", gap: 6 }}>
+            <input
+              type="checkbox"
+              name={name}
+              value={f}
+              defaultChecked={DEFAULT_FIELDS.includes(f)}
+              style={{ accentColor: palette.green }}
+            />
+            <code style={{ color: palette.cyan, fontSize: 11 }}>{f}</code>
           </label>
-          <label style={{ flex: 2 }}>
-            scope value (blank for all)
-            <input name="scope_value" placeholder="client-*" style={inp} />
-          </label>
-        </div>
-        <label>
-          granularity
-          <select name="granularity" defaultValue="weekly" style={inp}>
-            <option value="realtime">realtime</option>
-            <option value="daily">daily</option>
-            <option value="weekly">weekly</option>
-            <option value="monthly">monthly</option>
-          </select>
-        </label>
-
-        <fieldset style={{ border: "1px solid #ddd", padding: 12, borderRadius: 4 }}>
-          <legend>fields (whitelist)</legend>
-          <p style={{ margin: 0, color: "#888", fontSize: 12 }}>
-            prompts, completions, and raw spans are never shareable — not on this list, not on any list.
-          </p>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4, marginTop: 8 }}>
-            {[...SHAREABLE_FIELDS].sort().map((f) => (
-              <label key={f} style={{ fontSize: 13 }}>
-                <input
-                  type="checkbox"
-                  name="fields"
-                  value={f}
-                  defaultChecked={DEFAULT_FIELDS.includes(f)}
-                />{" "}
-                {f}
-              </label>
-            ))}
-          </div>
-        </fieldset>
-
-        <button type="submit" style={btn}>create grant</button>
-      </form>
-
-      <h2 style={{ fontSize: 16, marginTop: 32 }}>grants you've issued</h2>
-      <GrantTable rows={owned} side="owned" />
-
-      <h2 style={{ fontSize: 16, marginTop: 32 }}>grants you've been given</h2>
-      <GrantTable rows={granted} side="granted" />
-    </main>
+        ))}
+      </div>
+    </fieldset>
   );
 }
 
 function GrantTable({ rows, side }: { rows: PeerShareRow[]; side: "owned" | "granted" }): ReactElement {
   if (rows.length === 0) {
-    return <p style={{ color: "#888" }}>none yet.</p>;
+    return <p style={{ color: palette.textMute, fontSize: 12, margin: 0 }}>none yet.</p>;
   }
   return (
-    <table style={{ borderCollapse: "collapse", width: "100%", marginTop: 8 }}>
+    <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
       <thead>
-        <tr style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>
+        <tr style={{ textAlign: "left", borderBottom: `1px solid ${palette.border}` }}>
           <th style={th}>{side === "owned" ? "viewer" : "owner"}</th>
           <th style={th}>scope</th>
           <th style={th}>granularity</th>
@@ -308,19 +339,30 @@ function GrantTable({ rows, side }: { rows: PeerShareRow[]; side: "owned" | "gra
       </thead>
       <tbody>
         {rows.map((r) => (
-          <tr key={r.id} style={{ borderBottom: "1px solid #eee" }}>
+          <tr key={r.id} style={{ borderBottom: `1px dashed ${palette.border}` }}>
             <td style={td}>{side === "owned" ? r.viewer_email : r.owner_email}</td>
-            <td style={td}>{r.scope_type === "all" ? "all" : `${r.scope_type}: ${r.scope_value}`}</td>
-            <td style={td}>{r.granularity}</td>
-            <td style={{ ...td, color: "#666", fontSize: 12 }}>{r.fields.join(", ")}</td>
             <td style={td}>
+              <code style={{ color: palette.cyan }}>
+                {r.scope_type === "all" ? "all" : `${r.scope_type}: ${r.scope_value}`}
+              </code>
+            </td>
+            <td style={td}>
+              <span style={{ color: palette.amber }}>{r.granularity}</span>
+            </td>
+            <td style={{ ...td, color: palette.textDim, fontSize: 11 }}>{r.fields.join(", ")}</td>
+            <td style={{ ...td, textAlign: "right" }}>
               {side === "owned" ? (
                 <form action={revokeShareAction}>
                   <input type="hidden" name="id" value={r.id} />
-                  <button type="submit" style={revokeBtn}>revoke</button>
+                  <Button type="submit" variant="danger" size="sm">revoke</Button>
                 </form>
               ) : (
-                <a href={`/?as=${r.owner_id}`} style={{ fontSize: 12 }}>view as them</a>
+                <a
+                  href={`/app?as=${r.owner_id}`}
+                  style={{ fontSize: 11, color: palette.green, textDecoration: "none" }}
+                >
+                  view as them →
+                </a>
               )}
             </td>
           </tr>
@@ -330,55 +372,27 @@ function GrantTable({ rows, side }: { rows: PeerShareRow[]; side: "owned" | "gra
   );
 }
 
-const inp: React.CSSProperties = {
-  display: "block",
-  width: "100%",
-  padding: 8,
-  fontSize: 13,
-  fontFamily: "inherit",
-  border: "1px solid #ccc",
-  borderRadius: 4,
-  marginTop: 4,
+const pageTitle: React.CSSProperties = {
+  fontSize: 22, fontWeight: 600, margin: `${space.x2}px 0 ${space.x05}px`,
+  color: palette.text, letterSpacing: "-0.5px",
 };
-const btn: React.CSSProperties = {
-  padding: "10px 14px",
-  fontSize: 13,
-  fontFamily: "inherit",
-  background: "#111",
-  color: "#fff",
-  border: 0,
-  borderRadius: 4,
-  cursor: "pointer",
-  width: "fit-content",
-};
-const revokeBtn: React.CSSProperties = {
-  padding: "4px 8px",
-  fontSize: 12,
-  background: "transparent",
-  color: "#c00",
-  border: "1px solid #c00",
-  borderRadius: 4,
-  cursor: "pointer",
-};
-const th: React.CSSProperties = { padding: "8px 4px", fontSize: 13 };
-const td: React.CSSProperties = { padding: "8px 4px", fontSize: 13 };
-const inviteBanner: React.CSSProperties = {
-  marginTop: 16,
-  padding: "12px 14px",
-  background: "#e7f6ec",
-  border: "1px solid #84d6a4",
-  borderRadius: 6,
-  color: "#1a4f2a",
+const pageSub: React.CSSProperties = {
+  color: palette.textDim, fontSize: 13, marginBottom: space.x5,
 };
 const inviteUrlBox: React.CSSProperties = {
   display: "block",
-  marginTop: 8,
   padding: "10px 12px",
-  background: "#fff",
-  border: "1px solid #c0d8c8",
-  borderRadius: 4,
-  fontFamily: "ui-monospace, Menlo, monospace",
-  fontSize: 12,
+  background: palette.bgRaised,
+  border: `1px solid ${palette.border}`,
+  borderRadius: radius.sm,
+  fontFamily: "var(--font-mono), monospace",
+  fontSize: 11,
   wordBreak: "break-all",
-  color: "#0a3318",
+  color: palette.green,
 };
+const th: React.CSSProperties = {
+  padding: "8px 6px", color: palette.textDim,
+  fontSize: 11, fontWeight: 500, letterSpacing: "0.5px",
+  textTransform: "uppercase",
+};
+const td: React.CSSProperties = { padding: "8px 6px", color: palette.text };
