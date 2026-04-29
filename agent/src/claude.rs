@@ -64,8 +64,21 @@ struct Usage {
     input_tokens: Option<i64>,
     output_tokens: Option<i64>,
     cache_read_input_tokens: Option<i64>,
-    /// Anthropic key name in Claude Code JSONL.
+    /// Anthropic key name in Claude Code JSONL — flat sum of 5m + 1h
+    /// cache writes. Kept for backwards compatibility with older
+    /// session files where the nested split wasn't emitted.
     cache_creation_input_tokens: Option<i64>,
+    /// Cache write breakdown by ephemeral lifetime. Anthropic prices
+    /// 5-minute writes at 1.25× input and 1-hour writes at 2.00×, so
+    /// summing them into one bucket undercount cost for cmux + long
+    /// sessions where 1h cache dominates.
+    cache_creation: Option<CacheCreation>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CacheCreation {
+    ephemeral_5m_input_tokens: Option<i64>,
+    ephemeral_1h_input_tokens: Option<i64>,
 }
 
 // ── Main entry point ──────────────────────────────────────────────────────
@@ -290,13 +303,25 @@ async fn process_file(
         // Prefer JSONL sessionId; fall back to filename stem.
         let session_id_for_span = parsed.session_id.as_deref().or(session_id.as_deref());
 
+        // Pull cache-creation breakdown when present. Older Claude Code
+        // versions emit only the flat cache_creation_input_tokens; newer
+        // ones add the split. Server's otel-genai.ts handles both.
+        let cache_5m = usage.cache_creation.as_ref()
+            .and_then(|c| c.ephemeral_5m_input_tokens);
+        let cache_1h = usage.cache_creation.as_ref()
+            .and_then(|c| c.ephemeral_1h_input_tokens);
+
         let span = SpanBuilder::new("gen_ai.request", ts_ns, ts_ns)
             .attr_str("gen_ai.system", "anthropic")
             .attr_str_opt("gen_ai.request.model", msg.model.as_deref())
             .attr_int_opt("gen_ai.usage.input_tokens", usage.input_tokens)
             .attr_int_opt("gen_ai.usage.output_tokens", usage.output_tokens)
             .attr_int_opt("gen_ai.usage.cache_read_tokens", usage.cache_read_input_tokens)
+            // Flat total — kept for backwards compat with older mappers.
             .attr_int_opt("gen_ai.usage.cache_write_tokens", usage.cache_creation_input_tokens)
+            // 5m + 1h split — priced separately on the server.
+            .attr_int_opt("gen_ai.usage.cache_5m_write_tokens", cache_5m)
+            .attr_int_opt("gen_ai.usage.cache_1h_write_tokens", cache_1h)
             .attr_str_opt("claude.session.id", session_id_for_span)
             .attr_str_opt("claude.project.hash", project_hash.as_deref())
             .attr_str_opt("claude.repo.name", repo_name.as_deref())

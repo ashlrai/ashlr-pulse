@@ -8,8 +8,14 @@
  *   gen_ai.request.model            -> model
  *   gen_ai.usage.input_tokens       -> tokens_input
  *   gen_ai.usage.output_tokens      -> tokens_output
- *   gen_ai.usage.cache_read_tokens  -> tokens_cache_read     (Anthropic)
- *   gen_ai.usage.cache_write_tokens -> tokens_cache_write    (Anthropic)
+ *   gen_ai.usage.cache_read_tokens     -> tokens_cache_read     (Anthropic)
+ *   gen_ai.usage.cache_write_tokens    -> tokens_cache_write    (legacy flat)
+ *   gen_ai.usage.cache_5m_write_tokens -> tokens_cache_5m_write (5-min ephemeral)
+ *   gen_ai.usage.cache_1h_write_tokens -> tokens_cache_1h_write (1-hour ephemeral)
+ *
+ * The 5m/1h split lets us price each tier accurately (1.25× vs 2× input).
+ * The flat cache_write field is still emitted for backwards compat — pricing
+ * falls back to billing it at the conservative 1h rate when split is absent.
  *
  * Plus Claude Code private attributes prefixed `claude.`:
  *
@@ -56,6 +62,8 @@ export interface ActivityEventInsert {
   tokens_output: number | null;
   tokens_cache_read: number | null;
   tokens_cache_write: number | null;
+  tokens_cache_5m_write: number | null;
+  tokens_cache_1h_write: number | null;
   tool_calls_count: number | null;
   tool_calls_types: string[] | null;
   accepted_count: number | null;
@@ -164,6 +172,8 @@ export function spanToActivityEvent(
     tokens_output: asInt(attrs, "gen_ai.usage.output_tokens"),
     tokens_cache_read: asInt(attrs, "gen_ai.usage.cache_read_tokens"),
     tokens_cache_write: asInt(attrs, "gen_ai.usage.cache_write_tokens"),
+    tokens_cache_5m_write: asInt(attrs, "gen_ai.usage.cache_5m_write_tokens"),
+    tokens_cache_1h_write: asInt(attrs, "gen_ai.usage.cache_1h_write_tokens"),
     tool_calls_count: asInt(attrs, "claude.tool.calls_count"),
     tool_calls_types: toolTypes,
     accepted_count: asInt(attrs, "claude.edits.accepted_count"),

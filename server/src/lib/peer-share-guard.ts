@@ -36,6 +36,8 @@ export const SHAREABLE_FIELDS = new Set<string>([
   "tokens_output",
   "tokens_cache_read",
   "tokens_cache_write",
+  "tokens_cache_5m_write",
+  "tokens_cache_1h_write",
   "tool_calls_count",
   "tool_calls_types",
   "accepted_count",

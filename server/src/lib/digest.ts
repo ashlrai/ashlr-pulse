@@ -193,6 +193,8 @@ interface ActivityRow {
   tokens_output: number | null;
   tokens_cache_read: number | null;
   tokens_cache_write: number | null;
+  tokens_cache_5m_write: number | null;
+  tokens_cache_1h_write: number | null;
   ts: string;
 }
 
@@ -207,6 +209,7 @@ async function loadActivity(
     return db<ActivityRow[]>`
       SELECT source, repo_name, model,
              tokens_input, tokens_output, tokens_cache_read, tokens_cache_write,
+             tokens_cache_5m_write, tokens_cache_1h_write,
              ts::text AS ts
       FROM activity_event
       WHERE user_id = ${userId}
@@ -218,6 +221,7 @@ async function loadActivity(
     return db<ActivityRow[]>`
       SELECT source, repo_name, model,
              tokens_input, tokens_output, tokens_cache_read, tokens_cache_write,
+             tokens_cache_5m_write, tokens_cache_1h_write,
              ts::text AS ts
       FROM activity_event
       WHERE user_id = ${userId}
@@ -229,6 +233,7 @@ async function loadActivity(
   return db<ActivityRow[]>`
     SELECT ae.source, ae.repo_name, ae.model,
            ae.tokens_input, ae.tokens_output, ae.tokens_cache_read, ae.tokens_cache_write,
+           ae.tokens_cache_5m_write, ae.tokens_cache_1h_write,
            ae.ts::text AS ts
     FROM activity_event ae
     JOIN project_repo pr ON pr.repo_name = ae.repo_name
@@ -249,6 +254,8 @@ function aggregateBySource(rows: ActivityRow[]): DigestSelfBySource[] {
       tokens_output: r.tokens_output,
       tokens_cache_read: r.tokens_cache_read,
       tokens_cache_write: r.tokens_cache_write,
+      tokens_cache_5m_write: r.tokens_cache_5m_write,
+      tokens_cache_1h_write: r.tokens_cache_1h_write,
       ts: new Date(r.ts),
     });
     const cur = map.get(r.source) ?? { events: 0, tokens: 0, cents: null };
@@ -273,6 +280,8 @@ function aggregateByRepo(rows: ActivityRow[]): DigestSelfByRepo[] {
       tokens_output: r.tokens_output,
       tokens_cache_read: r.tokens_cache_read,
       tokens_cache_write: r.tokens_cache_write,
+      tokens_cache_5m_write: r.tokens_cache_5m_write,
+      tokens_cache_1h_write: r.tokens_cache_1h_write,
       ts: new Date(r.ts),
     });
     const cur = map.get(r.repo_name) ?? { events: 0, tokens: 0, cents: null };

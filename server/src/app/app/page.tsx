@@ -58,6 +58,8 @@ interface TodayRow {
   tokens_out: number | null;
   tokens_cache_read: number | null;
   tokens_cache_write: number | null;
+  tokens_cache_5m_write: number | null;
+  tokens_cache_1h_write: number | null;
 }
 
 interface ScopeFilter {
@@ -193,7 +195,9 @@ async function loadRows(
         SUM(tokens_input)::int             AS tokens_in,
         SUM(tokens_output)::int            AS tokens_out,
         SUM(tokens_cache_read)::int        AS tokens_cache_read,
-        SUM(tokens_cache_write)::int       AS tokens_cache_write
+        SUM(tokens_cache_write)::int       AS tokens_cache_write,
+        SUM(tokens_cache_5m_write)::int    AS tokens_cache_5m_write,
+        SUM(tokens_cache_1h_write)::int    AS tokens_cache_1h_write
       FROM activity_event
       WHERE user_id = $1
         AND ts >= NOW() - INTERVAL '${window}'
@@ -287,6 +291,8 @@ export default async function Page({
       tokens_output: r.tokens_out,
       tokens_cache_read: r.tokens_cache_read,
       tokens_cache_write: r.tokens_cache_write,
+      tokens_cache_5m_write: r.tokens_cache_5m_write,
+      tokens_cache_1h_write: r.tokens_cache_1h_write,
     }),
   }));
   const totalCents = rowsWithCost.reduce((acc, r) => acc + (r.cost_cents ?? 0), 0);

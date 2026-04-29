@@ -9,6 +9,17 @@
  * date when a vendor changes their rate sheet — the lookup picks the
  * most recent entry whose effective date is <= the event timestamp.
  *
+ * Anthropic's prompt-cache pricing breaks out by ephemeral lifetime:
+ *   - 5-minute write: 1.25× base input
+ *   - 1-hour write:    2.00× base input
+ *   - read:            0.10× base input
+ * Claude Code emits both `cache_creation.ephemeral_5m_input_tokens` and
+ * `ephemeral_1h_input_tokens` separately on each assistant message — we
+ * parse both in agent/src/claude.rs and price them with the correct
+ * multiplier here. Pre-2026-04 rows have only the flat `cache_write`
+ * total; we treat that as 1h (the more conservative assumption for
+ * cmux-style long-running sessions where 1h cache dominates).
+ *
  * Unknown models fall through to ZERO so partial coverage doesn't
  * silently invent dollars; the dashboard renders "—" in that case.
  */
@@ -17,26 +28,103 @@ export interface Price {
   effective: string;        // YYYY-MM-DD; >= this date this row applies
   input_per_m_usd: number;
   output_per_m_usd: number;
+  /** 5-minute ephemeral cache write. If absent, falls back to legacy cache_write. */
+  cache_5m_write_per_m_usd?: number;
+  /** 1-hour ephemeral cache write. If absent, falls back to 2× input or legacy cache_write. */
+  cache_1h_write_per_m_usd?: number;
+  /** Cache read (uniform for both 5m + 1h reads). */
   cache_read_per_m_usd?: number;
+  /**
+   * Legacy field: pre-split cache_write rate. Kept for backwards-compat
+   * with rows that haven't migrated to the 5m/1h split. New entries
+   * should use cache_5m_write + cache_1h_write instead.
+   */
   cache_write_per_m_usd?: number;
 }
 
 const PRICES: Record<string, Price[]> = {
-  // Anthropic (claude.ai/pricing). Cache read/write are Anthropic-only
-  // for the prompt-caching feature.
+  // ── Anthropic Opus 4.x — pricing reset to $5/$25 with the 4.5 release ──
   "claude-opus-4-7": [
-    { effective: "2026-01-01", input_per_m_usd: 15, output_per_m_usd: 75, cache_read_per_m_usd: 1.5, cache_write_per_m_usd: 18.75 },
+    {
+      effective: "2026-01-01",
+      input_per_m_usd: 5, output_per_m_usd: 25,
+      cache_5m_write_per_m_usd: 6.25, cache_1h_write_per_m_usd: 10,
+      cache_read_per_m_usd: 0.50,
+      cache_write_per_m_usd: 10, // legacy fallback — assume 1h for cmux
+    },
   ],
-  "claude-sonnet-4-6": [
-    { effective: "2026-01-01", input_per_m_usd: 3, output_per_m_usd: 15, cache_read_per_m_usd: 0.3, cache_write_per_m_usd: 3.75 },
+  "claude-opus-4-6": [
+    {
+      effective: "2026-01-01",
+      input_per_m_usd: 5, output_per_m_usd: 25,
+      cache_5m_write_per_m_usd: 6.25, cache_1h_write_per_m_usd: 10,
+      cache_read_per_m_usd: 0.50,
+      cache_write_per_m_usd: 10,
+    },
   ],
-  "claude-haiku-4-5": [
-    { effective: "2025-10-01", input_per_m_usd: 1, output_per_m_usd: 5, cache_read_per_m_usd: 0.1, cache_write_per_m_usd: 1.25 },
+  "claude-opus-4-5": [
+    {
+      effective: "2026-01-01",
+      input_per_m_usd: 5, output_per_m_usd: 25,
+      cache_5m_write_per_m_usd: 6.25, cache_1h_write_per_m_usd: 10,
+      cache_read_per_m_usd: 0.50,
+      cache_write_per_m_usd: 10,
+    },
+  ],
+  // Legacy Opus 4 / 4.1 still on the price sheet at the OLD $15/$75 rates.
+  "claude-opus-4-1": [
+    {
+      effective: "2025-01-01",
+      input_per_m_usd: 15, output_per_m_usd: 75,
+      cache_5m_write_per_m_usd: 18.75, cache_1h_write_per_m_usd: 30,
+      cache_read_per_m_usd: 1.50,
+      cache_write_per_m_usd: 30,
+    },
+  ],
+  "claude-opus-4": [
+    {
+      effective: "2024-05-01",
+      input_per_m_usd: 15, output_per_m_usd: 75,
+      cache_5m_write_per_m_usd: 18.75, cache_1h_write_per_m_usd: 30,
+      cache_read_per_m_usd: 1.50,
+      cache_write_per_m_usd: 30,
+    },
   ],
 
-  // OpenAI (openai.com/api/pricing). Cache columns ignored — OpenAI
-  // bundles cached input into a single discounted rate.
-  "gpt-4o":   [{ effective: "2025-01-01", input_per_m_usd: 2.5, output_per_m_usd: 10 }],
+  // ── Anthropic Sonnet 4.x — uniform $3/$15 across 4.5 and 4.6 ──
+  "claude-sonnet-4-6": [
+    {
+      effective: "2026-01-01",
+      input_per_m_usd: 3, output_per_m_usd: 15,
+      cache_5m_write_per_m_usd: 3.75, cache_1h_write_per_m_usd: 6,
+      cache_read_per_m_usd: 0.30,
+      cache_write_per_m_usd: 6,
+    },
+  ],
+  "claude-sonnet-4-5": [
+    {
+      effective: "2025-09-01",
+      input_per_m_usd: 3, output_per_m_usd: 15,
+      cache_5m_write_per_m_usd: 3.75, cache_1h_write_per_m_usd: 6,
+      cache_read_per_m_usd: 0.30,
+      cache_write_per_m_usd: 6,
+    },
+  ],
+
+  // ── Anthropic Haiku 4.5 ──
+  "claude-haiku-4-5": [
+    {
+      effective: "2025-10-01",
+      input_per_m_usd: 1, output_per_m_usd: 5,
+      cache_5m_write_per_m_usd: 1.25, cache_1h_write_per_m_usd: 2,
+      cache_read_per_m_usd: 0.10,
+      cache_write_per_m_usd: 2,
+    },
+  ],
+
+  // ── OpenAI ── (cache rates ignored — OpenAI bundles cached input
+  //                into a single discounted rate)
+  "gpt-4o":      [{ effective: "2025-01-01", input_per_m_usd: 2.5, output_per_m_usd: 10 }],
   "gpt-4o-mini": [{ effective: "2025-01-01", input_per_m_usd: 0.15, output_per_m_usd: 0.6 }],
 };
 
@@ -58,7 +146,16 @@ export interface UsageInput {
   model: string | null;
   tokens_input: number | null;
   tokens_output: number | null;
+  /** 5-minute ephemeral cache write tokens. Optional; only newer rows have it. */
+  tokens_cache_5m_write?: number | null;
+  /** 1-hour ephemeral cache write tokens. Optional; only newer rows have it. */
+  tokens_cache_1h_write?: number | null;
+  /** Read-back from cache (uniform price across 5m/1h). */
   tokens_cache_read?: number | null;
+  /**
+   * Legacy: flat cache write count. Used as a fallback when the row
+   * predates the 5m/1h split. Priced at the conservative cache_1h rate.
+   */
   tokens_cache_write?: number | null;
   /** Default: now. Pass the event ts for accurate retroactive pricing. */
   ts?: Date;
@@ -69,11 +166,27 @@ export function costUsdCents(u: UsageInput): number | null {
   const p = lookup(u.model, u.ts ?? new Date());
   if (!p) return null;
 
+  // Resolve cache write rates — prefer the split fields when present.
+  const has5m = u.tokens_cache_5m_write != null && u.tokens_cache_5m_write > 0;
+  const has1h = u.tokens_cache_1h_write != null && u.tokens_cache_1h_write > 0;
+  const cache5mTokens = has5m ? (u.tokens_cache_5m_write ?? 0) : 0;
+  const cache1hTokens = has1h ? (u.tokens_cache_1h_write ?? 0) : 0;
+  const cache5mRate = p.cache_5m_write_per_m_usd ?? p.cache_write_per_m_usd ?? 0;
+  const cache1hRate = p.cache_1h_write_per_m_usd ?? p.cache_write_per_m_usd ?? 0;
+
+  // Legacy fallback: if neither split field is set but the flat one is,
+  // bill it at the 1h rate. Real-world cmux sessions use 1h cache by
+  // default, so this matches actual usage on un-migrated rows.
+  const legacyCacheTokens = !has5m && !has1h ? (u.tokens_cache_write ?? 0) : 0;
+  const legacyRate = p.cache_1h_write_per_m_usd ?? p.cache_write_per_m_usd ?? 0;
+
   const cents =
-    ((u.tokens_input ?? 0) * p.input_per_m_usd +
-      (u.tokens_output ?? 0) * p.output_per_m_usd +
-      (u.tokens_cache_read ?? 0) * (p.cache_read_per_m_usd ?? 0) +
-      (u.tokens_cache_write ?? 0) * (p.cache_write_per_m_usd ?? 0)) /
+    ((u.tokens_input  ?? 0) * p.input_per_m_usd +
+     (u.tokens_output ?? 0) * p.output_per_m_usd +
+     (u.tokens_cache_read ?? 0) * (p.cache_read_per_m_usd ?? 0) +
+     cache5mTokens * cache5mRate +
+     cache1hTokens * cache1hRate +
+     legacyCacheTokens * legacyRate) /
     1_000_000 *
     100;
 
