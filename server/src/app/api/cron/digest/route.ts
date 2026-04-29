@@ -27,6 +27,8 @@ import {
 } from "@/lib/digest";
 import { renderDigestEmail } from "@/lib/digest-render";
 import { briefingForDigest } from "@/lib/briefing";
+import { getOrComputeStandup, weekStartUtc, getIntentForWeek } from "@/lib/standup";
+import { getOrComputeWeeklyRecap } from "@/lib/weekly-recap";
 import { log } from "@/lib/logger";
 import { safeEqual } from "@/lib/timing-safe";
 
@@ -78,7 +80,36 @@ export async function POST(req: Request): Promise<Response> {
       }
 
       const briefing = await briefingForDigest(payload);
-      const rendered = renderDigestEmail(payload, { briefing });
+
+      // Standup: best-effort. Failure shouldn't block the digest.
+      let standup: { yesterday: string; today: string; blocked: string } | null = null;
+      try {
+        const intent = await getIntentForWeek(u.id, weekStartUtc(now));
+        const s = await getOrComputeStandup(u.id, {
+          email: payload.email,
+          dateLabel: payload.dateLabel,
+          self: payload.self,
+          intent: intent?.body ?? null,
+          anomaly: null, // anomaly explanation lands in W2.2; passing null keeps blocked field empty
+        }, now);
+        standup = { yesterday: s.yesterday, today: s.today, blocked: s.blocked };
+      } catch (err) {
+        log.warn({ msg: "digest: standup generation failed", user_id: u.id, err: err instanceof Error ? err.message : String(err) });
+      }
+
+      // Weekly recap: only on the user's local Monday. Best-effort.
+      let weeklyRecap: { body: string } | null = null;
+      try {
+        const tzMonday = new Intl.DateTimeFormat("en-US", { timeZone: u.digest_tz, weekday: "short" }).format(now) === "Mon";
+        if (tzMonday) {
+          const r = await getOrComputeWeeklyRecap(u.id, now);
+          if (r) weeklyRecap = { body: r.body };
+        }
+      } catch (err) {
+        log.warn({ msg: "digest: weekly recap failed", user_id: u.id, err: err instanceof Error ? err.message : String(err) });
+      }
+
+      const rendered = renderDigestEmail(payload, { briefing, standup, weeklyRecap });
       const r = await sendEmail({
         to: payload.email,
         subject: rendered.subject,

@@ -193,3 +193,20 @@ export async function pruneExpiredUnaccepted(): Promise<number> {
   const r = await db`DELETE FROM invite WHERE expires_at < NOW() AND accepted_at IS NULL`;
   return r.count ?? 0;
 }
+
+/**
+ * Owner-initiated revocation of a pending invite. Refuses to delete an
+ * already-accepted invite — those represent a real grant relationship
+ * that should be revoked via the peer_share row instead. Returns the
+ * number of rows deleted (0 if not found / not owned / already accepted).
+ */
+export async function deletePendingInvite(token: string, ownerId: string): Promise<number> {
+  const db = sql();
+  const r = await db`
+    DELETE FROM invite
+    WHERE token = ${token}
+      AND owner_id = ${ownerId}::uuid
+      AND accepted_at IS NULL
+  `;
+  return r.count ?? 0;
+}

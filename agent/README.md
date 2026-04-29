@@ -25,16 +25,21 @@ cp target/release/pulse-agent ~/.local/bin/
 
 ## First-time setup
 
-The recommended flow is `pulse-agent init` — it opens your browser, you
-sign in to Pulse and click Approve, and the agent receives a freshly
-minted PAT. No ssh, no UUID lookup.
+The recommended flow is `pulse-agent onboard` — one command that mints
+a PAT (via browser approval), auto-discovers your repos, installs the
+shell hook + background service, and walks you through the GitHub
+connect step. Idempotent and re-runnable.
+
+```sh
+pulse-agent onboard --url https://pulse.ashlr.ai
+```
+
+If you'd rather drive the steps yourself, use `init` for just the PAT
+mint and edit `~/.config/pulse/config.toml` manually:
 
 ```sh
 pulse-agent init --url https://your-pulse-server
 ```
-
-Then edit `~/.config/pulse/config.toml` to add the local repos you want
-git activity ingested for, and verify:
 
 ```toml
 [[repos]]
@@ -144,10 +149,12 @@ Never pass the PAT as a CLI flag — it would appear in `ps aux`.
 
 | Command | Description |
 |---|---|
-| `pulse-agent init --url <url>` | Browser-mediated onboarding. Opens the Pulse approval page; on click-Approve, mints a PAT and stores it. **Recommended for new users.** |
+| `pulse-agent onboard --url <url>` | One-shot end-to-end setup: server-reach → PAT mint → repo auto-discovery → shell hook → background service → GitHub connect. **Recommended for new users.** Idempotent. |
+| `pulse-agent init --url <url>` | Just the browser-mediated PAT mint step (no repo/hook/service install). Use when you want fine-grained control. |
 | `pulse-agent run` | Foreground watcher. Tails Claude JSONL files in real-time, polls git repos every 60s, tails the optional shell-hook buffer. |
 | `pulse-agent doctor` | Prints config path, PAT source, repo watermarks, then pings ingest. |
 | `pulse-agent login --url <url>` | Manual PAT prompt; stores in keyring. Use when a browser isn't available (CI, headless). |
+| `pulse-agent backfill --since <window>` | Re-tail Claude session JSONLs within the window, ignoring per-file watermarks. Idempotent. |
 | `pulse-agent --version` | Print version. |
 
 ## Privacy

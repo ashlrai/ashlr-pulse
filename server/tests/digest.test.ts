@@ -148,8 +148,10 @@ const fullPayload: DigestPayload = {
     {
       owner_id: "u2",
       owner_email: "co@evero.test",
+      totals: { events: 9, tokens: 500_000, cents: 320, repos: 1, tools: 1 },
       bySource: [{ source: "claude_code", events: 9, tokens: 500_000, cents: 320 }],
       byRepo: [{ repo: "ashlr/cotidie", events: 9, tokens: 500_000, cents: 320 }],
+      byProject: [],
       showCost: true,
     },
   ],
@@ -198,5 +200,59 @@ describe("renderDigestEmail", () => {
     // cost column header absent for this peer
     const peerSlice = r.html.split("Peers")[1] ?? "";
     expect(peerSlice).not.toMatch(/<th class="num">cost<\/th>/);
+  });
+
+  test("peer summary line surfaces totals derived from authorized fields", () => {
+    const r = renderDigestEmail(fullPayload);
+    // Text: peer's "9 events · ... · 1 repo · 1 tool"
+    expect(r.text).toMatch(/9 events/);
+    expect(r.text).toMatch(/1 repo/);
+    expect(r.text).toMatch(/1 tool/);
+    // HTML: same summary in the peer panel
+    expect(r.html).toMatch(/peer-summary/);
+    expect(r.html).toMatch(/9 events/);
+  });
+
+  test("peer with byProject renders a project rollup table", () => {
+    const withProject: DigestPayload = {
+      ...fullPayload,
+      peers: [
+        {
+          ...fullPayload.peers[0],
+          byProject: [
+            {
+              project_id: "p1",
+              project_name: "client-foo",
+              repos: [{ repo: "ashlr/cotidie", events: 9, tokens: 500_000, cents: 320 }],
+              events: 9,
+              tokens: 500_000,
+              cents: 320,
+            },
+          ],
+        },
+      ],
+    };
+    const r = renderDigestEmail(withProject);
+    expect(r.text).toMatch(/projects:/);
+    expect(r.text).toMatch(/client-foo/);
+    expect(r.html).toMatch(/client-foo/);
+  });
+
+  test("peer with showCost=false zeroes tokens/cents in totals line", () => {
+    const noCost: DigestPayload = {
+      ...fullPayload,
+      peers: [
+        {
+          ...fullPayload.peers[0],
+          showCost: false,
+          totals: { events: 9, tokens: 0, cents: null, repos: 1, tools: 1 },
+        },
+      ],
+    };
+    const r = renderDigestEmail(noCost);
+    // Summary line still includes events/repos/tools but no token/cost figures.
+    expect(r.text).toMatch(/9 events/);
+    expect(r.text).not.toMatch(/500\.0k tok/);
+    expect(r.text).not.toMatch(/\$3\.20/);
   });
 });

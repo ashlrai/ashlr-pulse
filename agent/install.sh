@@ -38,8 +38,8 @@ case "$uname_s" in
     ;;
   Linux)
     case "$uname_m" in
-      x86_64) asset="pulse-agent-linux-x86_64" ;;
-      aarch64|arm64) err "linux arm64 not yet built — try cargo install or open an issue" ;;
+      x86_64)         asset="pulse-agent-linux-x86_64" ;;
+      aarch64|arm64)  asset="pulse-agent-linux-arm64"  ;;
       *) err "unsupported Linux arch: $uname_m" ;;
     esac
     ;;
@@ -130,11 +130,15 @@ case ":$PATH:" in
 esac
 
 log ""
-log "next steps:"
-log "  1. pulse-agent login --url https://your-pulse-server"
-log "  2. pulse-agent doctor"
-log "  3. pulse-agent run    # foreground; SIGTERM/Ctrl-C to stop"
+log "next step (one command — handles PAT mint, repo discovery, shell hook,"
+log "service install, and GitHub connect):"
+log "  pulse-agent onboard --url https://pulse.ashlr.ai"
 log ""
-log "optional shell hook (captures every claude/codex/aider/... invocation):"
+log "or to drive the steps yourself:"
+log "  pulse-agent init --url https://pulse.ashlr.ai   # browser-mediated PAT mint"
+log "  pulse-agent doctor                              # validate config + ping ingest"
+log "  pulse-agent run                                 # foreground; SIGTERM/Ctrl-C to stop"
+log ""
+log "the shell hook is installed automatically by 'onboard'. to do it manually:"
 log "  echo 'source $hook_dir/pulse-hook.zsh' >> ~/.zshrc    # for zsh"
 log "  echo 'source $hook_dir/pulse-hook.bash' >> ~/.bashrc  # for bash"

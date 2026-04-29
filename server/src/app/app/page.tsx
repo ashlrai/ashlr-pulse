@@ -21,11 +21,15 @@ import { Suspense } from "react";
 import { currentUser } from "@/lib/current-user";
 import { listGrantsForViewer, type PeerShareRow } from "@/lib/peer-share-db";
 import { fmtUsd } from "@/lib/pricing";
-import { getAgentStatus } from "@/lib/heartbeat";
+import { getAgentStatus, fmtAgo as fmtAgoFromSeconds } from "@/lib/heartbeat";
+import { getLastCronRun } from "@/lib/cron-runs";
 import { loadMissedRepos } from "@/lib/missed-repos";
 import { loadDashboard, type ScopeFilter } from "@/lib/dashboard-data";
 import { getOrComputeBriefing, type BriefingInputs } from "@/lib/briefing";
-import { detectAnomaly } from "@/lib/anomalies";
+import { detectAnomaly, type Anomaly } from "@/lib/anomalies";
+import { explainAnomaly, type AnomalyContext } from "@/lib/anomaly-explain";
+import { forecast } from "@/lib/forecast";
+import { loadWeekCohort, loadRecentShippedPRs } from "@/lib/cohort";
 
 import { Header } from "@/components/Header";
 import { StatCard } from "@/components/StatCard";
@@ -87,10 +91,13 @@ export default async function Page({
   const since24hUtc = new Date(nowUtc.getTime() - 24 * 3600_000).toISOString();
 
   // Run all the heavy lifts in parallel.
-  const [data, agentStatus, missedRepos] = await Promise.all([
+  const [data, agentStatus, missedRepos, lastDigestRun, cohort, shippedPRs] = await Promise.all([
     loadDashboard(targetUserId, scope, { chartDays: windowOpt.days }),
     isOwnView ? getAgentStatus(me.id, nowUtc) : Promise.resolve(null),
     isOwnView ? loadMissedRepos(me.id, since24hUtc, nowUtc.toISOString()) : Promise.resolve([]),
+    isOwnView ? getLastCronRun("digest", nowUtc) : Promise.resolve(null),
+    isOwnView ? loadWeekCohort(targetUserId, nowUtc) : Promise.resolve(null),
+    isOwnView ? loadRecentShippedPRs(targetUserId, 5, nowUtc) : Promise.resolve([]),
   ]);
 
   // Compute the prior-week median so the AI briefing has a baseline.
@@ -168,6 +175,47 @@ export default async function Page({
         </div>
       )}
 
+      {isOwnView && agentStatus && agentStatus.seconds_ago != null && !agentAlive && (
+        <div style={{ marginBottom: space.x4 }}>
+          <Banner variant="danger" title="agent: offline">
+            no heartbeat in {fmtAgoFromSeconds(agentStatus.seconds_ago)} · run{" "}
+            <code style={{ color: palette.cyan }}>pulse-agent run</code>{" "}
+            on the machine where it&apos;s installed. data will catch up automatically when it reconnects.
+          </Banner>
+        </div>
+      )}
+
+      {isOwnView && agentStatus && agentStatus.seconds_ago == null && data.today.events === 0 && (
+        <div style={{ marginBottom: space.x4 }}>
+          <Card>
+            <CardHeader title="install pulse-agent to see your activity" />
+            <div style={{ padding: `${space.x3}px ${space.x4}px`, color: palette.textDim, fontSize: 13, lineHeight: 1.6 }}>
+              <p style={{ margin: 0, marginBottom: space.x3 }}>
+                pulse needs the agent on your dev machine to capture coding activity. one command:
+              </p>
+              <pre
+                style={{
+                  margin: 0,
+                  padding: space.x3,
+                  background: palette.bgRaised,
+                  border: `1px solid ${palette.border}`,
+                  borderRadius: 6,
+                  color: palette.text,
+                  fontSize: 12,
+                  overflowX: "auto",
+                }}
+              >
+{`curl -fsSL https://raw.githubusercontent.com/ashlrai/ashlr-pulse/main/agent/install.sh | sh
+pulse-agent onboard --url https://pulse.ashlr.ai`}
+              </pre>
+              <p style={{ margin: 0, marginTop: space.x3 }}>
+                this dashboard updates the moment the agent reports its first heartbeat.
+              </p>
+            </div>
+          </Card>
+        </div>
+      )}
+
       {/* Window selector chip group. */}
       <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: space.x3 }}>
         <ChipGroup
@@ -212,6 +260,38 @@ export default async function Page({
         />
       </div>
 
+      {/* Trend forecast — single line, no LLM call. */}
+      {isOwnView && data.sparklines.tokens.length >= 3 && (
+        <div
+          style={{
+            marginTop: space.x4,
+            padding: `${space.x2}px ${space.x4}px`,
+            border: `1px solid ${palette.border}`,
+            borderLeft: `2px solid ${palette.amber}`,
+            borderRadius: 6,
+            background: "rgba(255,224,122,0.03)",
+            fontSize: 11,
+            color: palette.textDim,
+            display: "flex",
+            gap: space.x4,
+            flexWrap: "wrap",
+          }}
+        >
+          <span style={{ color: palette.amber, textTransform: "uppercase", letterSpacing: 0.6 }}>
+            forecast · this rate
+          </span>
+          <span>
+            <span style={{ color: palette.text }}>~{abbrev(forecast(data.sparklines.tokens).projectedMonthTotal)}</span> tokens by month end
+          </span>
+          <span>
+            <span style={{ color: palette.text }}>~{fmtUsd(Math.round(forecast(data.sparklines.cost).projectedMonthTotal))}</span> cost
+          </span>
+          <span>
+            <span style={{ color: palette.text }}>~{Math.round(forecast(data.sparklines.events).projectedMonthTotal).toLocaleString()}</span> events
+          </span>
+        </div>
+      )}
+
       {/* AI briefing — async-streamed via Suspense. */}
       <div style={{ marginTop: space.x5 }}>
         <Suspense fallback={<BriefingSkeleton />}>
@@ -226,6 +306,22 @@ export default async function Page({
           {tokenAnomaly && <AnomalyChip color={palette.cyan}   msg={tokenAnomaly.message} />}
           {costAnomaly  && <AnomalyChip color={palette.magenta} msg={costAnomaly.message} />}
         </div>
+      )}
+
+      {/* AI-generated anomaly explanations (Suspense — never blocks chart render). */}
+      {isOwnView && (eventAnomaly || tokenAnomaly || costAnomaly) && (
+        <Suspense fallback={null}>
+          <AnomalyExplanationsPanel
+            userId={me.id}
+            anomalies={[eventAnomaly, tokenAnomaly, costAnomaly].filter((a): a is Anomaly => a != null)}
+            ctx={{
+              top_repos:    data.topRepos.slice(0, 5).map((r) => ({ repo: r.label, events: r.value, tokens: 0, cents: null })),
+              top_tools:    data.modelMix.slice(0, 4).map((m) => ({ tool: m.label, events: 0, tokens: m.value })),
+              top_projects: data.byProject.slice(0, 3).map((p) => ({ name: p.project_name, events: p.events, tokens: p.tokens })),
+              github_commits_today: data.recentCommits.filter((c) => Date.now() - new Date(c.ts).getTime() < 24 * 3600_000).length,
+            }}
+          />
+        </Suspense>
       )}
 
       {/* Charts — 2 columns where it makes sense. */}
@@ -361,8 +457,130 @@ export default async function Page({
           <ActivityFeed feed={data.feed} />
         </Card>
       </div>
+
+      {/* Cohort + shipped PRs — own view only. */}
+      {isOwnView && cohort && (
+        <div className="dash-grid" style={{ marginTop: space.x6 }}>
+          <Card>
+            <CardHeader title="cohort · this week vs last" hint="trailing 7d, both buckets" />
+            <CohortRow label="events"  curr={cohort.this_week.events.toLocaleString()}                        prev={cohort.prev_week.events.toLocaleString()}                        delta={cohort.deltas.events_pct} />
+            <CohortRow label="tokens"  curr={abbrev(cohort.this_week.tokens)}                                 prev={abbrev(cohort.prev_week.tokens)}                                 delta={cohort.deltas.tokens_pct} />
+            <CohortRow label="cost"    curr={fmtUsd(cohort.this_week.cents)}                                  prev={fmtUsd(cohort.prev_week.cents)}                                  delta={cohort.deltas.cents_pct} />
+            <CohortRow label="commits" curr={cohort.this_week.commits.toLocaleString()}                       prev={cohort.prev_week.commits.toLocaleString()}                       delta={cohort.deltas.commits_pct} />
+          </Card>
+          <Card>
+            <CardHeader title="shipped PRs · token spend before merge" hint="last 5 merged" />
+            {shippedPRs.length === 0 ? (
+              <p style={{ color: palette.textMute, fontSize: 12, margin: 0 }}>no merged PRs yet.</p>
+            ) : (
+              <ul style={{ margin: 0, padding: 0, listStyle: "none" }}>
+                {shippedPRs.map((p) => (
+                  <li
+                    key={`${p.repo}:${p.pr_number}`}
+                    style={{
+                      padding: `${space.x2}px 0`,
+                      borderBottom: `1px dashed ${palette.border}`,
+                      fontSize: 12,
+                      display: "flex",
+                      gap: space.x3,
+                      justifyContent: "space-between",
+                    }}
+                  >
+                    <span style={{ color: palette.text, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      <span style={{ color: palette.cyan }}>{p.repo}</span>
+                      <span style={{ color: palette.textMute }}> · #{p.pr_number}</span>
+                    </span>
+                    <span style={{ color: palette.text, fontVariantNumeric: "tabular-nums" }}>
+                      {abbrev(p.pre_merge_tokens)} tok · {fmtUsd(p.pre_merge_cents)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Card>
+        </div>
+      )}
+
+      {isOwnView && (
+        <div
+          style={{
+            marginTop: space.x6,
+            paddingTop: space.x4,
+            borderTop: `1px solid ${palette.border}`,
+            color: palette.textDim,
+            fontSize: 11,
+            display: "flex",
+            justifyContent: "space-between",
+            gap: space.x4,
+          }}
+        >
+          <span>{cronFooter(lastDigestRun)}</span>
+        </div>
+      )}
     </DashboardShell>
   );
+}
+
+async function AnomalyExplanationsPanel({
+  userId, anomalies, ctx,
+}: { userId: string; anomalies: Anomaly[]; ctx: AnomalyContext }): Promise<ReactElement | null> {
+  const explanations = await Promise.all(
+    anomalies.map(async (a) => ({ a, text: await explainAnomaly(userId, a, ctx) })),
+  );
+  const visible = explanations.filter((e) => e.text);
+  if (visible.length === 0) return null;
+  return (
+    <div style={{ marginTop: space.x3, display: "flex", flexDirection: "column", gap: space.x2 }}>
+      {visible.map(({ a, text }) => (
+        <div
+          key={a.metric}
+          style={{
+            fontSize: 11,
+            color: palette.textDim,
+            paddingLeft: space.x3,
+            borderLeft: `2px solid ${a.severity === "high" ? palette.red : palette.amber}`,
+            lineHeight: 1.6,
+          }}
+        >
+          <span style={{ color: palette.text, marginRight: 6 }}>{a.metric}:</span>
+          {text}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function CohortRow({
+  label, curr, prev, delta,
+}: { label: string; curr: string; prev: string; delta: number | null }): ReactElement {
+  const deltaPct =
+    delta == null ? "—" : `${delta > 0 ? "+" : ""}${Math.round(delta * 100)}%`;
+  const deltaColor = delta == null ? palette.textMute : delta > 0.05 ? palette.green : delta < -0.05 ? palette.red : palette.textDim;
+  return (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "100px 1fr 1fr 80px",
+        alignItems: "baseline",
+        padding: `${space.x2}px 0`,
+        borderTop: `1px dashed ${palette.border}`,
+        fontSize: 12,
+      }}
+    >
+      <span style={{ color: palette.textDim }}>{label}</span>
+      <span style={{ color: palette.text, fontVariantNumeric: "tabular-nums" }}>{curr}</span>
+      <span style={{ color: palette.textMute, fontVariantNumeric: "tabular-nums" }}>{prev}</span>
+      <span style={{ color: deltaColor, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{deltaPct}</span>
+    </div>
+  );
+}
+
+function cronFooter(run: { status: number; seconds_ago: number; error: string | null } | null): string {
+  if (!run) return "digest cron: no ticks recorded yet";
+  const ago = fmtAgoFromSeconds(run.seconds_ago);
+  if (run.status >= 200 && run.status < 300) return `digest cron: last tick ${ago} ago · ok`;
+  if (run.status === 0) return `digest cron: last tick ${ago} ago · failed (${run.error ?? "fetch error"})`;
+  return `digest cron: last tick ${ago} ago · http ${run.status}`;
 }
 
 // ─── Async briefing panel (called inside Suspense) ────────────────────

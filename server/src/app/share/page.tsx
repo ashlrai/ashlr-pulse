@@ -22,7 +22,7 @@ import {
   type CreatePeerShareInput,
 } from "@/lib/peer-share-db";
 import { validateFields, SHAREABLE_FIELDS } from "@/lib/peer-share-guard";
-import { createInvite, listInvitesByOwner } from "@/lib/invite-db";
+import { createInvite, listInvitesByOwner, deletePendingInvite } from "@/lib/invite-db";
 
 import { Header } from "@/components/Header";
 import { DashboardShell } from "@/components/ui/DashboardShell";
@@ -30,6 +30,7 @@ import { Card, CardHeader } from "@/components/ui/Card";
 import { Banner } from "@/components/ui/Banner";
 import { Button } from "@/components/ui/Button";
 import { Input, Select, Field } from "@/components/ui/Input";
+import { CopyButton } from "@/components/ui/CopyButton";
 import { palette, radius, space } from "@/lib/theme";
 
 const DEFAULT_FIELDS = ["ts", "source", "model", "tokens_input", "tokens_output", "repo_name"];
@@ -87,6 +88,16 @@ async function revokeShareAction(formData: FormData): Promise<void> {
   revalidatePath("/share");
 }
 
+async function deleteInviteAction(formData: FormData): Promise<void> {
+  "use server";
+  const me = await currentUser();
+  if (!me) redirect("/login");
+  const token = String(formData.get("token") ?? "").trim();
+  if (!token) return;
+  await deletePendingInvite(token, me.id);
+  revalidatePath("/share");
+}
+
 async function createInviteAction(formData: FormData): Promise<void> {
   "use server";
   const me = await currentUser();
@@ -135,6 +146,7 @@ export default async function SharePage({
   const justCreated = justCreatedToken ? invites.find((i) => i.token === justCreatedToken) : undefined;
   const origin = process.env.NEXT_PUBLIC_APP_URL ?? "";
   const outstanding = invites.filter((i) => !i.accepted_at && new Date(i.expires_at).getTime() > Date.now());
+  const accepted = invites.filter((i) => i.accepted_at).slice(0, 10);
 
   return (
     <DashboardShell maxWidth={1000}>
@@ -153,7 +165,12 @@ export default async function SharePage({
             <div style={{ marginBottom: 8 }}>
               Send this URL to your cofounder. Single-use, expires in 7 days. They sign in with GitHub on their own device.
             </div>
-            <code style={inviteUrlBox}>{origin}/accept-invite/{justCreated.token}</code>
+            <div style={{ display: "flex", alignItems: "stretch", gap: space.x2 }}>
+              <code style={{ ...inviteUrlBox, flex: 1 }}>
+                {origin}/accept-invite/{justCreated.token}
+              </code>
+              <CopyButton value={`${origin}/accept-invite/${justCreated.token}`} label="copy link" />
+            </div>
             {justCreated.label && (
               <div style={{ marginTop: 6, color: palette.textDim, fontSize: 11 }}>
                 label: {justCreated.label}
@@ -199,21 +216,60 @@ export default async function SharePage({
 
         {outstanding.length > 0 && (
           <Card>
-            <CardHeader title={`outstanding invites · ${outstanding.length}`} />
+            <CardHeader title={`outstanding invites · ${outstanding.length}`} hint="not accepted yet" />
             <ul style={{ margin: 0, padding: 0, listStyle: "none" }}>
-              {outstanding.map((i) => (
+              {outstanding.map((i) => {
+                const url = `${origin}/accept-invite/${i.token}`;
+                return (
+                  <li
+                    key={i.token}
+                    style={{
+                      padding: `${space.x2}px 0`,
+                      borderBottom: `1px dashed ${palette.border}`,
+                      fontSize: 11,
+                      color: palette.textDim,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: space.x2,
+                    }}
+                  >
+                    <code style={{ color: palette.green, wordBreak: "break-all", flex: 1 }}>
+                      {url}
+                    </code>
+                    <CopyButton value={url} />
+                    <form action={deleteInviteAction}>
+                      <input type="hidden" name="token" value={i.token} />
+                      <Button type="submit" variant="danger" size="sm">delete</Button>
+                    </form>
+                    <div style={{ width: "100%", flexBasis: "100%", color: palette.textMute, fontSize: 11, marginTop: 4 }}>
+                      {i.label && <span>label: {i.label} · </span>}
+                      <span>expires {new Date(i.expires_at).toISOString().slice(0, 10)}</span>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          </Card>
+        )}
+
+        {accepted.length > 0 && (
+          <Card>
+            <CardHeader title={`accepted invites · ${accepted.length}`} hint="latest 10" />
+            <ul style={{ margin: 0, padding: 0, listStyle: "none" }}>
+              {accepted.map((i) => (
                 <li
                   key={i.token}
                   style={{
-                    padding: "6px 0", borderBottom: `1px dashed ${palette.border}`,
-                    fontSize: 11, color: palette.textDim,
+                    padding: `${space.x2}px 0`,
+                    borderBottom: `1px dashed ${palette.border}`,
+                    fontSize: 11,
+                    color: palette.textDim,
                   }}
                 >
-                  <code style={{ color: palette.green, wordBreak: "break-all" }}>
-                    {origin}/accept-invite/{i.token}
-                  </code>
-                  {i.label && <span> · {i.label}</span>}
-                  <span style={{ color: palette.textMute }}> · expires {new Date(i.expires_at).toISOString().slice(0, 10)}</span>
+                  <span style={{ color: palette.text }}>{i.label ?? "(no label)"}</span>
+                  <span style={{ color: palette.textMute }}>
+                    {" · accepted "}{i.accepted_at ? new Date(i.accepted_at).toISOString().slice(0, 10) : ""}
+                  </span>
                 </li>
               ))}
             </ul>
