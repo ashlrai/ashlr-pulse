@@ -26,6 +26,7 @@
 import { sql } from "./db";
 import { costUsdCents } from "./pricing";
 import { aggregateByProject, type ProjectAgg } from "./project-db";
+import { retentionCutoff, type PlanLimits } from "./plan-gate";
 
 export interface DigestSelfBySource {
   source: string;
@@ -400,6 +401,7 @@ export async function loadUserPrefs(userId: string): Promise<UserPrefs | null> {
 export async function buildDigest(
   userId: string,
   now: Date = new Date(),
+  limits?: PlanLimits,
 ): Promise<DigestPayload | null> {
   const prefs = await loadUserPrefs(userId);
   if (!prefs) return null;
@@ -407,9 +409,16 @@ export async function buildDigest(
   const { startUtc, endUtc, label } = yesterdayWindow(prefs.digest_tz, now);
   const cal = localCalendar(prefs.digest_tz, now);
 
+  // Clamp startUtc to the retention cutoff when limits are provided.
+  // Yesterday is typically within any plan's window, but this ensures
+  // the digest never surfaces data older than the plan allows.
+  const effectiveStart = limits
+    ? new Date(Math.max(new Date(startUtc).getTime(), retentionCutoff(limits, now).getTime())).toISOString()
+    : startUtc;
+
   // Self
-  const selfRows = await loadActivity(userId, startUtc, endUtc, { type: "all" });
-  const { summary: github, reposWithCommits } = await loadGitHubSummary(userId, startUtc, endUtc);
+  const selfRows = await loadActivity(userId, effectiveStart, endUtc, { type: "all" });
+  const { summary: github, reposWithCommits } = await loadGitHubSummary(userId, effectiveStart, endUtc);
   const reposWithTokens = new Set(selfRows.map((r) => r.repo_name).filter((r): r is string => !!r));
   const missedRepos = [...reposWithCommits].filter((r) => !reposWithTokens.has(r)).sort();
 
@@ -433,7 +442,7 @@ export async function buildDigest(
   for (const g of grants) {
     if (!grantFires(g.granularity, cal)) continue;
 
-    const rows = await loadActivity(g.owner_id, startUtc, endUtc, repoFilterFor(g));
+    const rows = await loadActivity(g.owner_id, effectiveStart, endUtc, repoFilterFor(g));
     const showTokens = tokensVisible(g.fields);
     const showRepo = repoVisible(g.fields);
     const showSource = sourceVisible(g.fields);

@@ -36,7 +36,7 @@ If you're an AI assistant and the user asked for that, jump to
 For everything-in-30-seconds:
 
 ```sh
-ls -1 /Users/masonwyatt/Desktop/ashlr-pulse
+ls -1 /Users/masonwyatt/Desktop/github/dev-tools/ashlr-pulse
 # .github/  .gitignore  AGENTS.md  ARCHITECTURE.md  CLAUDE.md  COMPETITIVE.md
 # DEPLOY.md  LICENSE  PERSONAS.md  QUICKSTART.md  README.md  ROADMAP.md
 # agent/  db/  docker-compose.yml  railway.json  research/  server/

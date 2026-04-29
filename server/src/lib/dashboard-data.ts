@@ -11,6 +11,7 @@
 
 import { sql } from "@/lib/db";
 import { costUsdCents } from "@/lib/pricing";
+import { retentionCutoff, type PlanLimits } from "@/lib/plan-gate";
 
 export interface ScopeFilter {
   /** Raw SQL fragment, e.g. `AND repo_name LIKE $2`. Empty string = no filter. */
@@ -23,6 +24,13 @@ export interface LoadOpts {
   /** Chart window in days. Default 14. Stat-card today/yesterday/week
    *  totals always use their fixed (24h/48h/7d) windows. */
   chartDays?: number;
+  /**
+   * When set, clamps all queries to ts >= limits.retention_cutoff. Pass
+   * the resolved PlanLimits from limitsFor(org) so free-tier users only
+   * see their allowed retention window (7 days). When omitted no cutoff
+   * is applied (no-op for paid plans).
+   */
+  limits?: PlanLimits;
 }
 
 export interface DashboardData {
@@ -134,11 +142,20 @@ export async function loadDashboard(
   const chartDays = clampDays(opts.chartDays ?? 14);
   const db = sql();
 
+  // Retention cutoff: free-tier users see at most 7 days of data.
+  // We clamp the SQL window to min(sqlWindowDays, retentionDays) so
+  // the query never returns rows the plan doesn't allow.
+  const retCutoff = opts.limits ? retentionCutoff(opts.limits) : null;
+
   // Pull a window of raw rows; we'll bucket in memory. The window is
   // max(chartDays, 30) so the 30d heatmap always has data even when
   // the user picks a 7d chart range. ~30k rows × in-memory bucketing
   // is well under postgres-js + Node's memory budget.
   const sqlWindowDays = Math.max(chartDays, 30);
+  // If a retention cutoff is active, cap the window to the smaller range.
+  const retCutoffClause = retCutoff
+    ? `AND ts >= '${retCutoff.toISOString()}'`
+    : "";
   const events = await db.unsafe<RawEvent[]>(
     `
     SELECT
@@ -158,6 +175,7 @@ export async function loadDashboard(
     FROM activity_event
     WHERE user_id = $1
       AND ts >= NOW() - INTERVAL '${sqlWindowDays} days'
+      ${retCutoffClause}
       ${scope.repoClauseSql}
     ORDER BY ts DESC
     `,
@@ -179,6 +197,7 @@ export async function loadDashboard(
     WHERE ga.user_id = $1::uuid
       AND ge.kind    = 'commit'
       AND ge.ts >= NOW() - INTERVAL '${chartDays} days'
+      ${retCutoffClause}
     ORDER BY ge.ts DESC
     LIMIT 50
     `,
@@ -193,6 +212,7 @@ export async function loadDashboard(
     JOIN github_account ga ON ga.id = ge.account_id
     WHERE ga.user_id = $1::uuid
       AND ge.ts >= NOW() - INTERVAL '${chartDays} days'
+      ${retCutoffClause}
     `,
     [userId],
   ).catch(() => [] as { kind: string; ts: string }[]);

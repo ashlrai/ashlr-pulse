@@ -9,7 +9,7 @@ read by Codex, Cursor, Aider, Gemini CLI, Windsurf, and others.
 ## Claude Code-specific notes
 
 - **Memory files** for this project live at
-  `~/.claude/projects/-Users-masonwyatt-Desktop-ashlr-pulse/memory/`.
+  `~/.claude/projects/-Users-masonwyatt-Desktop-github-dev-tools-ashlr-pulse/memory/`.
   Build them up over time per the `auto memory` instructions in the
   user's global CLAUDE.md.
 - **Skills** live under `.claude/skills/` if/when added.
@@ -21,3 +21,14 @@ read by Codex, Cursor, Aider, Gemini CLI, Windsurf, and others.
 - **Bash hooks**: when running shell commands in this repo, prefer the
   `ashlr__bash` MCP tool over the built-in Bash tool — it auto-compresses
   verbose output (the project's MCP server documents this).
+
+## Phantom Secrets
+
+This project uses [Phantom](https://phm.dev) to protect API keys from AI leaks.
+
+- The `.env` file contains **phantom tokens** (`phm_...`), not real secrets
+- Real secrets are in an encrypted vault (OS keychain)
+- Use the Phantom MCP tools to manage secrets — never ask the user for raw API key values
+- To add a secret: use the `phantom_add_secret` MCP tool
+- To list secrets: use the `phantom_list_secrets` MCP tool
+- The proxy (`phantom exec`) injects real credentials at the network layer

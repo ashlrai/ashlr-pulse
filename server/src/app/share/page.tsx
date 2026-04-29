@@ -23,6 +23,8 @@ import {
 } from "@/lib/peer-share-db";
 import { validateFields, SHAREABLE_FIELDS } from "@/lib/peer-share-guard";
 import { createInvite, listInvitesByOwner } from "@/lib/invite-db";
+import { primaryOrgForUser } from "@/lib/org-db";
+import { limitsFor, PlanGateError } from "@/lib/plan-gate";
 
 import { Header } from "@/components/Header";
 import { DashboardShell } from "@/components/ui/DashboardShell";
@@ -58,6 +60,15 @@ async function createShareAction(formData: FormData): Promise<void> {
   if (!viewer) return;
   if (viewer.id === me.id) redirect("/share?error=cannot+share+with+yourself");
 
+  // Gate 4: check peer_share_enabled on the owner's plan.
+  const ownerOrg = await primaryOrgForUser(me.id);
+  if (ownerOrg) {
+    const limits = limitsFor(ownerOrg);
+    if (!limits.peer_share_enabled) {
+      redirect("/share?error=upgrade-to-share");
+    }
+  }
+
   const input: CreatePeerShareInput = {
     owner_id: me.id,
     viewer_id: viewer.id,
@@ -65,11 +76,15 @@ async function createShareAction(formData: FormData): Promise<void> {
     scope_value: scope_type === "all" ? null : (scope_value_raw || null),
     granularity: granularity as CreatePeerShareInput["granularity"],
     fields: guard.fields,
+    ownerOrg: ownerOrg ?? undefined,
   };
 
   try {
     await createPeerShare(input);
   } catch (err) {
+    if (err instanceof PlanGateError) {
+      redirect("/share?error=upgrade-to-share");
+    }
     const m = err instanceof Error ? err.message : String(err);
     redirect(`/share?error=${encodeURIComponent(m)}`);
   }
@@ -146,7 +161,14 @@ export default async function SharePage({
 
       <div style={{ display: "flex", flexDirection: "column", gap: space.x4 }}>
         {ok && <Banner variant="success">grant created.</Banner>}
-        {error && <Banner variant="danger">{error.replace(/\+/g, " ")}</Banner>}
+        {error === "upgrade-to-share" ? (
+          <Banner variant="warning">
+            Peer sharing is a Pro feature.{" "}
+            <a href="/pricing" style={{ color: palette.amber }}>Upgrade to Pro</a> to share your activity with teammates.
+          </Banner>
+        ) : (
+          error && <Banner variant="danger">{error.replace(/\+/g, " ")}</Banner>
+        )}
 
         {justCreated && (
           <Banner variant="success" title="invite created">
