@@ -111,10 +111,11 @@ function TopNav(): ReactElement {
       </a>
 
       <nav style={{ display: "flex", gap: 24, alignItems: "center", fontSize: 13 }}>
+        <a href="/pricing" style={navLink}>pricing</a>
         <a href="https://github.com/ashlrai/ashlr-pulse" style={navLink}>github</a>
         <a href="/login" style={navLink}>sign in</a>
         <a href="/login" className="pulse-magenta-cta" style={magentaCta}>
-          start tracking →
+          start free →
         </a>
       </nav>
     </header>
@@ -152,7 +153,7 @@ function Hero(): ReactElement {
             }}
           >
             <span style={{ width: 6, height: 6, borderRadius: 999, background: "#7CFFA0" }} />
-            v0.2 — peer-visibility live
+            v0.3 — portfolio + AI standups + predictive trends · live
           </div>
 
           <h1
@@ -182,28 +183,36 @@ function Hero(): ReactElement {
               maxWidth: 520,
             }}
           >
-            Cofounder-scale visibility across every repo, every AI tool, every
-            commit. Configurable peer-share. A privacy floor that's
+            Portfolio health at a glance. AI-generated standups + weekly recaps.
+            Predictive cost forecasts. Configurable peer-share between cofounders.
+            A privacy floor that&apos;s
             <span style={{ color: "#fff" }}> not a toggle</span> — we never store
             prompts, completions, or code.
           </p>
 
           <div style={{ marginTop: 36, display: "flex", gap: 16, flexWrap: "wrap" }}>
             <a href="/login" style={{ ...magentaCta, padding: "12px 22px", fontSize: 14 }}>
-              start tracking →
+              start free →
+            </a>
+            <a
+              href="/pricing"
+              style={{ ...secondaryCta, padding: "12px 22px", fontSize: 14 }}
+            >
+              see pricing
             </a>
             <a
               href="https://github.com/ashlrai/ashlr-pulse"
-              style={{ ...secondaryCta, padding: "12px 22px", fontSize: 14 }}
+              style={{ ...secondaryCta, padding: "12px 22px", fontSize: 14, color: "#666" }}
             >
               read the source
             </a>
           </div>
 
-          <div style={{ marginTop: 32, display: "flex", gap: 24, fontSize: 12, color: "#666" }}>
+          <div style={{ marginTop: 32, display: "flex", gap: 24, fontSize: 12, color: "#666", flexWrap: "wrap" }}>
+            <span>· Free for solo</span>
+            <span>· $10/dev/mo Pro</span>
             <span>· OpenTelemetry-native</span>
             <span>· MIT core</span>
-            <span>· Self-hostable</span>
           </div>
         </div>
       </Reveal>
