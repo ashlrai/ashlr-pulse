@@ -30,6 +30,7 @@ export function Card({ children, accent, pad = "regular", style }: CardProps): R
       style={cardStyle({
         padding,
         position: "relative",
+        animation: "fade-in-up 0.35s cubic-bezier(0.2, 0.7, 0.2, 1) both",
         ...(accent && {
           borderTop: `1.5px solid ${accent}`,
         }),
