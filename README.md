@@ -64,6 +64,26 @@ See [QUICKSTART.md](QUICKSTART.md) for full setup, [DEPLOY.md](DEPLOY.md) for
 hosting your own, and [AGENTS.md](AGENTS.md) for the AI-agent-driveable
 contract.
 
+### Wiring secrets to production
+
+The canonical path uses [Phantom](https://phantom.ashlr.ai) so the agent
+never handles secret values:
+
+```bash
+# 1. Seal secrets into the vault from a TTY prompt (values never enter the transcript)
+phantom init --env-file server/.env.local
+
+# 2. Push prod-required keys to Railway in one step
+phantom sync --platform railway   # reads .phantom.toml at repo root
+```
+
+`server/scripts/wire-stripe-to-railway.sh` automates this for the three
+Stripe keys specifically — run it after any key rotation.
+
+**Fallback (no Phantom installed):** paste secrets directly into the
+Railway dashboard at railway.app → your project → Variables. Do not use
+`railway variables set KEY=value` — that puts the value in shell history.
+
 ## Privacy floor
 
 Ashlr Pulse **never stores**: prompts, completions, user code, file contents,
