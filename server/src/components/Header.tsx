@@ -13,11 +13,12 @@
 import type { ReactElement } from "react";
 import { signOutAction } from "@/lib/auth-actions";
 import type { CurrentUser } from "@/lib/current-user";
+import { LivePulse } from "@/components/ui/LivePulse";
 import { palette, space } from "@/lib/theme";
 
 interface Props {
   me: CurrentUser;
-  active: "dashboard" | "ask" | "github" | "share" | "projects" | "tokens" | "settings";
+  active: "dashboard" | "ask" | "github" | "share" | "projects" | "portfolio" | "attention" | "tokens" | "settings";
   /** Optional live agent status — renders the green pulse + label when alive. */
   agentAlive?: boolean;
   agentSeenSecondsAgo?: number | null;
@@ -56,6 +57,8 @@ export function Header({ me, active, agentAlive, agentSeenSecondsAgo }: Props): 
         </a>
         <nav style={{ display: "flex", gap: space.x4, fontSize: 12 }}>
           <NavLink href="/app"             active={active === "dashboard"}>dashboard</NavLink>
+          <NavLink href="/portfolio"       active={active === "portfolio"}>portfolio</NavLink>
+          <NavLink href="/attention"       active={active === "attention"}>attention</NavLink>
           <NavLink href="/ask"             active={active === "ask"}>ask</NavLink>
           <NavLink href="/projects"        active={active === "projects"}>projects</NavLink>
           <NavLink href="/share"           active={active === "share"}>sharing</NavLink>
@@ -66,6 +69,7 @@ export function Header({ me, active, agentAlive, agentSeenSecondsAgo }: Props): 
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: space.x3, fontSize: 12 }}>
+        <LivePulse />
         <AgentBadge alive={agentAlive} seen={agentSeenSecondsAgo} />
         <span
           className="hide-on-mobile"

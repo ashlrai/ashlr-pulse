@@ -1,8 +1,10 @@
 name: Release agent
 
-# Triggered by tags shaped like agent-v0.2.0. Cross-compiles the Rust agent
-# for macOS (arm64 + x86_64) and Linux (x86_64), strips, tarballs, computes
-# sha256 sums, and attaches everything to a GitHub Release.
+# Triggered by tags shaped like agent-v0.2.0. Builds the Rust agent
+# for macOS (arm64 + x86_64) and Linux (x86_64 + aarch64), strips, tarballs,
+# computes sha256 sums, and attaches everything to a GitHub Release.
+# Linux aarch64 uses the ubuntu-24.04-arm native runner (no cross-compile),
+# so each binary is built on the same arch it runs on.
 #
 # The companion install script (agent/install.sh) downloads from the
 # release this workflow produces.
@@ -23,9 +25,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: macos-14,    target: aarch64-apple-darwin,      asset: pulse-agent-macos-arm64 }
-          - { os: macos-13,    target: x86_64-apple-darwin,       asset: pulse-agent-macos-x86_64 }
-          - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu, asset: pulse-agent-linux-x86_64 }
+          - { os: macos-14,         target: aarch64-apple-darwin,       asset: pulse-agent-macos-arm64 }
+          - { os: macos-13,         target: x86_64-apple-darwin,        asset: pulse-agent-macos-x86_64 }
+          - { os: ubuntu-24.04,     target: x86_64-unknown-linux-gnu,   asset: pulse-agent-linux-x86_64 }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu,  asset: pulse-agent-linux-arm64 }
 
     steps:
       - uses: actions/checkout@v4
@@ -93,3 +96,5 @@ jobs:
             dist/pulse-agent-macos-x86_64.tar.gz.sha256
             dist/pulse-agent-linux-x86_64.tar.gz
             dist/pulse-agent-linux-x86_64.tar.gz.sha256
+            dist/pulse-agent-linux-arm64.tar.gz
+            dist/pulse-agent-linux-arm64.tar.gz.sha256

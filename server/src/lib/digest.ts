@@ -57,11 +57,25 @@ export interface DigestSelf {
   missedRepos: string[];
 }
 
+export interface DigestPeerTotals {
+  events: number;
+  tokens: number;
+  cents: number | null;
+  /** Distinct repo count, or null when the grant doesn't share repo_name. */
+  repos: number | null;
+  /** Distinct tool/source count, or null when the grant doesn't share source. */
+  tools: number | null;
+}
+
 export interface DigestPeer {
   owner_id: string;
   owner_email: string;
+  /** One-line summary derived from already-authorized fields. */
+  totals: DigestPeerTotals;
   bySource: DigestSelfBySource[];
   byRepo: DigestSelfByRepo[] | null; // null when grant doesn't share repo_name
+  /** Project rollup, or [] when projects can't be resolved or repo_name isn't shared. */
+  byProject: ProjectAgg[];
   showCost: boolean;                 // true iff token fields are visible
 }
 
@@ -373,6 +387,12 @@ function repoFilterFor(grant: PeerGrant): Parameters<typeof loadActivity>[3] {
   }
 }
 
+function maxNullable(a: number | null, b: number | null): number | null {
+  if (a == null) return b;
+  if (b == null) return a;
+  return Math.max(a, b);
+}
+
 function tokensVisible(fields: string[]): boolean {
   return fields.includes("tokens_input") || fields.includes("tokens_output");
 }
@@ -445,10 +465,34 @@ export async function buildDigest(
     const bySource = showSource ? aggregateBySource(rows) : [];
     const byRepoFull = aggregateByRepo(rows);
     const byRepo = showRepo ? byRepoFull : null;
+    // byProject only resolves names for projects the *owner* has membership
+    // for — non-shared projects resolve to "(unassigned)" automatically.
+    // We render it only when repo_name is in the grant; otherwise the
+    // project labels would leak repo names indirectly via project membership.
+    const byProject = showRepo ? await aggregateByProject(g.owner_id, byRepoFull) : [];
 
     // Strip cost when tokens aren't shareable.
     const stripCost = <T extends { cents: number | null }>(arr: T[]): T[] =>
       showTokens ? arr : arr.map((r) => ({ ...r, cents: null, tokens: 0 } as T));
+
+    // Totals: derived only from authorized data — events count is always
+    // safe; tokens/cents are zeroed when tokens aren't shareable.
+    const totalEvents = rows.length;
+    const totalTokens = showTokens
+      ? rows.reduce((s, r) => s + (r.tokens_input ?? 0) + (r.tokens_output ?? 0), 0)
+      : 0;
+    const totalCents = showTokens
+      ? byRepoFull.reduce((s, r) => s + (r.cents ?? 0), 0)
+      : 0;
+    const distinctRepos = showRepo ? new Set(rows.map((r) => r.repo_name).filter(Boolean)).size : null;
+    const distinctTools = showSource ? new Set(rows.map((r) => r.source)).size : null;
+    const totals: DigestPeerTotals = {
+      events: totalEvents,
+      tokens: totalTokens,
+      cents: showTokens ? totalCents : null,
+      repos: distinctRepos,
+      tools: distinctTools,
+    };
 
     // Merge with any earlier grant from the same owner (most permissive
     // fields win — already merged by Set semantics in the booleans above).
@@ -456,13 +500,24 @@ export async function buildDigest(
     const merged: DigestPeer = existing ?? {
       owner_id: g.owner_id,
       owner_email: g.owner_email,
+      totals: { events: 0, tokens: 0, cents: null, repos: null, tools: null },
       bySource: [],
       byRepo: null,
+      byProject: [],
       showCost: false,
     };
     merged.bySource = bySource.length ? stripCost(bySource) : merged.bySource;
     merged.byRepo = byRepo ? stripCost(byRepo) : merged.byRepo;
+    merged.byProject = byProject.length ? (showTokens ? byProject : byProject.map((p) => ({ ...p, tokens: 0, cents: null }))) : merged.byProject;
     merged.showCost = merged.showCost || showTokens;
+    // Most-permissive merge: take the larger of each totals field.
+    merged.totals = {
+      events: Math.max(merged.totals.events, totals.events),
+      tokens: Math.max(merged.totals.tokens, totals.tokens),
+      cents: maxNullable(merged.totals.cents, totals.cents),
+      repos: maxNullable(merged.totals.repos, totals.repos),
+      tools: maxNullable(merged.totals.tools, totals.tools),
+    };
     peerByOwner.set(g.owner_id, merged);
   }
   const peers = [...peerByOwner.values()];
@@ -473,7 +528,7 @@ export async function buildDigest(
     self.github.commits === 0 &&
     self.github.prs_opened === 0 &&
     self.github.prs_merged === 0 &&
-    peers.every((p) => p.bySource.length === 0 && (p.byRepo ?? []).length === 0);
+    peers.every((p) => p.bySource.length === 0 && (p.byRepo ?? []).length === 0 && p.totals.events === 0);
 
   return {
     user_id: userId,

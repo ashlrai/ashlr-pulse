@@ -42,7 +42,7 @@ use crate::state::StateDb;
 
 /// AI CLIs we recognize as worth tracking. Anything not on this list is
 /// silently ignored even if the hook accidentally records it.
-const RECOGNIZED_CLIS: &[&str] = &[
+pub const RECOGNIZED_CLIS: &[&str] = &[
     "claude",   // Claude Code
     "codex",    // OpenAI Codex CLI
     "aider",
@@ -52,6 +52,33 @@ const RECOGNIZED_CLIS: &[&str] = &[
     "llm",      // simonw's llm
     "ollama",   // captures `ollama run`
 ];
+
+/// Result of classifying a `cmd` field from a shell-hook record.
+/// Public so integration tests can exercise the privacy floor without
+/// having to set up the full process_buffer pipeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellCmdStatus {
+    /// Recognized AI CLI, no metachars — safe to emit a span.
+    Ok,
+    /// Contains whitespace or shell metachar — privacy floor; reject.
+    MetaChar,
+    /// Bare word but not on the recognized list — silently skipped.
+    NotRecognized,
+}
+
+/// Classify the `cmd` field of a shell-hook record. The privacy floor
+/// rejects anything containing a space or shell metachar (defense in
+/// depth — the hook should already strip argv, but this is what the
+/// tailer enforces if it ever doesn't).
+pub fn classify_cmd(cmd: &str) -> ShellCmdStatus {
+    if cmd.contains(|c: char| c.is_whitespace() || "&|;`$<>(){}[]\"'".contains(c)) {
+        return ShellCmdStatus::MetaChar;
+    }
+    if !RECOGNIZED_CLIS.contains(&cmd) {
+        return ShellCmdStatus::NotRecognized;
+    }
+    ShellCmdStatus::Ok
+}
 
 #[derive(Debug, Deserialize)]
 struct ShellRecord {
@@ -196,14 +223,17 @@ async fn process_buffer(
         // Defense-in-depth: cmd must be a single bare token, on the
         // recognized list. Belt and suspenders against a future hook
         // variant accidentally including args.
-        if rec.cmd.contains(|c: char| c.is_whitespace() || "&|;`$<>(){}[]\"'".contains(c)) {
-            warn!("shell tailer: rejected cmd containing shell metachar: {:?}", rec.cmd);
-            last_good_offset = line_end;
-            continue;
-        }
-        if !RECOGNIZED_CLIS.contains(&rec.cmd.as_str()) {
-            last_good_offset = line_end;
-            continue;
+        match classify_cmd(&rec.cmd) {
+            ShellCmdStatus::MetaChar => {
+                warn!("shell tailer: rejected cmd containing shell metachar: {:?}", rec.cmd);
+                last_good_offset = line_end;
+                continue;
+            }
+            ShellCmdStatus::NotRecognized => {
+                last_good_offset = line_end;
+                continue;
+            }
+            ShellCmdStatus::Ok => {}
         }
         if rec.ts_end_ns < rec.ts_start_ns {
             last_good_offset = line_end; // garbage timing

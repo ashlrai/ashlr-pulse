@@ -22,6 +22,7 @@
  */
 
 import { log } from "./logger";
+import { recordCronRun } from "./cron-runs";
 
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const FIFTEEN_MIN_MS = 15 * 60 * 1000;
@@ -57,6 +58,7 @@ export function startBackgroundCron(): void {
 async function tick(endpoint: "github-sync" | "digest"): Promise<void> {
   const port = process.env.PORT ?? "3000";
   const url = `http://127.0.0.1:${port}/api/cron/${endpoint}`;
+  const startedAt = Date.now();
   try {
     const r = await fetch(url, {
       method: "POST",
@@ -66,8 +68,19 @@ async function tick(endpoint: "github-sync" | "digest"): Promise<void> {
       },
       body: "{}",
     });
-    log.info({ msg: "cron: tick complete", endpoint, status: r.status });
+    const elapsedMs = Date.now() - startedAt;
+    log.info({ msg: "cron: tick complete", endpoint, status: r.status, elapsed_ms: elapsedMs });
+    // Telemetry write is best-effort — never let a logging failure
+    // mask a successful tick. The next tick will record again.
+    recordCronRun({ endpoint, status: r.status, elapsedMs }).catch((err) => {
+      log.error({ msg: "cron: telemetry write failed", endpoint, err: err instanceof Error ? err.message : String(err) });
+    });
   } catch (err) {
-    log.error({ msg: "cron: tick failed", endpoint, err: err instanceof Error ? err.message : String(err) });
+    const elapsedMs = Date.now() - startedAt;
+    const message = err instanceof Error ? err.message : String(err);
+    log.error({ msg: "cron: tick failed", endpoint, err: message });
+    recordCronRun({ endpoint, status: 0, elapsedMs, error: message }).catch(() => {
+      // Swallow — already logged the original failure above.
+    });
   }
 }
