@@ -19,6 +19,12 @@ export interface ScopeFilter {
   repoParams: (string | number)[];
 }
 
+export interface LoadOpts {
+  /** Chart window in days. Default 14. Stat-card today/yesterday/week
+   *  totals always use their fixed (24h/48h/7d) windows. */
+  chartDays?: number;
+}
+
 export interface DashboardData {
   /** Today (last 24h) summary. */
   today: { events: number; tokens: number; costCents: number | null };
@@ -50,6 +56,35 @@ export interface DashboardData {
   feed: FeedRow[];
   /** Sparkline daily series for the 4 stat cards. */
   sparklines: { events: number[]; tokens: number[]; cost: number[]; commits: number[] };
+  /** Project-level rollup over the chart window. */
+  byProject: ProjectRollup[];
+  /** GitHub activity per day over the chart window. */
+  github: GithubDaily[];
+  /** GitHub totals over the chart window. */
+  githubTotals: { commits: number; prs_opened: number; prs_merged: number; reviews: number };
+  /** Effective window in days that the charts cover. */
+  chartDays: number;
+}
+
+export interface GithubDaily {
+  bucket: string;
+  commits: number;
+  prs_opened: number;
+  prs_merged: number;
+  reviews: number;
+  /** LineChart accepts arbitrary string keys; this index signature lets
+   *  GithubDaily[] satisfy LinePoint[] without a cast. */
+  [series: string]: string | number;
+}
+
+export interface ProjectRollup {
+  project_id: string;
+  project_name: string;
+  kind: string;
+  events: number;
+  tokens: number;
+  cents: number | null;
+  repos: number;
 }
 
 export interface DailyAggregate {
@@ -94,13 +129,16 @@ interface RawEvent {
 export async function loadDashboard(
   userId: string,
   scope: ScopeFilter,
+  opts: LoadOpts = {},
 ): Promise<DashboardData> {
+  const chartDays = clampDays(opts.chartDays ?? 14);
   const db = sql();
 
-  // Pull a 30-day window of raw rows; we'll bucket in memory. 30 days ×
-  // ~1k events/day on a heavy user is ~30k rows, well under what
-  // postgres-js handles in one round trip. If this gets bigger later,
-  // we can bucket in SQL — but for now in-memory is fine.
+  // Pull a window of raw rows; we'll bucket in memory. The window is
+  // max(chartDays, 30) so the 30d heatmap always has data even when
+  // the user picks a 7d chart range. ~30k rows × in-memory bucketing
+  // is well under postgres-js + Node's memory budget.
+  const sqlWindowDays = Math.max(chartDays, 30);
   const events = await db.unsafe<RawEvent[]>(
     `
     SELECT
@@ -119,16 +157,17 @@ export async function loadDashboard(
       tool_calls_types
     FROM activity_event
     WHERE user_id = $1
-      AND ts >= NOW() - INTERVAL '30 days'
+      AND ts >= NOW() - INTERVAL '${sqlWindowDays} days'
       ${scope.repoClauseSql}
     ORDER BY ts DESC
     `,
     [userId, ...scope.repoParams],
   );
 
-  // Pull last 24h of github commits (subjects only — public info).
+  // Pull last chartDays of github commits (subjects only — public info).
   // github_event ⨝ github_account (account_id) ⨝ github_repo (repo_id).
-  const commits = await db<{ subject: string; repo: string; sha: string; ts: string }[]>`
+  const commits = await db.unsafe<{ subject: string; repo: string; sha: string; ts: string }[]>(
+    `
     SELECT
       ge.message_first_line AS subject,
       gr.full_name          AS repo,
@@ -137,19 +176,63 @@ export async function loadDashboard(
     FROM github_event ge
     JOIN github_account ga ON ga.id = ge.account_id
     JOIN github_repo    gr ON gr.id = ge.repo_id
-    WHERE ga.user_id = ${userId}
+    WHERE ga.user_id = $1::uuid
       AND ge.kind    = 'commit'
-      AND ge.ts >= NOW() - INTERVAL '14 days'
+      AND ge.ts >= NOW() - INTERVAL '${chartDays} days'
     ORDER BY ge.ts DESC
     LIMIT 50
-  `.catch(() => []);
+    `,
+    [userId],
+  ).catch(() => [] as { subject: string; repo: string; sha: string; ts: string }[]);
 
-  return computeAggregates(events, commits);
+  // Pull GitHub events for daily PR throughput aggregation.
+  const ghEvents = await db.unsafe<{ kind: string; ts: string }[]>(
+    `
+    SELECT ge.kind, ge.ts::text AS ts
+    FROM github_event ge
+    JOIN github_account ga ON ga.id = ge.account_id
+    WHERE ga.user_id = $1::uuid
+      AND ge.ts >= NOW() - INTERVAL '${chartDays} days'
+    `,
+    [userId],
+  ).catch(() => [] as { kind: string; ts: string }[]);
+
+  // Load project rollups in parallel — small query, joins activity_event
+  // to project_repo. Bounded to chartDays.
+  const projectRollups = await db.unsafe<ProjectRollup[]>(
+    `
+    SELECT
+      p.id::text          AS project_id,
+      p.name              AS project_name,
+      p.kind              AS kind,
+      COUNT(DISTINCT pr.repo_name)::int AS repos,
+      COUNT(ae.*)::int    AS events,
+      COALESCE(SUM(COALESCE(ae.tokens_input, 0) + COALESCE(ae.tokens_output, 0)), 0)::bigint::int AS tokens,
+      NULL::int           AS cents
+    FROM project p
+    JOIN membership m  ON m.org_id    = p.org_id AND m.user_id = $1::uuid
+    JOIN project_repo pr ON pr.project_id = p.id
+    LEFT JOIN activity_event ae
+      ON ae.repo_name = pr.repo_name
+     AND ae.user_id   = $1::uuid
+     AND ae.ts >= NOW() - INTERVAL '${chartDays} days'
+    GROUP BY p.id, p.name, p.kind
+    HAVING COUNT(ae.*) > 0
+    ORDER BY tokens DESC, events DESC
+    LIMIT 20
+    `,
+    [userId],
+  ).catch(() => [] as ProjectRollup[]);
+
+  return computeAggregates(events, commits, ghEvents, projectRollups, chartDays);
 }
 
 function computeAggregates(
   events: RawEvent[],
   commits: { subject: string; repo: string; sha: string; ts: string }[],
+  ghEvents: { kind: string; ts: string }[],
+  byProject: ProjectRollup[],
+  chartDays: number,
 ): DashboardData {
   const now = Date.now();
   const D_MS = 86_400_000;
@@ -168,8 +251,8 @@ function computeAggregates(
   const cacheWritesByDay = new Map<string, number>();
 
   // Pre-fill last 14 days so charts render with empty buckets too.
-  const daysBack14 = lastNDays(14);
-  for (const d of daysBack14) {
+  const daysBack = lastNDays(chartDays);
+  for (const d of daysBack) {
     dailyMap.set(d, newSum());
     stackedMap.set(d, {});
     cacheReadsByDay.set(d, 0);
@@ -249,11 +332,33 @@ function computeAggregates(
     }
   }
 
-  // Commits per day (last 14d).
+  // Commits per day (chart window).
   const commitsByDay = new Map<string, number>();
   for (const c of commits) {
     const day = c.ts.slice(0, 10);
     commitsByDay.set(day, (commitsByDay.get(day) ?? 0) + 1);
+  }
+
+  // GitHub PRs / reviews per day (chart window).
+  const githubByDay = new Map<string, { commits: number; prs_opened: number; prs_merged: number; reviews: number }>();
+  const ghTotals = { commits: 0, prs_opened: 0, prs_merged: 0, reviews: 0 };
+  for (const ev of ghEvents) {
+    const day = ev.ts.slice(0, 10);
+    const cur = githubByDay.get(day) ?? { commits: 0, prs_opened: 0, prs_merged: 0, reviews: 0 };
+    if (ev.kind === "commit") {
+      cur.commits += 1;
+      ghTotals.commits += 1;
+    } else if (ev.kind === "pr_opened") {
+      cur.prs_opened += 1;
+      ghTotals.prs_opened += 1;
+    } else if (ev.kind === "pr_merged") {
+      cur.prs_merged += 1;
+      ghTotals.prs_merged += 1;
+    } else if (ev.kind === "review" || ev.kind === "pr_reviewed") {
+      cur.reviews += 1;
+      ghTotals.reviews += 1;
+    }
+    githubByDay.set(day, cur);
   }
 
   // -------- Build outputs --------
@@ -261,14 +366,14 @@ function computeAggregates(
     .sort((a, b) => b[1] - a[1])
     .map(([s]) => s);
 
-  const stackedArea: { bucket: string; [series: string]: string | number }[] = daysBack14.map((d) => {
+  const stackedArea: { bucket: string; [series: string]: string | number }[] = daysBack.map((d) => {
     const out: { bucket: string; [series: string]: string | number } = { bucket: shortDay(d) };
     const slice = stackedMap.get(d) ?? {};
     for (const s of sources) out[s] = slice[s] ?? 0;
     return out;
   });
 
-  const daily = daysBack14.map<DailyAggregate>((d) => {
+  const daily = daysBack.map<DailyAggregate>((d) => {
     const s = dailyMap.get(d)!;
     return {
       bucket:   shortDay(d),
@@ -312,7 +417,7 @@ function computeAggregates(
     return { bucket: d.bucket, cents: cum };
   });
 
-  const cacheEfficiency = daysBack14.map((d) => {
+  const cacheEfficiency = daysBack.map((d) => {
     const reads = cacheReadsByDay.get(d) ?? 0;
     const writes = cacheWritesByDay.get(d) ?? 0;
     const ratio = writes === 0 ? 0 : reads / writes;
@@ -369,6 +474,13 @@ function computeAggregates(
     heatmap,
     costTrajectory,
     cacheEfficiency,
+    byProject,
+    chartDays,
+    github: daysBack.map<GithubDaily>((d) => {
+      const slot = githubByDay.get(d) ?? { commits: 0, prs_opened: 0, prs_merged: 0, reviews: 0 };
+      return { bucket: shortDay(d), ...slot };
+    }),
+    githubTotals: ghTotals,
     recentCommits: commits.slice(0, 8),
     feed,
     sparklines,
@@ -384,6 +496,12 @@ function addTo(sum: SumBucket, e: RawEvent, cents: number | null, include: boole
   sum.events += 1;
   sum.tokens += (e.tokens_input ?? 0) + (e.tokens_output ?? 0);
   if (cents != null) sum.cents = (sum.cents ?? 0) + cents;
+}
+
+function clampDays(d: number): number {
+  if (!Number.isFinite(d) || d < 1) return 14;
+  if (d > 90) return 90;
+  return Math.floor(d);
 }
 
 function lastNDays(n: number): string[] {

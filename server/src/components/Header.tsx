@@ -17,7 +17,7 @@ import { palette, space } from "@/lib/theme";
 
 interface Props {
   me: CurrentUser;
-  active: "dashboard" | "github" | "share" | "projects" | "tokens" | "settings";
+  active: "dashboard" | "ask" | "github" | "share" | "projects" | "tokens" | "settings";
   /** Optional live agent status — renders the green pulse + label when alive. */
   agentAlive?: boolean;
   agentSeenSecondsAgo?: number | null;
@@ -34,9 +34,10 @@ export function Header({ me, active, agentAlive, agentSeenSecondsAgo }: Props): 
         padding:        `${space.x3}px 0`,
         borderBottom:   `1px solid ${palette.border}`,
         marginBottom:   space.x6,
+        flexWrap:       "wrap",
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: space.x6 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: space.x4, flexWrap: "wrap", flex: "1 1 auto" }}>
         <a
           href="/app"
           style={{ display: "flex", alignItems: "center", gap: 10, textDecoration: "none" }}
@@ -55,6 +56,7 @@ export function Header({ me, active, agentAlive, agentSeenSecondsAgo }: Props): 
         </a>
         <nav style={{ display: "flex", gap: space.x4, fontSize: 12 }}>
           <NavLink href="/app"             active={active === "dashboard"}>dashboard</NavLink>
+          <NavLink href="/ask"             active={active === "ask"}>ask</NavLink>
           <NavLink href="/projects"        active={active === "projects"}>projects</NavLink>
           <NavLink href="/share"           active={active === "share"}>sharing</NavLink>
           <NavLink href="/github"          active={active === "github"}>github</NavLink>
@@ -66,6 +68,7 @@ export function Header({ me, active, agentAlive, agentSeenSecondsAgo }: Props): 
       <div style={{ display: "flex", alignItems: "center", gap: space.x3, fontSize: 12 }}>
         <AgentBadge alive={agentAlive} seen={agentSeenSecondsAgo} />
         <span
+          className="hide-on-mobile"
           style={{
             color:      palette.textDim,
             fontFamily: "var(--font-mono), monospace",

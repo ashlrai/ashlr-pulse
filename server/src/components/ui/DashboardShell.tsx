@@ -6,7 +6,7 @@
  */
 
 import type { ReactElement, ReactNode } from "react";
-import { palette, font, space } from "@/lib/theme";
+import { palette, font } from "@/lib/theme";
 
 interface Props {
   children: ReactNode;
@@ -32,10 +32,10 @@ export function DashboardShell({ children, maxWidth = 1240 }: Props): ReactEleme
       }}
     >
       <div
+        className="dash-shell-pad"
         style={{
           maxWidth,
           margin:  "0 auto",
-          padding: `${space.x5}px ${space.x5}px ${space.x10}px`,
         }}
       >
         {children}

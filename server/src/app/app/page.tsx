@@ -33,6 +33,7 @@ import { Card, CardHeader } from "@/components/ui/Card";
 import { Banner } from "@/components/ui/Banner";
 import { DashboardShell } from "@/components/ui/DashboardShell";
 import { Skeleton } from "@/components/ui/Skeleton";
+import { ChipGroup } from "@/components/ui/ChipGroup";
 import { ChartFrame } from "@/components/charts/ChartFrame";
 import { StackedAreaChart } from "@/components/charts/StackedAreaChart";
 import { HBarChart } from "@/components/charts/HBarChart";
@@ -45,7 +46,19 @@ import { palette, space } from "@/lib/theme";
 
 export const dynamic = "force-dynamic";
 
-interface SearchParams { as?: string }
+interface SearchParams { as?: string; win?: string }
+
+const WIN_OPTIONS = [
+  { label: "7d",  value: "7",  days: 7  },
+  { label: "14d", value: "14", days: 14 },
+  { label: "30d", value: "30", days: 30 },
+  { label: "90d", value: "90", days: 90 },
+] as const;
+
+function resolveWindow(raw: string | undefined): { value: string; days: number } {
+  const opt = WIN_OPTIONS.find((o) => o.value === raw);
+  return opt ?? { value: "14", days: 14 };
+}
 
 export default async function Page({
   searchParams,
@@ -53,7 +66,8 @@ export default async function Page({
   const me = await currentUser();
   if (!me) redirect("/login");
 
-  const { as } = await searchParams;
+  const { as, win } = await searchParams;
+  const windowOpt = resolveWindow(win);
   let targetUserId = me.id;
   let scope: ScopeFilter = { repoClauseSql: "", repoParams: [] };
   let peerLabel: string | null = null;
@@ -64,7 +78,7 @@ export default async function Page({
       redirect(`/share?error=${encodeURIComponent("no active grant from that user")}`);
     }
     targetUserId = as;
-    scope = buildScopeFilter(grants);
+    scope = await buildScopeFilter(grants);
     peerLabel = grants[0].owner_email ?? "peer";
   }
 
@@ -74,7 +88,7 @@ export default async function Page({
 
   // Run all the heavy lifts in parallel.
   const [data, agentStatus, missedRepos] = await Promise.all([
-    loadDashboard(targetUserId, scope),
+    loadDashboard(targetUserId, scope, { chartDays: windowOpt.days }),
     isOwnView ? getAgentStatus(me.id, nowUtc) : Promise.resolve(null),
     isOwnView ? loadMissedRepos(me.id, since24hUtc, nowUtc.toISOString()) : Promise.resolve([]),
   ]);
@@ -154,8 +168,17 @@ export default async function Page({
         </div>
       )}
 
+      {/* Window selector chip group. */}
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: space.x3 }}>
+        <ChipGroup
+          current={windowOpt.value}
+          options={WIN_OPTIONS.map((o) => ({ label: o.label, value: o.value }))}
+          hrefFor={(v) => buildHref({ as, win: v })}
+        />
+      </div>
+
       {/* Stat strip — first 1 second of value. */}
-      <div style={statStrip}>
+      <div className="dash-stat-strip">
         <StatCard
           accent="green"
           label="events · 24h"
@@ -206,10 +229,10 @@ export default async function Page({
       )}
 
       {/* Charts — 2 columns where it makes sense. */}
-      <div style={{ marginTop: space.x6, ...gridTwoCols }}>
-        <div style={{ gridColumn: "1 / -1" }}>
+      <div className="dash-grid" style={{ marginTop: space.x6 }}>
+        <div className="dash-grid-full">
           <ChartFrame
-            title="activity · last 14 days"
+            title={`activity · last ${windowOpt.days} days`}
             hint="tokens per day, stacked by source"
             accent={palette.green}
           >
@@ -246,7 +269,7 @@ export default async function Page({
           )}
         </ChartFrame>
 
-        <ChartFrame title="cost trajectory · last 14d" hint="cumulative dollars" accent={palette.magenta}>
+        <ChartFrame title={`cost trajectory · last ${windowOpt.days}d`} hint="cumulative dollars" accent={palette.magenta}>
           {data.costTrajectory.length > 0 ? (
             <LineChart
               data={data.costTrajectory.map((p) => ({ bucket: p.bucket, cost: p.cents / 100 }))}
@@ -259,7 +282,7 @@ export default async function Page({
           )}
         </ChartFrame>
 
-        <ChartFrame title="cache efficiency · last 14d" hint="read-to-write ratio" accent={palette.amber}>
+        <ChartFrame title={`cache efficiency · last ${windowOpt.days}d`} hint="read-to-write ratio" accent={palette.amber}>
           {totalReads + totalWrites > 0 ? (
             <CacheEfficiencyPanel cacheHit={cacheHit} efficiency={data.cacheEfficiency} />
           ) : (
@@ -275,7 +298,29 @@ export default async function Page({
           )}
         </ChartFrame>
 
-        <div style={{ gridColumn: "1 / -1" }}>
+        {(data.githubTotals.commits + data.githubTotals.prs_opened + data.githubTotals.prs_merged) > 0 && (
+          <div className="dash-grid-full">
+            <ChartFrame
+              title={`github throughput · last ${windowOpt.days}d`}
+              hint={`${data.githubTotals.commits} commits · ${data.githubTotals.prs_opened} prs opened · ${data.githubTotals.prs_merged} merged`}
+              accent={palette.purple}
+            >
+              <LineChart
+                data={data.github}
+                series={[
+                  { key: "commits",    label: "commits",    color: palette.green   },
+                  { key: "prs_opened", label: "prs opened", color: palette.cyan    },
+                  { key: "prs_merged", label: "prs merged", color: palette.magenta },
+                ]}
+                yFmt={(v) => v.toFixed(0)}
+                vFmt={(v) => `${v}`}
+                height={220}
+              />
+            </ChartFrame>
+          </div>
+        )}
+
+        <div className="dash-grid-full">
           <ChartFrame
             title="when you actually work · last 30d"
             hint="hour-of-day × day-of-week — darker = more events"
@@ -291,10 +336,24 @@ export default async function Page({
         </div>
       </div>
 
+      {/* Project rollup — only renders if user has projects with activity in window. */}
+      {data.byProject.length > 0 && (
+        <div style={{ marginTop: space.x6 }}>
+          <Card>
+            <CardHeader
+              title={`by project · last ${data.chartDays}d`}
+              hint={`${data.byProject.length} project${data.byProject.length === 1 ? "" : "s"} with activity`}
+              right={<a href="/projects" style={{ color: palette.cyan, textDecoration: "none" }}>manage projects →</a>}
+            />
+            <ProjectRollupTable rows={data.byProject} />
+          </Card>
+        </div>
+      )}
+
       {/* Recent commits + activity feed. */}
-      <div style={{ marginTop: space.x6, ...gridTwoCols }}>
+      <div className="dash-grid" style={{ marginTop: space.x6 }}>
         <Card>
-          <CardHeader title="recent commits · last 14d" hint={`${data.recentCommits.length} commits`} />
+          <CardHeader title={`recent commits · last ${windowOpt.days}d`} hint={`${data.recentCommits.length} commits`} />
           <RecentCommits commits={data.recentCommits} />
         </Card>
         <Card>
@@ -433,6 +492,79 @@ function RecentCommits({
   );
 }
 
+function ProjectRollupTable({
+  rows,
+}: { rows: import("@/lib/dashboard-data").ProjectRollup[] }): ReactElement {
+  const max = Math.max(...rows.map((r) => r.tokens), 1);
+  return (
+    <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
+      <thead>
+        <tr style={{ textAlign: "left", borderBottom: `1px solid ${palette.border}` }}>
+          <th style={th}>project</th>
+          <th style={th}>kind</th>
+          <th style={{ ...th, textAlign: "right" }}>repos</th>
+          <th style={{ ...th, textAlign: "right" }}>events</th>
+          <th style={{ ...th, textAlign: "right" }}>tokens</th>
+          <th style={{ ...th, width: "30%" }}></th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((r) => (
+          <tr key={r.project_id} style={{ borderBottom: `1px dashed ${palette.border}` }}>
+            <td style={td}>
+              <span style={{ color: palette.text, fontWeight: 500 }}>{r.project_name}</span>
+            </td>
+            <td style={td}>
+              <span style={kindChip(r.kind)}>{r.kind}</span>
+            </td>
+            <td style={{ ...td, textAlign: "right", color: palette.textDim }}>{r.repos}</td>
+            <td style={{ ...td, textAlign: "right", color: palette.textDim, fontVariantNumeric: "tabular-nums" }}>
+              {r.events.toLocaleString()}
+            </td>
+            <td style={{ ...td, textAlign: "right", color: palette.text, fontVariantNumeric: "tabular-nums" }}>
+              {abbrev(r.tokens)}
+            </td>
+            <td style={td}>
+              <div style={{ height: 6, background: palette.bgRaised, borderRadius: 3, overflow: "hidden" }}>
+                <div
+                  style={{
+                    height: "100%",
+                    width: `${Math.min(100, (r.tokens / max) * 100)}%`,
+                    background: kindColor(r.kind),
+                    transition: "width 0.5s ease",
+                  }}
+                />
+              </div>
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function kindColor(kind: string): string {
+  if (kind === "saas")       return palette.green;
+  if (kind === "client")     return palette.magenta;
+  if (kind === "internal")   return palette.cyan;
+  if (kind === "experiment") return palette.amber;
+  return palette.textDim;
+}
+
+function kindChip(kind: string): React.CSSProperties {
+  const c = kindColor(kind);
+  return {
+    color: c,
+    background: `${c}10`,
+    border: `1px solid ${c}30`,
+    padding: "2px 8px",
+    borderRadius: 999,
+    fontSize: 10,
+    letterSpacing: "0.5px",
+    textTransform: "uppercase",
+  };
+}
+
 function ActivityFeed({ feed }: { feed: import("@/lib/dashboard-data").FeedRow[] }): ReactElement {
   if (feed.length === 0) {
     return <div style={{ color: palette.textMute, fontSize: 12 }}>No recent activity.</div>;
@@ -473,17 +605,21 @@ function ActivityFeed({ feed }: { feed: import("@/lib/dashboard-data").FeedRow[]
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 
-const statStrip: React.CSSProperties = {
-  display:        "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))",
-  gap:            space.x3,
+const th: React.CSSProperties = {
+  padding: "8px 6px", color: palette.textDim,
+  fontSize: 11, fontWeight: 500, letterSpacing: "0.5px",
+  textTransform: "uppercase",
 };
+const td: React.CSSProperties = { padding: "8px 6px", color: palette.text };
 
-const gridTwoCols: React.CSSProperties = {
-  display:        "grid",
-  gridTemplateColumns: "1fr 1fr",
-  gap:            space.x4,
-};
+function buildHref(params: Record<string, string | undefined>): string {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v != null && v !== "") qs.set(k, v);
+  }
+  const s = qs.toString();
+  return s ? `/app?${s}` : "/app";
+}
 
 function abbrev(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -516,28 +652,52 @@ function fmtAgoShort(d: Date): string {
   return `${Math.round(s / 86400)}d`;
 }
 
-function buildScopeFilter(grants: PeerShareRow[]): ScopeFilter {
-  // Build a UNION of OR-clauses across all grants.
-  // realtime/daily/weekly/monthly granularity is handled at dashboard
-  // load time elsewhere — this just narrows by scope_type/scope_value.
+async function buildScopeFilter(grants: PeerShareRow[]): Promise<ScopeFilter> {
+  // Resolve grants → a UNION of (repo glob LIKE, project_id repo set).
+  // If any grant has scope_type='all' we short-circuit to no filter.
+  // Otherwise we collect LIKE patterns and project_ids, then expand
+  // project_ids to their repo lists via project_repo, and build a
+  // single (LIKE OR LIKE OR repo_name IN (…)) clause.
   let pIdx = 2; // $1 is user_id, scope params start at $2
   const ors: string[] = [];
   const params: (string | number)[] = [];
+  const projectIds: string[] = [];
 
   for (const g of grants) {
     if (g.scope_type === "all") {
-      // No restriction; remove anything else and break.
       return { repoClauseSql: "", repoParams: [] };
     }
     if (g.scope_type === "repo_pattern" && g.scope_value) {
       ors.push(`repo_name LIKE $${pIdx++}`);
       params.push(g.scope_value);
+    } else if (g.scope_type === "project" && g.scope_value) {
+      projectIds.push(g.scope_value);
     }
-    // project scope is handled via project_repo join — for now skip
-    // (the existing implementation also required a join).
   }
 
-  if (ors.length === 0) return { repoClauseSql: "", repoParams: [] };
+  if (projectIds.length > 0) {
+    const db = (await import("@/lib/db")).sql();
+    const rows = await db<{ repo_name: string }[]>`
+      SELECT DISTINCT repo_name FROM project_repo
+      WHERE project_id = ANY(${projectIds}::uuid[])
+    `;
+    if (rows.length > 0) {
+      const placeholders = rows.map(() => `$${pIdx++}`).join(",");
+      ors.push(`repo_name IN (${placeholders})`);
+      for (const r of rows) params.push(r.repo_name);
+    } else {
+      // Project has no repos → grant resolves to empty set. To be
+      // safe, force the result set empty rather than no-op (which
+      // would leak the owner's whole activity).
+      ors.push("FALSE");
+    }
+  }
+
+  if (ors.length === 0) {
+    // Caller had grants but none resolved to a usable filter — return
+    // an impossible clause rather than no filter.
+    return { repoClauseSql: "AND FALSE", repoParams: [] };
+  }
   return {
     repoClauseSql: `AND (${ors.join(" OR ")})`,
     repoParams: params,

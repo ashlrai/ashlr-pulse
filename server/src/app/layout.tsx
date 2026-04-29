@@ -49,6 +49,7 @@ export default function RootLayout({ children }: { children: ReactNode }): React
   return (
     <html lang="en" className={jbm.variable}>
       <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
         <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
         <style>{`
           * { box-sizing: border-box; }
@@ -87,6 +88,40 @@ export default function RootLayout({ children }: { children: ReactNode }): React
           *::-webkit-scrollbar-track { background: #0a0a0a; }
           *::-webkit-scrollbar-thumb { background: #1f1f22; border-radius: 4px; }
           *::-webkit-scrollbar-thumb:hover { background: #2a2a2f; }
+
+          /* Dashboard responsive grid — used by /app and any 2-column section. */
+          .dash-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+          .dash-grid-full { grid-column: 1 / -1; }
+          .dash-stat-strip {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+            gap: 12px;
+          }
+          .dash-shell-pad { padding: 24px 24px 64px; }
+
+          /* Tablet — single-column charts but keep the stat strip wrapping. */
+          @media (max-width: 920px) {
+            .dash-grid { grid-template-columns: 1fr; }
+            .dash-shell-pad { padding: 16px 16px 48px; }
+          }
+
+          /* Phone — stat strip stacks at 2 across when possible, then 1. */
+          @media (max-width: 560px) {
+            .dash-stat-strip { grid-template-columns: 1fr 1fr; gap: 8px; }
+            .dash-shell-pad { padding: 12px 12px 40px; }
+          }
+          @media (max-width: 380px) {
+            .dash-stat-strip { grid-template-columns: 1fr; }
+          }
+
+          /* Tables on phone: let users swipe horizontally rather than wrap. */
+          .scroll-x { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+          /* Header email + secondary chrome — hide below 720px so the
+             agent badge + sign-out don't wrap. */
+          @media (max-width: 720px) {
+            .hide-on-mobile { display: none; }
+          }
         `}</style>
       </head>
       <body>{children}</body>
