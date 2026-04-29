@@ -14,7 +14,7 @@
  */
 
 import { sql } from "@/lib/db";
-import { complete } from "@/lib/anthropic";
+import { complete } from "@/lib/llm";
 import { costUsdCents, fmtUsd } from "@/lib/pricing";
 
 export type Metric =
@@ -82,7 +82,7 @@ Notes:
 - If they ask "which" or "what is most", use sort="value_desc"`.replace(/\s+/g, " ");
 
 export async function parseQuestion(question: string): Promise<AskQuery | null> {
-  const text = await complete(SYSTEM, question, { temperature: 0, maxTokens: 200 });
+  const text = await complete(SYSTEM, question, { temperature: 0, maxTokens: 600, expectJson: true });
   if (!text) return null;
   try {
     const obj = JSON.parse(text) as Partial<AskQuery>;

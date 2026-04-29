@@ -16,7 +16,7 @@
  */
 
 import { sql } from "@/lib/db";
-import { complete } from "@/lib/anthropic";
+import { complete } from "@/lib/llm";
 import { fmtUsd, costUsdCents } from "@/lib/pricing";
 
 export interface BriefingInputs {
