@@ -1,0 +1,44 @@
+# .phantom.toml — Phantom secrets-manager sync config for Ashlr Pulse
+#
+# HOW TO USE
+# ----------
+# 1. Install Phantom: https://phantom.ashlr.ai (or `brew install ashlrai/tap/phantom`)
+# 2. Add your Railway token to the vault first (agent never sees the value):
+#      phantom stack add railway
+#    This prompts you for RAILWAY_TOKEN at the TTY; the value never enters
+#    the AI transcript or shell history.
+# 3. Fill in the three UUID placeholders below. Get them via:
+#      railway status --json | jq '{project_id:.projectId, environment_id:.environmentId, service_id:.serviceId}'
+# 4. Push all prod-required secrets to Railway in one command:
+#      phantom sync --platform railway
+#    The agent can run this command safely — it only sees exit codes, never values.
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# Before Phantom, the canonical flow was "human pastes secrets into the
+# Railway dashboard" (a hard handoff). Phantom replaces that: secrets land
+# in the vault via a single TTY paste (`phantom init` or `stack add`), and
+# `phantom sync` pushes them to Railway without the AI or shell history
+# ever touching the values. See the "Hard handoff points" section of
+# AGENTS.md for the updated guidance.
+
+[[sync]]
+platform        = "railway"
+token_env       = "RAILWAY_TOKEN"           # must be in vault: `phantom stack add railway`
+project_id      = "<railway-project-uuid>"  # `railway status --json | jq .projectId`
+environment_id  = "<railway-env-uuid>"      # `railway status --json | jq .environmentId`
+service_id      = "<railway-service-uuid>"  # `railway status --json | jq .serviceId`
+
+# Only push secrets that are required in production. Local-only vars (e.g.
+# DATABASE_URL pointing to docker-compose) are intentionally excluded.
+only = [
+  "STRIPE_*",
+  "PULSE_CRON_SECRET",
+  "SENDGRID_API_KEY",
+  "PULSE_TOKEN_ENC_KEY",
+  "NEXT_PUBLIC_SUPABASE_URL",
+  "NEXT_PUBLIC_SUPABASE_ANON_KEY",
+  "SUPABASE_SERVICE_ROLE_KEY",
+  "GITHUB_CLIENT_ID",
+  "GITHUB_CLIENT_SECRET",
+]

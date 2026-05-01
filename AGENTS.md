@@ -93,6 +93,9 @@ pulse-agent backfill --since 7d
 # 8. In the browser: visit /github → Connect GitHub → for commit/PR ingest
 # 9. In the browser: visit /projects → suggested-clusters → bulk-add repos
 # 10. In the browser: visit /settings → confirm digest enabled + tz set
+# 11. Run `phantom init` to import any plaintext `.env.local` into the
+#     Phantom vault before committing. This seals secrets at rest and
+#     enables `phantom sync --platform railway` for future deploys.
 ```
 
 After step 6, the dashboard at `https://pulse.ashlr.ai/app` should show a
@@ -108,7 +111,7 @@ to bypass; do not paste secrets through your conversation.
 |---|---|
 | Generating a GitHub OAuth client secret | Requires sudo passkey on github.com; secret is shown once and must not enter the AI transcript |
 | Pasting a secret into Supabase's Auth → Providers UI | Supabase blocks iframe embedding; AI cannot DOM-inject; human pastes |
-| Setting Railway env vars containing secrets | `railway variables set FOO=bar` puts the secret in shell history + process table; human types it directly in the dashboard |
+| Setting Railway env vars containing secrets | Historical hard handoff. Now mostly obsolete: use `phantom init` (or `stack add <provider>`) to land secrets in the Phantom vault from a TTY paste, then `phantom sync --platform railway` to push to Railway. The agent never sees values; the user pastes once at the TTY prompt. See `.phantom.toml` for the canonical sync target. |
 | Approving a PAT mint at `/agent-onboard?code=…` | Requires the user's authenticated browser session; AI prints the URL, waits for the poll to return |
 | Cofounder invitations | Delegation of consent — invitee completes their own onboarding in their own browser |
 | Magic-link clicks in email | Cannot be automated; user clicks the link in their own inbox |
