@@ -99,11 +99,20 @@ export function templatedBriefing(input: BriefingInputs): string {
 /**
  * Loads or computes a cached briefing for (user, day). Cache lives ~1h.
  * Returns null if there's not enough data to write anything meaningful.
+ *
+ * When `aiEnabled` is false (free plan) the LLM is skipped entirely and
+ * null is returned so the caller can render the plan-gate upsell panel
+ * instead of a templated summary.
  */
 export async function getOrComputeBriefing(
   userId: string,
   inputs: BriefingInputs,
-): Promise<{ text: string; source: "ai" | "fallback"; generated_at: Date }> {
+  aiEnabled = true,
+): Promise<{ text: string; source: "ai" | "fallback"; generated_at: Date } | null> {
+  // Gate 5: AI features are a Pro/Team perk. Free-tier callers get null;
+  // the dashboard BriefingPanel renders an upgrade prompt in its place.
+  if (!aiEnabled) return null;
+
   const db = sql();
   // Look for a fresh cache entry (< 1h old).
   const cached = await db<{ text: string; source: "ai" | "fallback"; generated_at: Date }[]>`

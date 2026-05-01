@@ -17,6 +17,8 @@ import {
   listUnassignedRepos,
   clusterByPrefix,
 } from "@/lib/project-db";
+import { primaryOrgForUser } from "@/lib/org-db";
+import { PlanGateError } from "@/lib/plan-gate";
 
 import { Header } from "@/components/Header";
 import { DashboardShell } from "@/components/ui/DashboardShell";
@@ -41,9 +43,13 @@ async function createProjectAction(formData: FormData): Promise<void> {
   if (!VALID_KINDS.includes(kind)) redirect("/projects?error=invalid+kind");
 
   const orgId = await ensureDefaultOrg(me.id, me.email);
+  const org = await primaryOrgForUser(me.id);
   try {
-    await createProject({ org_id: orgId, name, kind });
+    await createProject({ org_id: orgId, name, kind }, org ?? undefined);
   } catch (err) {
+    if (err instanceof PlanGateError) {
+      redirect(`/projects?error=${encodeURIComponent(err.message)}`);
+    }
     const m = err instanceof Error ? err.message : String(err);
     redirect(`/projects?error=${encodeURIComponent(m)}`);
   }
@@ -95,9 +101,13 @@ async function createFromPrefixAction(formData: FormData): Promise<void> {
   if (!VALID_KINDS.includes(kind)) redirect("/projects?error=invalid+kind");
 
   const orgId = await ensureDefaultOrg(me.id, me.email);
+  const org = await primaryOrgForUser(me.id);
   try {
-    await createProjectWithRepos({ org_id: orgId, name, kind }, repos);
+    await createProjectWithRepos({ org_id: orgId, name, kind }, repos, org ?? undefined);
   } catch (err) {
+    if (err instanceof PlanGateError) {
+      redirect(`/projects?error=${encodeURIComponent(err.message)}`);
+    }
     const m = err instanceof Error ? err.message : String(err);
     redirect(`/projects?error=${encodeURIComponent(m)}`);
   }

@@ -25,6 +25,8 @@ import { z } from "zod";
 import { currentUser } from "@/lib/current-user";
 import { createInvite } from "@/lib/invite-db";
 import { validateFields } from "@/lib/peer-share-guard";
+import { primaryOrgForUser, countMembers, countPendingInvites } from "@/lib/org-db";
+import { limitsFor } from "@/lib/plan-gate";
 
 export const runtime = "nodejs";
 
@@ -48,6 +50,28 @@ export async function POST(req: Request): Promise<Response> {
       { error: "invalid body", detail: err instanceof Error ? err.message : String(err) },
       { status: 400 },
     );
+  }
+
+  // Gate 1: member cap. Count current members + pending invites against
+  // the org's plan limit. We count pending invites so that a free-tier
+  // user can't queue up multiple invites and accept them all at once.
+  const org = await primaryOrgForUser(me.id);
+  if (org) {
+    const limits = limitsFor(org);
+    if (Number.isFinite(limits.max_members)) {
+      const [members, pending] = await Promise.all([
+        countMembers(org.id),
+        countPendingInvites(me.id),
+      ]);
+      if (members + pending >= limits.max_members) {
+        return NextResponse.json(
+          {
+            error: `Free tier capped at ${limits.max_members} member. Upgrade to Pro at /billing.`,
+          },
+          { status: 402 },
+        );
+      }
+    }
   }
 
   // If suggested_fields is provided, validate against the privacy-floor

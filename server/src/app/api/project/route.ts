@@ -8,6 +8,8 @@ import { NextResponse } from "next/server";
 import { currentUser } from "@/lib/current-user";
 import { ensureDefaultOrg } from "@/lib/current-user";
 import { listProjects, createProject } from "@/lib/project-db";
+import { primaryOrgForUser } from "@/lib/org-db";
+import { PlanGateError } from "@/lib/plan-gate";
 
 export const runtime = "nodejs";
 
@@ -42,11 +44,20 @@ export async function POST(req: Request): Promise<Response> {
     return NextResponse.json({ error: `kind must be one of: ${VALID_KINDS.join(", ")}` }, { status: 400 });
   }
 
-  const orgId = await ensureDefaultOrg(me.id, me.email);
+  const [orgId, org] = await Promise.all([
+    ensureDefaultOrg(me.id, me.email),
+    primaryOrgForUser(me.id),
+  ]);
   try {
-    const project = await createProject({ org_id: orgId, name, kind: kind as ProjectKind });
+    const project = await createProject(
+      { org_id: orgId, name, kind: kind as ProjectKind },
+      org ?? undefined,
+    );
     return NextResponse.json(project, { status: 201 });
   } catch (err) {
+    if (err instanceof PlanGateError) {
+      return NextResponse.json({ error: err.message }, { status: err.status });
+    }
     const message = err instanceof Error ? err.message : String(err);
     if (/duplicate key|unique/i.test(message)) {
       return NextResponse.json({ error: "a project with that name already exists in your org" }, { status: 409 });

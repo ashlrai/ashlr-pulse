@@ -67,6 +67,12 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # libdbus-1-dev is needed by `dbus-secret-service`, a transitive dep of
+      # `keyring`'s linux backend (added in ca54e6a). Without it cargo build
+      # fails with "Package dbus-1 was not found in the pkg-config search path".
+      - name: Install libdbus headers
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:

@@ -4,9 +4,16 @@
  * Encapsulates the SQL so route handlers stay declarative. All writes
  * funnel through validateFields() (the privacy hard-floor) at the call
  * site — it's not enforced here so callers must remember to use it.
+ *
+ * Gate 4: peer_share creation is blocked when the *owner's* org plan
+ * limits don't include peer_share_enabled. Callers must pass an `org`
+ * parameter to `createPeerShare` so the gate is enforced at the DB
+ * layer. The share/page.tsx action redirects with ?error=upgrade-to-share
+ * instead of crashing when PlanGateError is thrown.
  */
 
 import { sql } from "./db";
+import { limitsFor, PlanGateError, type OrgPlanRef } from "./plan-gate";
 
 export interface PeerShareRow {
   id: string;
@@ -28,9 +35,22 @@ export interface CreatePeerShareInput {
   scope_value: string | null;
   granularity: PeerShareRow["granularity"];
   fields: string[];
+  /** Owner's org — required to enforce the peer_share_enabled gate. */
+  ownerOrg?: OrgPlanRef;
 }
 
 export async function createPeerShare(input: CreatePeerShareInput): Promise<PeerShareRow> {
+  // Gate 4: peer-share creation requires peer_share_enabled on the owner's plan.
+  if (input.ownerOrg) {
+    const limits = limitsFor(input.ownerOrg);
+    if (!limits.peer_share_enabled) {
+      throw new PlanGateError(
+        "Peer sharing is a Pro feature. Upgrade to Pro at /billing.",
+        402,
+      );
+    }
+  }
+
   const db = sql();
   const [row] = await db<PeerShareRow[]>`
     INSERT INTO peer_share (owner_id, viewer_id, scope_type, scope_value, granularity, fields)

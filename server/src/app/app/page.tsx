@@ -26,6 +26,8 @@ import { loadMissedRepos } from "@/lib/missed-repos";
 import { loadDashboard, type ScopeFilter } from "@/lib/dashboard-data";
 import { getOrComputeBriefing, type BriefingInputs } from "@/lib/briefing";
 import { detectAnomaly } from "@/lib/anomalies";
+import { primaryOrgForUser } from "@/lib/org-db";
+import { limitsFor, retentionCutoff, FREE_LIMITS } from "@/lib/plan-gate";
 
 import { Header } from "@/components/Header";
 import { StatCard } from "@/components/StatCard";
@@ -86,9 +88,14 @@ export default async function Page({
   const nowUtc = new Date();
   const since24hUtc = new Date(nowUtc.getTime() - 24 * 3600_000).toISOString();
 
+  // Resolve plan limits once — used for retention clamp, AI gate, and banner.
+  const org = isOwnView ? await primaryOrgForUser(me.id) : null;
+  const limits = org ? limitsFor(org) : FREE_LIMITS;
+  const isFreeTier = limits.retention_days < 90;
+
   // Run all the heavy lifts in parallel.
   const [data, agentStatus, missedRepos] = await Promise.all([
-    loadDashboard(targetUserId, scope, { chartDays: windowOpt.days }),
+    loadDashboard(targetUserId, scope, { chartDays: windowOpt.days, limits }),
     isOwnView ? getAgentStatus(me.id, nowUtc) : Promise.resolve(null),
     isOwnView ? loadMissedRepos(me.id, since24hUtc, nowUtc.toISOString()) : Promise.resolve([]),
   ]);
@@ -168,6 +175,16 @@ export default async function Page({
         </div>
       )}
 
+      {/* Retention banner — shown to free-tier users so they know why they're seeing less data. */}
+      {isOwnView && isFreeTier && (
+        <div style={{ marginBottom: space.x4 }}>
+          <Banner variant="info">
+            Free tier shows last {limits.retention_days} days.{" "}
+            <a href="/billing" style={{ color: palette.cyan }}>Upgrade for 90-day retention →</a>
+          </Banner>
+        </div>
+      )}
+
       {/* Window selector chip group. */}
       <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: space.x3 }}>
         <ChipGroup
@@ -212,10 +229,10 @@ export default async function Page({
         />
       </div>
 
-      {/* AI briefing — async-streamed via Suspense. */}
+      {/* AI briefing — async-streamed via Suspense. Free-tier renders upsell card. */}
       <div style={{ marginTop: space.x5 }}>
         <Suspense fallback={<BriefingSkeleton />}>
-          <BriefingPanel userId={targetUserId} inputs={briefingInputs} />
+          <BriefingPanel userId={targetUserId} inputs={briefingInputs} aiEnabled={limits.ai_features} />
         </Suspense>
       </div>
 
@@ -368,9 +385,26 @@ export default async function Page({
 // ─── Async briefing panel (called inside Suspense) ────────────────────
 
 async function BriefingPanel({
-  userId, inputs,
-}: { userId: string; inputs: BriefingInputs }): Promise<ReactElement> {
-  const briefing = await getOrComputeBriefing(userId, inputs);
+  userId, inputs, aiEnabled = true,
+}: { userId: string; inputs: BriefingInputs; aiEnabled?: boolean }): Promise<ReactElement> {
+  // Gate 5: AI features are Pro/Team only. Render an upgrade prompt on free.
+  if (!aiEnabled) {
+    return (
+      <Card style={{ borderStyle: "dashed" }}>
+        <div style={{ fontSize: 13, color: palette.textDim, lineHeight: 1.6 }}>
+          <span style={{ color: palette.cyan, marginRight: 6 }}>briefing</span>
+          AI insights are a Pro feature.{" "}
+          <a href="/billing" style={{ color: palette.cyan }}>Upgrade to Pro →</a>
+        </div>
+      </Card>
+    );
+  }
+
+  const briefing = await getOrComputeBriefing(userId, inputs, aiEnabled);
+  if (!briefing) {
+    // Should not happen when aiEnabled=true, but be defensive.
+    return <></>;
+  }
   return (
     <Card accent={palette.cyan} style={{ background: "linear-gradient(180deg, rgba(124,208,255,0.04), transparent 60%)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: space.x2, marginBottom: space.x2 }}>

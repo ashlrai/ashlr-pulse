@@ -3,6 +3,8 @@
  */
 
 import { sql } from "./db";
+import { countProjects } from "./org-db";
+import { limitsFor, PlanGateError, type OrgPlanRef } from "./plan-gate";
 
 export interface ProjectRow {
   id: string;
@@ -42,7 +44,32 @@ export interface CreateProjectInput {
   kind: "saas" | "client" | "internal" | "experiment";
 }
 
-export async function createProject(input: CreateProjectInput): Promise<ProjectRow> {
+/**
+ * Create a project. Pass `org` to enforce the plan-gate cap before
+ * inserting. When `org` is omitted the cap is skipped (used internally
+ * from server actions that already validated the limit upstream).
+ *
+ * Throws PlanGateError (HTTP 402) when the org is on a plan whose
+ * max_projects limit is already reached.
+ */
+export async function createProject(
+  input: CreateProjectInput,
+  org?: OrgPlanRef,
+): Promise<ProjectRow> {
+  // Gate 2: project cap.
+  if (org) {
+    const limits = limitsFor(org);
+    if (Number.isFinite(limits.max_projects)) {
+      const existing = await countProjects(input.org_id);
+      if (existing >= limits.max_projects) {
+        throw new PlanGateError(
+          `Free tier capped at ${limits.max_projects} project. Upgrade to Pro at /billing.`,
+          402,
+        );
+      }
+    }
+  }
+
   const db = sql();
   const [row] = await db<{ id: string; org_id: string; name: string; kind: string; created_at: string }[]>`
     INSERT INTO project (org_id, name, kind)
@@ -55,11 +82,28 @@ export async function createProject(input: CreateProjectInput): Promise<ProjectR
 /**
  * Create a project AND attach a list of repos in a single transaction.
  * Used by the "create project from prefix" one-click flow.
+ *
+ * Pass `org` to enforce the plan-gate cap before inserting.
  */
 export async function createProjectWithRepos(
   input: CreateProjectInput,
   repoNames: string[],
+  org?: OrgPlanRef,
 ): Promise<ProjectRow> {
+  // Gate 2: project cap — check before opening the transaction.
+  if (org) {
+    const limits = limitsFor(org);
+    if (Number.isFinite(limits.max_projects)) {
+      const existing = await countProjects(input.org_id);
+      if (existing >= limits.max_projects) {
+        throw new PlanGateError(
+          `Free tier capped at ${limits.max_projects} project. Upgrade to Pro at /billing.`,
+          402,
+        );
+      }
+    }
+  }
+
   const db = sql();
   return db.begin(async (tx) => {
     const [proj] = await tx<{ id: string; org_id: string; name: string; kind: string; created_at: string }[]>`

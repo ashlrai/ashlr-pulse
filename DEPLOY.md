@@ -40,6 +40,17 @@ that work in production.
 | `GITHUB_OAUTH_CLIENT_ID` / `GITHUB_OAUTH_CLIENT_SECRET` | GitHub commit/PR sync at `/github` | github.com/settings/developers → New OAuth App; callback `https://<your-pulse>/api/github/oauth/callback`; scopes `repo:status user:email read:org` |
 | `PULSE_OTLP_RATE_LIMIT` *(optional)* | Override OTLP per-PAT rate limit | default `60:1` (60 req/min, refill 1/sec) |
 | `PULSE_OTLP_MAX_BYTES` *(optional)* | Cap OTLP body size | default `1048576` (1 MB) |
+| `STRIPE_SECRET_KEY` *(billing)* | Server-side Stripe API key | dashboard.stripe.com → Developers → API keys → restricted key with `Customers:write`, `Checkout Sessions:write`, `Subscriptions:read`, `Billing Portal Sessions:write` |
+| `STRIPE_WEBHOOK_SECRET` *(billing)* | Verifies signature on `/api/stripe/webhook` | Created when you add the webhook endpoint — see 1.6 below. Format `whsec_…` |
+| `STRIPE_PRICE_PRO_MONTHLY` *(billing)* | Stripe price id for Pro monthly | dashboard.stripe.com → Products → create "Pro" → add a recurring monthly price → copy `price_…` |
+| `STRIPE_PRICE_PRO_ANNUAL` *(billing, optional)* | Pro annual price id | Same product as above, add another recurring price (yearly) |
+| `STRIPE_PRICE_TEAM_MONTHLY` *(billing, optional)* | Team monthly price id | Create a "Team" product with monthly price |
+| `STRIPE_PRICE_TEAM_ANNUAL` *(billing, optional)* | Team annual price id | Same product, yearly recurring price |
+
+Billing is optional — if none of the `STRIPE_*` vars are set the
+`/billing` page renders a "not configured" banner and the upgrade
+buttons hide. Plan-gate enforcement still works (every org defaults to
+`free` per migration 0014).
 
 ### 1.3 SendGrid domain authentication (DNS)
 
@@ -78,7 +89,41 @@ by Gmail / Outlook.
 
 Copy the client ID + generated secret into Railway env vars.
 
-### 1.5 Deploy + smoke test
+### 1.5 Stripe billing (optional but recommended for paid tiers)
+
+Skip this whole section if you're running Pulse free-only. Plan-gate
+already defaults every org to `free` so the app works without Stripe.
+
+1. **Create products + prices** in dashboard.stripe.com → Products:
+   - "Pulse Pro" with one monthly recurring price (e.g. $15/mo) and
+     optionally one annual price (e.g. $150/yr).
+   - "Pulse Team" with monthly + optional annual prices (e.g. $39/mo).
+   Copy each `price_…` id into the matching `STRIPE_PRICE_*_*` env var.
+2. **Mint the API key** at Developers → API keys. Use a *restricted key*
+   with the scopes listed in the env table above — full secret keys
+   work too but the restricted key limits blast radius.
+3. **Add the webhook endpoint** at Developers → Webhooks → Add endpoint:
+   - URL: `https://<your-pulse>/api/stripe/webhook`
+   - Events to send:
+     - `customer.subscription.created`
+     - `customer.subscription.updated`
+     - `customer.subscription.deleted`
+     - `checkout.session.completed`
+   - After creating, click "Reveal" on the signing secret (`whsec_…`)
+     and put it in `STRIPE_WEBHOOK_SECRET`.
+4. **Smoke-test locally** before the first paid signup:
+   ```bash
+   stripe listen --forward-to https://<your-pulse>/api/stripe/webhook
+   stripe trigger customer.subscription.created
+   ```
+   The route should log `received: true` and the org row in Postgres
+   should flip to `plan='pro'` (assuming the test event's price matches
+   `STRIPE_PRICE_PRO_MONTHLY`).
+5. **First real upgrade**: visit `/billing` as an org admin → click an
+   upgrade button → complete Stripe checkout in test mode → verify the
+   page reflects the new plan within ~5s.
+
+### 1.6 Deploy + smoke test
 
 `git push` to whatever branch Railway watches (usually `main`). On boot:
 
@@ -272,4 +317,12 @@ SENDGRID_API_KEY=SG.…
 PULSE_DIGEST_FROM_EMAIL=pulse@example.com
 GITHUB_OAUTH_CLIENT_ID=Ov23li…
 GITHUB_OAUTH_CLIENT_SECRET=…
+
+# Optional — billing (skip if free-only)
+STRIPE_SECRET_KEY=sk_live_…
+STRIPE_WEBHOOK_SECRET=whsec_…
+STRIPE_PRICE_PRO_MONTHLY=price_…
+STRIPE_PRICE_PRO_ANNUAL=price_…
+STRIPE_PRICE_TEAM_MONTHLY=price_…
+STRIPE_PRICE_TEAM_ANNUAL=price_…
 ```
