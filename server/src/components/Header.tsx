@@ -17,7 +17,7 @@ import { palette, space } from "@/lib/theme";
 
 interface Props {
   me: CurrentUser;
-  active: "dashboard" | "ask" | "github" | "share" | "projects" | "tokens" | "settings";
+  active: "dashboard" | "ask" | "github" | "share" | "projects" | "tokens" | "settings" | "billing";
   /** Optional live agent status — renders the green pulse + label when alive. */
   agentAlive?: boolean;
   agentSeenSecondsAgo?: number | null;
@@ -61,6 +61,7 @@ export function Header({ me, active, agentAlive, agentSeenSecondsAgo }: Props): 
           <NavLink href="/share"           active={active === "share"}>sharing</NavLink>
           <NavLink href="/github"          active={active === "github"}>github</NavLink>
           <NavLink href="/settings"        active={active === "settings"}>settings</NavLink>
+          <NavLink href="/billing"         active={active === "billing"}>billing</NavLink>
           <NavLink href="/settings/tokens" active={active === "tokens"}>tokens</NavLink>
         </nav>
       </div>

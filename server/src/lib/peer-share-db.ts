@@ -45,7 +45,7 @@ export async function createPeerShare(input: CreatePeerShareInput): Promise<Peer
     const limits = limitsFor(input.ownerOrg);
     if (!limits.peer_share_enabled) {
       throw new PlanGateError(
-        "Peer sharing is a Pro feature. Upgrade to Pro at /pricing.",
+        "Peer sharing is a Pro feature. Upgrade to Pro at /billing.",
         402,
       );
     }

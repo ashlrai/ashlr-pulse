@@ -231,6 +231,7 @@ Enforcement points:
 | **Heartbeat + agent status** | `server/src/lib/heartbeat.ts`, `agent/src/heartbeat.rs`, dashboard badge in `server/src/app/app/page.tsx` |
 | **Project rollups** | `server/src/lib/project-db.ts`, `server/src/app/projects/page.tsx` |
 | **GitHub OAuth (data-sync)** | `server/src/app/api/github/oauth/{start,callback}/route.ts`, `server/src/lib/github-{client,sync,account-db}.ts` |
+| **Billing (Stripe)** | `server/src/lib/stripe.ts`, `billing-config.ts`, `stripe-mapping.ts`, `plan-gate.ts`; routes `server/src/app/api/{stripe/webhook,billing/{checkout,portal}}/route.ts`; UI `server/src/app/billing/page.tsx`; schema `db/migrations/0014_org_plan_billing.sql` |
 | **Login (GitHub OAuth + magic-link)** | `server/src/app/login/page.tsx`, `server/src/app/auth/callback/route.ts` |
 | **Cron infrastructure** | `server/src/lib/cron.ts` (in-process scheduler), routes under `server/src/app/api/cron/*` |
 | **Claude Code JSONL tailer** | `agent/src/claude.rs` (parses `~/.claude/projects/*/*.jsonl`, cmux-friendly) |

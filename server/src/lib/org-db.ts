@@ -113,3 +113,72 @@ export async function isOrgAdmin(orgId: string, userId: string): Promise<boolean
   `;
   return row?.role === "owner" || row?.role === "admin";
 }
+
+/** Look up an org by its Stripe customer ID — webhook fast path. */
+export async function getOrgByStripeCustomerId(
+  customerId: string,
+): Promise<OrgRow | null> {
+  const db = sql();
+  const [row] = await db<OrgRow[]>`
+    SELECT id::text AS id, name, slug, plan, plan_seats,
+           stripe_customer_id, stripe_subscription_id,
+           subscription_status,
+           current_period_end::text AS current_period_end,
+           trial_ends_at::text      AS trial_ends_at,
+           created_at::text         AS created_at
+    FROM org WHERE stripe_customer_id = ${customerId}
+  `;
+  return row ?? null;
+}
+
+/**
+ * Persist the Stripe customer ID on an org. Idempotent — safe to call from
+ * the checkout session route and from the customer.created webhook (whichever
+ * fires first wins; the other becomes a no-op).
+ */
+export async function linkStripeCustomer(
+  orgId: string,
+  customerId: string,
+): Promise<void> {
+  const db = sql();
+  await db`
+    UPDATE org
+       SET stripe_customer_id = ${customerId}
+     WHERE id = ${orgId}::uuid
+       AND (stripe_customer_id IS NULL OR stripe_customer_id = ${customerId})
+  `;
+}
+
+export interface BillingState {
+  plan: OrgPlan;
+  plan_seats?: number;
+  stripe_subscription_id: string | null;
+  subscription_status: SubscriptionStatus | null;
+  current_period_end: Date | null;
+  trial_ends_at: Date | null;
+}
+
+/**
+ * Apply the billing state derived from a Stripe webhook event. Called only
+ * from the webhook handler (request-path code never touches these columns).
+ *
+ * The webhook is the source of truth — never call Stripe API synchronously
+ * from a user-facing request to determine entitlement, because Stripe's
+ * 99.99% SLA isn't tight enough for the request path.
+ */
+export async function setBillingState(
+  orgId: string,
+  state: BillingState,
+): Promise<void> {
+  const db = sql();
+  await db`
+    UPDATE org SET
+      plan                   = ${state.plan},
+      plan_seats             = ${state.plan_seats ?? 1},
+      stripe_subscription_id = ${state.stripe_subscription_id},
+      subscription_status    = ${state.subscription_status},
+      current_period_end     = ${state.current_period_end},
+      trial_ends_at          = ${state.trial_ends_at}
+    WHERE id = ${orgId}::uuid
+  `;
+}

@@ -164,7 +164,7 @@ export default async function SharePage({
         {error === "upgrade-to-share" ? (
           <Banner variant="warning">
             Peer sharing is a Pro feature.{" "}
-            <a href="/pricing" style={{ color: palette.amber }}>Upgrade to Pro</a> to share your activity with teammates.
+            <a href="/billing" style={{ color: palette.amber }}>Upgrade to Pro</a> to share your activity with teammates.
           </Banner>
         ) : (
           error && <Banner variant="danger">{error.replace(/\+/g, " ")}</Banner>

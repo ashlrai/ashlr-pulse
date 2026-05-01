@@ -63,7 +63,7 @@ export async function createProject(
       const existing = await countProjects(input.org_id);
       if (existing >= limits.max_projects) {
         throw new PlanGateError(
-          `Free tier capped at ${limits.max_projects} project. Upgrade to Pro at /pricing.`,
+          `Free tier capped at ${limits.max_projects} project. Upgrade to Pro at /billing.`,
           402,
         );
       }
@@ -97,7 +97,7 @@ export async function createProjectWithRepos(
       const existing = await countProjects(input.org_id);
       if (existing >= limits.max_projects) {
         throw new PlanGateError(
-          `Free tier capped at ${limits.max_projects} project. Upgrade to Pro at /pricing.`,
+          `Free tier capped at ${limits.max_projects} project. Upgrade to Pro at /billing.`,
           402,
         );
       }

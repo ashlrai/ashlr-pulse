@@ -66,7 +66,7 @@ export async function POST(req: Request): Promise<Response> {
       if (members + pending >= limits.max_members) {
         return NextResponse.json(
           {
-            error: `Free tier capped at ${limits.max_members} member. Upgrade to Pro at /pricing.`,
+            error: `Free tier capped at ${limits.max_members} member. Upgrade to Pro at /billing.`,
           },
           { status: 402 },
         );

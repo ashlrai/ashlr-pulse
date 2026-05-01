@@ -180,7 +180,7 @@ export default async function Page({
         <div style={{ marginBottom: space.x4 }}>
           <Banner variant="info">
             Free tier shows last {limits.retention_days} days.{" "}
-            <a href="/pricing" style={{ color: palette.cyan }}>Upgrade for 90-day retention →</a>
+            <a href="/billing" style={{ color: palette.cyan }}>Upgrade for 90-day retention →</a>
           </Banner>
         </div>
       )}
@@ -394,7 +394,7 @@ async function BriefingPanel({
         <div style={{ fontSize: 13, color: palette.textDim, lineHeight: 1.6 }}>
           <span style={{ color: palette.cyan, marginRight: 6 }}>briefing</span>
           AI insights are a Pro feature.{" "}
-          <a href="/pricing" style={{ color: palette.cyan }}>Upgrade to Pro →</a>
+          <a href="/billing" style={{ color: palette.cyan }}>Upgrade to Pro →</a>
         </div>
       </Card>
     );
