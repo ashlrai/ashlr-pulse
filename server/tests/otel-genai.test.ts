@@ -231,44 +231,15 @@ describe("spanToActivityEvent", () => {
     expect(a!.dedup_key).not.toBeNull();
   });
 
-  it("cmux: same session, different span_ids → same dedup_key", () => {
-    // Two cmux instances tailing the same Claude Code conversation
-    // each emit a span with the same logical content but distinct
-    // OTel span_ids. Wave 1 dedup only fired WHERE span_id IS NULL
-    // so these slipped through and inflated cost. The 0017 fix
-    // includes session_id and applies the unique index universally.
-    const baseAttrs = [
-      { key: "gen_ai.system",              value: { stringValue: "anthropic" as string } },
-      { key: "gen_ai.request.model",       value: { stringValue: "claude-opus-4-7" as string } },
-      { key: "gen_ai.usage.input_tokens",  value: { intValue: 1500 } },
-      { key: "gen_ai.usage.output_tokens", value: { intValue: 200 } },
-      { key: "claude.session.id",          value: { stringValue: "sess-cmux-shared" as string } },
-      { key: "claude.repo.name",           value: { stringValue: "ashlrai/timeline" as string } },
-    ];
-    const a = spanToActivityEvent({
+  it("cmux: different span_ids AND different session_ids → same dedup_key when content matches", () => {
+    // cmux mints a fresh session_id per shell, so two parallel
+    // instances tailing the same logical work don't share session_id.
+    // The dedup_key formula must collapse them on content alone — if
+    // it included session_id the duplicates would slip through (this
+    // is what 0017 hit in production; 0018 reverted to content-only).
+    const make = (spanId: string, sessionId: string): Parameters<typeof spanToActivityEvent>[0] => ({
       name: "gen_ai.request",
-      spanId: "aaaa11112222",
-      startTimeUnixNano: "1714400000000000000",
-      endTimeUnixNano:   "1714400000500000000",
-      attributes: baseAttrs,
-    }, "mason");
-    const b = spanToActivityEvent({
-      name: "gen_ai.request",
-      spanId: "bbbb33334444",   // ← different span_id, same logical event
-      startTimeUnixNano: "1714400000000000000",
-      endTimeUnixNano:   "1714400000500000000",
-      attributes: baseAttrs,
-    }, "mason");
-    expect(a!.span_id).not.toBe(b!.span_id);
-    expect(a!.dedup_key).toBe(b!.dedup_key);
-  });
-
-  it("distinct sessions with identical token counts produce different dedup_keys", () => {
-    // Inverse of the cmux test: two genuinely distinct conversations
-    // that happen to produce the same token counts in the same second
-    // must NOT collapse — session_id is the discriminator.
-    const make = (sessionId: string): Parameters<typeof spanToActivityEvent>[0] => ({
-      name: "gen_ai.request",
+      spanId,
       startTimeUnixNano: "1714400000000000000",
       endTimeUnixNano:   "1714400000500000000",
       attributes: [
@@ -277,10 +248,34 @@ describe("spanToActivityEvent", () => {
         { key: "gen_ai.usage.input_tokens",  value: { intValue: 1500 } },
         { key: "gen_ai.usage.output_tokens", value: { intValue: 200 } },
         { key: "claude.session.id",          value: { stringValue: sessionId } },
+        { key: "claude.repo.name",           value: { stringValue: "ashlrai/timeline" } },
       ],
     });
-    const a = spanToActivityEvent(make("sess-A"), "mason");
-    const b = spanToActivityEvent(make("sess-B"), "mason");
+    const a = spanToActivityEvent(make("aaaa11112222", "sess-cmux-1"), "mason");
+    const b = spanToActivityEvent(make("bbbb33334444", "sess-cmux-2"), "mason");
+    expect(a!.span_id).not.toBe(b!.span_id);
+    expect(a!.session_id).not.toBe(b!.session_id);
+    expect(a!.dedup_key).toBe(b!.dedup_key);
+  });
+
+  it("distinct sessions with different cache patterns get different dedup_keys", () => {
+    // Token columns (cache_read, cache_5m, cache_1h) provide enough
+    // specificity that genuinely distinct sessions diverge — even if
+    // input/output happen to match.
+    const make = (cacheRead: number): Parameters<typeof spanToActivityEvent>[0] => ({
+      name: "gen_ai.request",
+      startTimeUnixNano: "1714400000000000000",
+      endTimeUnixNano:   "1714400000500000000",
+      attributes: [
+        { key: "gen_ai.system",                value: { stringValue: "anthropic" } },
+        { key: "gen_ai.request.model",         value: { stringValue: "claude-opus-4-7" } },
+        { key: "gen_ai.usage.input_tokens",    value: { intValue: 1500 } },
+        { key: "gen_ai.usage.output_tokens",   value: { intValue: 200 } },
+        { key: "gen_ai.usage.cache_read_tokens", value: { intValue: cacheRead } },
+      ],
+    });
+    const a = spanToActivityEvent(make(50_000), "mason");
+    const b = spanToActivityEvent(make(80_000), "mason");
     expect(a!.dedup_key).not.toBe(b!.dedup_key);
   });
 

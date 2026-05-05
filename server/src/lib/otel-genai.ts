@@ -145,32 +145,40 @@ function tsSecond(iso: string): string {
 
 /**
  * Produce the content-hash dedup key. Must stay in lock-step with the
- * SQL formula in db/migrations/0017_dedup_universal.sql or backfilled
- * dedup_keys won't collide with newly-ingested ones.
+ * SQL formula in db/migrations/0018_dedup_content_only.sql or
+ * backfilled dedup_keys won't collide with newly-ingested ones.
  *
- * Includes session_id so cmux running multiple Claude Code instances
- * against the SAME conversation collapses to one row (each instance
- * emits its own span with a different span_id but identical logical
- * content). Distinct sessions stay distinct even if they happen to
- * land identical token counts in the same second.
+ * Content-only: 0017 added session_id and that over-discriminated
+ * (cmux mints a fresh session_id per shell, so duplicates never
+ * collapsed). The token columns provide enough specificity to keep
+ * genuinely distinct sessions distinct — they differ in at least
+ * the cache_read / 5m / 1h pattern.
  */
 function makeDedupKey(
   userId: string,
-  sessionId: string | null,
   ts: string,
   model: string | null,
   tokensIn: number | null,
   tokensOut: number | null,
+  tokensReasoning: number | null,
+  tokensCacheRead: number | null,
+  tokensCache5m: number | null,
+  tokensCache1h: number | null,
+  tokensCacheWriteLegacy: number | null,
   repo: string | null,
   source: string,
 ): string {
   const canonical = [
     userId,
-    sessionId ?? "",
     tsSecond(ts),
     model ?? "",
     String(tokensIn ?? 0),
     String(tokensOut ?? 0),
+    String(tokensReasoning ?? 0),
+    String(tokensCacheRead ?? 0),
+    String(tokensCache5m ?? 0),
+    String(tokensCache1h ?? 0),
+    String(tokensCacheWriteLegacy ?? 0),
     repo ?? "",
     source,
   ].join("|");
@@ -273,12 +281,15 @@ export function spanToActivityEvent(
     ts: new Date(ts),
   });
 
-  // session_id is the cmux discriminator: same session across N
-  // instances dedupes; distinct sessions stay distinct.
   const sessionId =
     asString(attrs, "ashlr.plugin.session_id") ??
     asString(attrs, "claude.session.id");
-  const dedupKey = makeDedupKey(userId, sessionId, ts, model, tokensInput, tokensOutput, repoName, source);
+  const dedupKey = makeDedupKey(
+    userId, ts, model,
+    tokensInput, tokensOutput, tokensReasoning,
+    tokensCacheRead, tokensCache5m, tokensCache1h, tokensCacheWrite,
+    repoName, source,
+  );
 
   return {
     ts,
