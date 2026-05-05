@@ -257,7 +257,7 @@ export default async function Page({
               <StackedAreaChart
                 data={data.stackedArea}
                 series={data.sources}
-                vFmt={(v) => abbrev(Number(v))}
+                valueFormat="abbrev"
               />
             ) : (
               <EmptyChart label="No data in the last 14 days yet." />
@@ -269,7 +269,7 @@ export default async function Page({
           {data.modelMix.length > 0 ? (
             <DonutChart
               data={data.modelMix}
-              vFmt={(v) => abbrev(Number(v))}
+              valueFormat="abbrev"
               centerValue={abbrev(data.modelMix.reduce((a, b) => a + b.value, 0))}
               centerLabel="tokens"
             />
@@ -291,8 +291,8 @@ export default async function Page({
             <LineChart
               data={data.costTrajectory.map((p) => ({ bucket: p.bucket, cost: p.cents / 100 }))}
               series={[{ key: "cost", label: "cumulative $", color: palette.magenta }]}
-              yFmt={(v) => `$${v.toFixed(0)}`}
-              vFmt={(v) => `$${Number(v).toFixed(2)}`}
+              yFormat="dollars-int"
+              valueFormat="dollars-2dp"
             />
           ) : (
             <EmptyChart label="No cost data yet." />
@@ -329,8 +329,8 @@ export default async function Page({
                   { key: "prs_opened", label: "prs opened", color: palette.cyan    },
                   { key: "prs_merged", label: "prs merged", color: palette.magenta },
                 ]}
-                yFmt={(v) => v.toFixed(0)}
-                vFmt={(v) => `${v}`}
+                yFormat="int"
+                valueFormat="locale"
                 height={220}
               />
             </ChartFrame>
@@ -488,8 +488,8 @@ function CacheEfficiencyPanel({
         <LineChart
           data={efficiency}
           series={[{ key: "ratio", label: "read/write", color: palette.amber }]}
-          yFmt={(v) => v.toFixed(1)}
-          vFmt={(v) => `${Number(v).toFixed(2)}×`}
+          yFormat="decimal-1"
+          valueFormat="ratio"
           height={130}
         />
       </div>

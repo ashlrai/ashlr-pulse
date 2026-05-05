@@ -12,6 +12,7 @@ import {
 } from "recharts";
 import { palette, chartColor } from "@/lib/theme";
 import { CyberTooltip } from "./Tooltip";
+import { formatNumber, type FormatKey } from "@/lib/chart-formats";
 
 export interface LinePoint {
   bucket: string;
@@ -21,14 +22,18 @@ export interface LinePoint {
 interface Props {
   data: LinePoint[];
   series: { key: string; label?: string; color?: string }[];
-  yFmt?: (v: number) => string;
-  vFmt?: (v: number | string | undefined) => string;
+  /** Format for Y-axis tick labels. Default: "abbrev". */
+  yFormat?: FormatKey;
+  /** Format for tooltip values. Default: "abbrev". */
+  valueFormat?: FormatKey;
   height?: number;
 }
 
 export function LineChart({
-  data, series, yFmt = abbrev, vFmt = (v) => String(v ?? 0), height = 220,
+  data, series, yFormat = "abbrev", valueFormat = "abbrev", height = 220,
 }: Props): ReactElement {
+  const yFmt = (v: number): string => formatNumber(yFormat, v);
+  const vFmt = (v: number | string | undefined): string => formatNumber(valueFormat, v);
   return (
     <ResponsiveContainer width="100%" height={height}>
       <RLineChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
@@ -77,8 +82,4 @@ export function LineChart({
   );
 }
 
-function abbrev(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000)     return `${(n / 1_000).toFixed(1)}k`;
-  return `${n}`;
-}
+

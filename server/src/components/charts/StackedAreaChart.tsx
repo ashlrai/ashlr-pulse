@@ -14,6 +14,7 @@ import {
 } from "recharts";
 import { palette, sourceColor } from "@/lib/theme";
 import { CyberTooltip } from "./Tooltip";
+import { formatNumber, type FormatKey } from "@/lib/chart-formats";
 
 export interface StackedAreaPoint {
   /** X-axis label, e.g. "Apr 22". */
@@ -26,17 +27,19 @@ interface Props {
   data: StackedAreaPoint[];
   /** Ordered list of series keys to stack (by source name). */
   series: string[];
-  /** Y-axis number formatter. */
-  yFmt?: (v: number) => string;
-  /** Tooltip value formatter. */
-  vFmt?: (v: number | string | undefined) => string;
+  /** Format key for Y-axis ticks. Default: "abbrev". */
+  yFormat?: FormatKey;
+  /** Format key for tooltip values. Default: "abbrev". */
+  valueFormat?: FormatKey;
   /** Pixel height of the chart area. */
   height?: number;
 }
 
 export function StackedAreaChart({
-  data, series, yFmt = abbrev, vFmt = (v) => String(v ?? 0), height = 260,
+  data, series, yFormat = "abbrev", valueFormat = "abbrev", height = 260,
 }: Props): ReactElement {
+  const yFmt = (v: number): string => formatNumber(yFormat, v);
+  const vFmt = (v: number | string | undefined): string => formatNumber(valueFormat, v);
   return (
     <ResponsiveContainer width="100%" height={height}>
       <AreaChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
@@ -97,8 +100,4 @@ export function StackedAreaChart({
   );
 }
 
-function abbrev(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000)     return `${(n / 1_000).toFixed(1)}k`;
-  return `${n}`;
-}
+

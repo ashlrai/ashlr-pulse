@@ -14,6 +14,7 @@ import {
 } from "recharts";
 import { palette, chartColor } from "@/lib/theme";
 import { CyberTooltip } from "./Tooltip";
+import { formatNumber, type FormatKey } from "@/lib/chart-formats";
 
 export interface HBarPoint {
   label: string;
@@ -24,8 +25,8 @@ export interface HBarPoint {
 
 interface Props {
   data: HBarPoint[];
-  /** Tooltip value formatter. */
-  vFmt?: (v: number | string | undefined) => string;
+  /** Format key for tooltip values. Default: "abbrev". */
+  valueFormat?: FormatKey;
   /** Pixel height per row. Total chart height = data.length × rowHeight. */
   rowHeight?: number;
   /** Use a single color for every bar instead of the chart palette. */
@@ -33,8 +34,9 @@ interface Props {
 }
 
 export function HBarChart({
-  data, vFmt = (v) => String(v ?? 0), rowHeight = 26, uniformColor,
+  data, valueFormat = "abbrev", rowHeight = 26, uniformColor,
 }: Props): ReactElement {
+  const vFmt = (v: number | string | undefined): string => formatNumber(valueFormat, v);
   const height = Math.max(120, data.length * rowHeight + 24);
   return (
     <ResponsiveContainer width="100%" height={height}>

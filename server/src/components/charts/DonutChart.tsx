@@ -12,6 +12,7 @@ import {
 } from "recharts";
 import { palette, chartColor } from "@/lib/theme";
 import { CyberTooltip } from "./Tooltip";
+import { formatNumber, type FormatKey } from "@/lib/chart-formats";
 
 export interface DonutSlice {
   label: string;
@@ -21,8 +22,8 @@ export interface DonutSlice {
 
 interface Props {
   data: DonutSlice[];
-  /** Tooltip value formatter. */
-  vFmt?: (v: number | string | undefined) => string;
+  /** Format key for tooltip values. Default: "abbrev". */
+  valueFormat?: FormatKey;
   /** Center text override. Defaults to total + "total". */
   centerLabel?: string;
   centerValue?: string;
@@ -31,10 +32,11 @@ interface Props {
 }
 
 export function DonutChart({
-  data, vFmt = (v) => String(v ?? 0), centerLabel = "total", centerValue, height = 240,
+  data, valueFormat = "abbrev", centerLabel = "total", centerValue, height = 240,
 }: Props): ReactElement {
+  const vFmt = (v: number | string | undefined): string => formatNumber(valueFormat, v);
   const total = data.reduce((acc, d) => acc + d.value, 0);
-  const center = centerValue ?? abbrev(total);
+  const center = centerValue ?? formatNumber("abbrev", total);
 
   return (
     <div style={{ position: "relative", width: "100%", height }}>
@@ -93,8 +95,4 @@ export function DonutChart({
   );
 }
 
-function abbrev(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000)     return `${(n / 1_000).toFixed(1)}k`;
-  return `${n}`;
-}
+

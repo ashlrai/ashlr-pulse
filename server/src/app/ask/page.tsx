@@ -24,6 +24,7 @@ import { ChartFrame } from "@/components/charts/ChartFrame";
 import { LineChart } from "@/components/charts/LineChart";
 import { HBarChart } from "@/components/charts/HBarChart";
 import { DonutChart } from "@/components/charts/DonutChart";
+import { valueFormatForMetric, yFormatForMetric } from "@/lib/chart-formats";
 import { palette, space } from "@/lib/theme";
 
 export const dynamic = "force-dynamic";
@@ -144,13 +145,13 @@ function ResultPanel({ result }: { result: AskResult }): ReactElement {
           <LineChart
             data={rows.map((r) => ({ bucket: r.label, value: r.value }))}
             series={[{ key: "value", label: query.metric, color: palette.green }]}
-            yFmt={(v) => query.metric === "cost" ? `$${v.toFixed(0)}` : v.toLocaleString()}
-            vFmt={(v) => fmtForMetric(query.metric, Number(v))}
+            yFormat={yFormatForMetric(query.metric)}
+            valueFormat={valueFormatForMetric(query.metric)}
           />
         ) : chart === "donut" ? (
           <DonutChart
             data={rows.map((r) => ({ label: r.label, value: r.value }))}
-            vFmt={(v) => fmtForMetric(query.metric, Number(v))}
+            valueFormat={valueFormatForMetric(query.metric)}
             centerValue={fmtForMetric(query.metric, rows.reduce((a, b) => a + b.value, 0))}
             centerLabel={query.metric}
           />
@@ -158,7 +159,7 @@ function ResultPanel({ result }: { result: AskResult }): ReactElement {
           <HBarChart
             data={rows.map((r) => ({ label: r.label, value: r.value }))}
             uniformColor={palette.cyan}
-            vFmt={(v) => fmtForMetric(query.metric, Number(v))}
+            valueFormat={valueFormatForMetric(query.metric)}
           />
         )}
       </ChartFrame>
