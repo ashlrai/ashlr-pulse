@@ -14,6 +14,51 @@ import { llmStatus } from "@/lib/llm";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+/**
+ * Static probe for Supabase auth wiring: do NOT hit the auth.supabase.co
+ * API on every healthcheck — that adds external dependency latency to a
+ * Railway probe and rate-pressures Supabase. We only verify that the
+ * URL + anon key are present and the URL is parseable. Callback
+ * misconfiguration (wrong project, wrong domain) surfaces in the 'url'
+ * field for ops-level inspection.
+ */
+function authStatus(): {
+  configured: boolean;
+  url: string | null;
+  error: string | null;
+} {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const service = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !anon) {
+    return {
+      configured: false,
+      url: null,
+      error: !url
+        ? "NEXT_PUBLIC_SUPABASE_URL not set"
+        : "NEXT_PUBLIC_SUPABASE_ANON_KEY not set",
+    };
+  }
+  // Parse the URL — catches typos like missing scheme, embedded whitespace.
+  let host: string;
+  try {
+    host = new URL(url).host;
+  } catch (err) {
+    return {
+      configured: false,
+      url,
+      error: `invalid NEXT_PUBLIC_SUPABASE_URL: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  // Service-role key is admin-only; flag missing as a soft warning rather
+  // than fatal — only the PAT-validation path needs it today.
+  return {
+    configured: true,
+    url: host,
+    error: service ? null : "warn: SUPABASE_SERVICE_ROLE_KEY not set",
+  };
+}
+
 export async function GET(): Promise<Response> {
   const startedAt = Date.now();
   let dbOk = false;
@@ -26,12 +71,14 @@ export async function GET(): Promise<Response> {
     dbError = err instanceof Error ? err.message : String(err);
   }
 
+  const auth = authStatus();
   const body = {
     ok: dbOk,
     db: dbOk ? "ok" : "down",
     error: dbError,
     latency_ms: Date.now() - startedAt,
-    llm: llmStatus(),  // { configured, provider, model } — no secrets
+    auth,                // { configured, url, error } — never logs the key
+    llm: llmStatus(),    // { configured, provider, model } — no secrets
     ts: new Date().toISOString(),
   };
   return NextResponse.json(body, { status: dbOk ? 200 : 503 });

@@ -25,7 +25,9 @@ export async function currentUser(): Promise<CurrentUser | null> {
   if (!process.env.NEXT_PUBLIC_SUPABASE_URL) {
     const dev = process.env.PULSE_DEV_USER;
     if (!dev) return null;
-    return ensureLocalUser(`${dev}@dev.local`, dev);
+    const u = await ensureLocalUser(`${dev}@dev.local`, dev);
+    await ensureDefaultOrg(u.id, u.email);
+    return u;
   }
 
   const supabase = await supabaseServer();
@@ -33,7 +35,16 @@ export async function currentUser(): Promise<CurrentUser | null> {
   const u = data.user;
   if (!u || !u.email) return null;
 
-  return ensureLocalUser(u.email, (u.user_metadata?.name as string | undefined) ?? null);
+  const local = await ensureLocalUser(
+    u.email,
+    (u.user_metadata?.name as string | undefined) ?? null,
+  );
+  // First-touch provisioning: every authed user must have an org +
+  // membership so /billing, /projects, /settings, and the plan-gate
+  // queries can resolve. ensureDefaultOrg is idempotent — a single
+  // indexed SELECT for already-provisioned users.
+  await ensureDefaultOrg(local.id, local.email);
+  return local;
 }
 
 /**

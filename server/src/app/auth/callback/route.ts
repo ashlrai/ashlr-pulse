@@ -4,10 +4,18 @@
  * Exchanges the `code` query param for a session cookie, then hands the
  * user back to the dashboard. Errors fall back to /login with the
  * Supabase error surfaced.
+ *
+ * Why we instantiate the Supabase client inline (not via lib/supabase-server's
+ * `server()`): in a Route Handler that returns a custom NextResponse, cookies
+ * staged via `cookies()` from next/headers don't always make it onto the
+ * returned response — the new response object is separate. The session cookie
+ * silently goes missing and the user lands on /app unauthenticated. Writing
+ * directly to `response.cookies` guarantees the sb-* cookies ride along on
+ * the 307 we return.
  */
 
 import { NextResponse, type NextRequest } from "next/server";
-import { server } from "@/lib/supabase-server";
+import { createServerClient } from "@supabase/ssr";
 
 /**
  * Only accept same-origin relative paths. Rejects:
@@ -48,7 +56,27 @@ export async function GET(req: NextRequest): Promise<Response> {
     return NextResponse.redirect(new URL("/login?error=missing+code", baseUrl));
   }
 
-  const supabase = await server();
+  // Build the success-redirect response upfront so the supabase client can
+  // write the freshly-minted session cookies directly onto it.
+  const response = NextResponse.redirect(new URL(next, baseUrl));
+
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseAnon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!supabaseUrl || !supabaseAnon) {
+    return NextResponse.redirect(new URL("/login?error=auth+not+configured", baseUrl));
+  }
+
+  const supabase = createServerClient(supabaseUrl, supabaseAnon, {
+    cookies: {
+      getAll: () => req.cookies.getAll(),
+      setAll: (toSet) => {
+        for (const { name, value, options } of toSet) {
+          response.cookies.set({ name, value, ...options });
+        }
+      },
+    },
+  });
+
   const { error } = await supabase.auth.exchangeCodeForSession(code);
 
   if (error) {
@@ -57,5 +85,5 @@ export async function GET(req: NextRequest): Promise<Response> {
     return NextResponse.redirect(target);
   }
 
-  return NextResponse.redirect(new URL(next, baseUrl));
+  return response;
 }
