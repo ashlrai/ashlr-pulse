@@ -6,6 +6,7 @@ pub mod claude;
 pub mod config;
 pub mod git;
 pub mod heartbeat;
+pub mod invite;
 pub mod onboard;
 pub mod orchestrator;
 pub mod otlp;

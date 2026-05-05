@@ -19,6 +19,8 @@ import {
   listGrantsForViewer,
   type CreatePeerShareInput,
 } from "@/lib/peer-share-db";
+import { primaryOrgForUser } from "@/lib/org-db";
+import { limitsFor, PlanGateError } from "@/lib/plan-gate";
 
 export const runtime = "nodejs";
 
@@ -89,6 +91,17 @@ export async function POST(req: Request): Promise<Response> {
     );
   }
 
+  // Gate 4: peer_share_enabled. Mirrors the server-action pre-check in
+  // share/page.tsx so the API surfaces a 402 instead of a generic 500
+  // when createPeerShare throws PlanGateError.
+  const ownerOrg = await primaryOrgForUser(me.id);
+  if (ownerOrg && !limitsFor(ownerOrg).peer_share_enabled) {
+    return NextResponse.json(
+      { error: "Peer sharing is a Pro feature. Upgrade to Pro at /billing." },
+      { status: 402 },
+    );
+  }
+
   const input: CreatePeerShareInput = {
     owner_id: me.id,
     viewer_id: viewer.id,
@@ -96,12 +109,16 @@ export async function POST(req: Request): Promise<Response> {
     scope_value: body.scope_type === "all" ? null : scopeValue,
     granularity: body.granularity,
     fields: guard.fields,
+    ownerOrg: ownerOrg ?? undefined,
   };
 
   try {
     const row = await createPeerShare(input);
     return NextResponse.json(row, { status: 201 });
   } catch (err) {
+    if (err instanceof PlanGateError) {
+      return NextResponse.json({ error: err.message }, { status: err.status });
+    }
     const message = err instanceof Error ? err.message : String(err);
     // Unique-violation on (owner, viewer, scope_type, scope_value).
     if (/duplicate key|unique/i.test(message)) {

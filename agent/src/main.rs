@@ -5,7 +5,7 @@
 //!   doctor  — validates config + connectivity, prints status
 //!   login   — stores PAT in OS keyring, writes stub config
 
-use pulse_agent::{auth, backfill, claude, config, git, heartbeat, onboard, orchestrator, otlp, shell, state};
+use pulse_agent::{auth, backfill, claude, config, git, heartbeat, invite, onboard, orchestrator, otlp, shell, state};
 
 use std::sync::Arc;
 
@@ -73,6 +73,15 @@ enum Command {
         #[arg(short = 'y', long = "yes", help = "Assume yes for non-destructive prompts")]
         yes: bool,
     },
+
+    /// Create a one-shot invite link for a teammate / cofounder. Prints
+    /// the URL for you to send via whatever channel you prefer.
+    Invite {
+        #[arg(help = "Recipient email — for the label / your records only; the link is bearer-token, not address-bound")]
+        email: String,
+        #[arg(long, help = "Free-text label override (defaults to \"for <email>\")")]
+        label: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -99,7 +108,18 @@ async fn main() -> Result<()> {
             skip_github,
             yes,
         }).await,
+        Command::Invite { email, label } => cmd_invite(&email, label.as_deref()).await,
     }
+}
+
+// ── invite ──────────────────────────────────────────────────────────────────
+
+async fn cmd_invite(email: &str, label: Option<&str>) -> Result<()> {
+    let cfg = config::Config::load().context("loading config")?;
+    let (pat, pat_src) = auth::get_pat(&cfg.server.url, cfg.server.pat.as_deref())
+        .context("resolving PAT")?;
+    info!(url = %cfg.server.url, pat_source = %pat_src, "creating invite");
+    invite::run(&cfg.server.url, &pat, Some(email), label).await
 }
 
 // ── backfill ────────────────────────────────────────────────────────────────
