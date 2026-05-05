@@ -43,7 +43,7 @@ estimate given AshlrAI's other work.
   shared project portfolio
 - **Daily digest**: "here's what Mason shipped yesterday, here's what Cofounder
   shipped" — delivered via Slack DM or email
-- WakaTime heartbeat protocol endpoint — cofounder's VS Code plugin works day one
+- _(future)_ WakaTime heartbeat protocol endpoint — cofounder's VS Code plugin works day one. Schema is ready (`activity_event.source = 'wakatime'`); ingester not yet implemented.
 - Git commit ingester (via webhook or poll) — fills gaps where only commits are
   the signal
 - Auth via Supabase Auth or Clerk
@@ -65,8 +65,8 @@ Pulse replaces its purpose.
   you said it should (pair with a lightweight weekly "intent" note)
 - **Engagement billing export**: hours × AI tokens by repo, CSV ready for
   invoicing client work
-- Cursor Admin API poller
-- GitHub Copilot Metrics API poller
+- _(future)_ Cursor Admin API poller — schema ready (`source = 'cursor'`), poller not yet implemented.
+- _(future)_ GitHub Copilot Metrics API poller — schema ready (`source = 'copilot'`), poller not yet implemented.
 
 **Success criteria**: "which client engagement is slipping?" is answerable in
 <10 seconds without opening GitHub.

@@ -169,3 +169,103 @@ pub fn expand_tilde(p: &str) -> PathBuf {
         PathBuf::from(p)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_have_sensible_server_url() {
+        let c = Config::default();
+        // localhost:3001 is the dev convention used everywhere in the
+        // repo (server runs on :3001 in dev to avoid collision with the
+        // user's other Next.js work).
+        assert_eq!(c.server.url, "http://localhost:3001");
+        assert!(c.server.pat.is_none());
+    }
+
+    #[test]
+    fn defaults_have_shell_enabled() {
+        // Shell-hook tailing must default ON — otherwise users who never
+        // edit config.toml lose terminal-CLI ingest entirely.
+        let c = Config::default();
+        assert!(c.shell.enabled);
+        assert!(c.shell.buffer_path.is_none());
+    }
+
+    #[test]
+    fn defaults_have_no_repos() {
+        let c = Config::default();
+        assert_eq!(c.repos.len(), 0);
+    }
+
+    #[test]
+    fn parses_minimal_config() {
+        let toml_text = r#"
+[server]
+url = "https://pulse.example.com"
+"#;
+        let c: Config = toml::from_str(toml_text).expect("parse");
+        assert_eq!(c.server.url, "https://pulse.example.com");
+        assert!(c.shell.enabled, "shell.enabled defaults to true on partial config");
+    }
+
+    #[test]
+    fn parses_repos_block() {
+        let toml_text = r#"
+[server]
+url = "https://x.test"
+
+[[repos]]
+path = "/Users/x/code/foo"
+
+[[repos]]
+path = "/Users/x/code/bar"
+repo_name = "bar-renamed"
+"#;
+        let c: Config = toml::from_str(toml_text).expect("parse");
+        assert_eq!(c.repos.len(), 2);
+        assert_eq!(c.repos[0].path, "/Users/x/code/foo");
+        assert!(c.repos[0].repo_name.is_none());
+        assert_eq!(c.repos[1].repo_name.as_deref(), Some("bar-renamed"));
+    }
+
+    #[test]
+    fn parses_shell_disabled() {
+        let toml_text = r#"
+[server]
+url = "https://x.test"
+
+[shell]
+enabled = false
+"#;
+        let c: Config = toml::from_str(toml_text).expect("parse");
+        assert!(!c.shell.enabled);
+    }
+
+    #[test]
+    fn rejects_garbage_toml() {
+        let result: Result<Config, _> = toml::from_str("this is not toml at all == == ==");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn expand_tilde_replaces_home_prefix() {
+        let p = expand_tilde("~/foo/bar");
+        let home = dirs::home_dir().expect("home");
+        assert_eq!(p, home.join("foo/bar"));
+    }
+
+    #[test]
+    fn expand_tilde_passes_through_absolute() {
+        let p = expand_tilde("/etc/hosts");
+        assert_eq!(p, PathBuf::from("/etc/hosts"));
+    }
+
+    #[test]
+    fn expand_tilde_does_not_treat_bare_tilde_as_home() {
+        // Only "~/" is the home prefix. A bare "~" is a literal filename.
+        let p = expand_tilde("~");
+        assert_eq!(p, PathBuf::from("~"));
+    }
+}

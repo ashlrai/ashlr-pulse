@@ -18,12 +18,11 @@
 //! the user's home directory.
 
 use std::path::Path;
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use crate::{auth, config, onboard, otlp, repo_discover, service_install, shell_install};
+use crate::{auth, config, onboard, repo_discover, service_install, shell_install};
 
 #[derive(Debug, Default)]
 pub struct OnboardOpts {
@@ -243,7 +242,3 @@ fn resolve_pulse_agent_bin() -> Option<std::path::PathBuf> {
     None
 }
 
-/// Suppress unused-import lint when otlp isn't actually exercised in
-/// every code path of this module yet (we'll wire health pings via it later).
-#[allow(dead_code)]
-fn _otlp_dummy(_: Arc<otlp::OtlpExporter>) {}

@@ -49,10 +49,9 @@ ls -1 /Users/masonwyatt/Desktop/github/dev-tools/ashlr-pulse
 There are two distinct things called "onboarding":
 
 1. **First-time user setup** (sign in to Pulse, install agent, configure):
-   one command — `pulse-agent onboard --url https://pulse.ashlr.ai`. _(Note:
-   in a separate session this orchestrator command may still be in flight;
-   if it doesn't exist yet, fall back to the per-step sequence in
-   [Manual onboarding sequence](#manual-onboarding-sequence) below.)_
+   one command — `pulse-agent onboard --url https://pulse.ashlr.ai`. The
+   per-step sequence in [Manual onboarding sequence](#manual-onboarding-sequence)
+   is the fallback if any step fails.
 2. **Cofounder / teammate onboarding**: existing user runs
    `pulse-agent invite <email>` → invitee gets a one-shot link → they sign
    in via GitHub → peer-share is pre-suggested.
