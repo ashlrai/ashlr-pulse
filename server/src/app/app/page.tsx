@@ -913,7 +913,7 @@ function PluginImpactCard({ impact }: { impact: PluginImpact }): ReactElement {
         </div>
         <div>
           <div style={{ fontSize: 22, color: palette.cyan, fontVariantNumeric: "tabular-nums" }}>
-            ~${(impact.estUsdSavedCents / 100).toFixed(2)}
+            ~{fmtUsd(impact.estUsdSavedCents)}
           </div>
           <div style={{ fontSize: 11, color: palette.textMute, letterSpacing: 0.5, textTransform: "uppercase" }}>
             estimated — conservative
@@ -1013,10 +1013,10 @@ function buildTrajectoryWithForecast(
   let runningCents = history[history.length - 1].cents;
   // Anchor projection at the last historical point.
   out[out.length - 1].projected = runningCents / 100;
+  const baseMs = Date.now();
   for (const f of projection) {
     runningCents += f.p50 / 1000; // millicents → cents
-    const date = new Date();
-    date.setUTCDate(date.getUTCDate() + f.d);
+    const date = new Date(baseMs + f.d * 86_400_000);
     out.push({
       bucket: date.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" }),
       projected: runningCents / 100,

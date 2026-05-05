@@ -179,10 +179,11 @@ export async function loadDashboard(
   // the user picks a 7d chart range. ~30k rows × in-memory bucketing
   // is well under postgres-js + Node's memory budget.
   const sqlWindowDays = Math.max(chartDays, 30);
-  // If a retention cutoff is active, cap the window to the smaller range.
-  const retCutoffClause = retCutoff
-    ? `AND ts >= '${retCutoff.toISOString()}'`
-    : "";
+  // Retention cutoff travels as a bind parameter ($2) so we never
+  // interpolate timestamps into the SQL string. NULL means "no
+  // retention clamp" and the OR-NULL fragment becomes a no-op.
+  // Bind layout: $1 user_id, $2 retCutoff (nullable), $3+ scope params.
+  const retParam: string | null = retCutoff ? retCutoff.toISOString() : null;
   const events = await db.unsafe<RawEvent[]>(
     `
     SELECT
@@ -204,15 +205,16 @@ export async function loadDashboard(
     FROM activity_event
     WHERE user_id = $1
       AND ts >= NOW() - INTERVAL '${sqlWindowDays} days'
-      ${retCutoffClause}
+      AND ($2::timestamptz IS NULL OR ts >= $2::timestamptz)
       ${scope.repoClauseSql}
     ORDER BY ts DESC
     `,
-    [userId, ...scope.repoParams],
+    [userId, retParam, ...scope.repoParams],
   );
 
   // Pull last chartDays of github commits (subjects only — public info).
   // github_event ⨝ github_account (account_id) ⨝ github_repo (repo_id).
+  // Retention cutoff at $2 (nullable) — see events query above.
   const commits = await db.unsafe<{ subject: string; repo: string; sha: string; ts: string }[]>(
     `
     SELECT
@@ -226,11 +228,11 @@ export async function loadDashboard(
     WHERE ga.user_id = $1::uuid
       AND ge.kind    = 'commit'
       AND ge.ts >= NOW() - INTERVAL '${chartDays} days'
-      ${retCutoffClause}
+      AND ($2::timestamptz IS NULL OR ge.ts >= $2::timestamptz)
     ORDER BY ge.ts DESC
     LIMIT 50
     `,
-    [userId],
+    [userId, retParam],
   ).catch(() => [] as { subject: string; repo: string; sha: string; ts: string }[]);
 
   // Pull GitHub events for daily PR throughput aggregation.
@@ -241,9 +243,9 @@ export async function loadDashboard(
     JOIN github_account ga ON ga.id = ge.account_id
     WHERE ga.user_id = $1::uuid
       AND ge.ts >= NOW() - INTERVAL '${chartDays} days'
-      ${retCutoffClause}
+      AND ($2::timestamptz IS NULL OR ge.ts >= $2::timestamptz)
     `,
-    [userId],
+    [userId, retParam],
   ).catch(() => [] as { kind: string; ts: string }[]);
 
   // Load project rollups in parallel — small query, joins activity_event
@@ -256,7 +258,11 @@ export async function loadDashboard(
     kind: string;
     repos: number;
     events: number;
-    tokens: number;
+    // postgres-js returns bigint as string in some configurations; we
+    // accept either and coerce in the JS map below. Casting to ::int on
+    // the server side risks silent overflow on large workloads (cmux
+    // teams routinely exceed INT_MAX in a 14-day token sum).
+    tokens: string | number;
     millicents: string | number | null;
   }[]>(
     `
@@ -266,7 +272,7 @@ export async function loadDashboard(
       p.kind              AS kind,
       COUNT(DISTINCT pr.repo_name)::int AS repos,
       COUNT(ae.*)::int    AS events,
-      COALESCE(SUM(COALESCE(ae.tokens_input, 0) + COALESCE(ae.tokens_output, 0) + COALESCE(ae.tokens_reasoning, 0)), 0)::bigint::int AS tokens,
+      COALESCE(SUM(COALESCE(ae.tokens_input, 0) + COALESCE(ae.tokens_output, 0) + COALESCE(ae.tokens_reasoning, 0)), 0)::bigint AS tokens,
       COALESCE(SUM(ae.cost_millicents), 0)::bigint AS millicents
     FROM project p
     JOIN membership m  ON m.org_id    = p.org_id AND m.user_id = $1::uuid
@@ -293,7 +299,7 @@ export async function loadDashboard(
       kind: r.kind,
       repos: r.repos,
       events: r.events,
-      tokens: r.tokens,
+      tokens: Number(r.tokens),
       cents: m == null || m === 0 ? null : millicentsToCents(m),
     };
   });
@@ -357,22 +363,7 @@ function computeAggregates(
     const ts = new Date(e.ts);
     const ageMs = now - ts.getTime();
 
-    // Cost: trust the cached millicents from migration 0015 first.
-    // Falls back to live computation for legacy rows where the column
-    // is still NULL (will be populated by a later backfill).
-    const millicents = e.cost_millicents != null
-      ? e.cost_millicents
-      : costMillicents({
-          model:                 e.model,
-          tokens_input:          e.tokens_input,
-          tokens_output:         e.tokens_output,
-          tokens_reasoning:      e.tokens_reasoning,
-          tokens_cache_read:     e.tokens_cache_read,
-          tokens_cache_write:    e.tokens_cache_write,
-          tokens_cache_5m_write: e.tokens_cache_5m_write,
-          tokens_cache_1h_write: e.tokens_cache_1h_write,
-          ts,
-        });
+    const millicents = resolveMillicents(e, ts);
 
     // Billable tokens: what the user pays the model to *do*. Cache reads
     // & writes are billable too but they're a cost-mechanism artefact —
@@ -382,13 +373,7 @@ function computeAggregates(
       (e.tokens_input ?? 0) +
       (e.tokens_output ?? 0) +
       (e.tokens_reasoning ?? 0);
-    const cacheTokens =
-      (e.tokens_cache_read ?? 0) +
-      (e.tokens_cache_5m_write ?? 0) +
-      (e.tokens_cache_1h_write ?? 0) +
-      (e.tokens_cache_5m_write == null && e.tokens_cache_1h_write == null
-        ? (e.tokens_cache_write ?? 0)
-        : 0);
+    const cacheTokens = sumCacheTokens(e);
     const total = billable + cacheTokens;
     const day = ts.toISOString().slice(0, 10);
 
@@ -449,13 +434,7 @@ function computeAggregates(
     // Cache efficiency (chart window).
     if (cacheReadsByDay.has(day)) {
       cacheReadsByDay.set(day, (cacheReadsByDay.get(day) ?? 0) + (e.tokens_cache_read ?? 0));
-      const writes =
-        (e.tokens_cache_5m_write ?? 0) +
-        (e.tokens_cache_1h_write ?? 0) +
-        (e.tokens_cache_5m_write == null && e.tokens_cache_1h_write == null
-          ? (e.tokens_cache_write ?? 0)
-          : 0);
-      cacheWritesByDay.set(day, (cacheWritesByDay.get(day) ?? 0) + writes);
+      cacheWritesByDay.set(day, (cacheWritesByDay.get(day) ?? 0) + sumCacheWriteTokens(e));
     }
 
     // Token breakdown per day (chart window) — powers the new
@@ -609,26 +588,8 @@ function computeAggregates(
   // is (was: "171 tokens / $0.41" mystery; now: "171 in/out + 65k cache").
   const feed: FeedRow[] = events.slice(0, 50).map((e) => {
     const ts = new Date(e.ts);
-    const m = e.cost_millicents != null
-      ? e.cost_millicents
-      : costMillicents({
-          model:                 e.model,
-          tokens_input:          e.tokens_input,
-          tokens_output:         e.tokens_output,
-          tokens_reasoning:      e.tokens_reasoning,
-          tokens_cache_read:     e.tokens_cache_read,
-          tokens_cache_write:    e.tokens_cache_write,
-          tokens_cache_5m_write: e.tokens_cache_5m_write,
-          tokens_cache_1h_write: e.tokens_cache_1h_write,
-          ts,
-        });
-    const cacheTokens =
-      (e.tokens_cache_read ?? 0) +
-      (e.tokens_cache_5m_write ?? 0) +
-      (e.tokens_cache_1h_write ?? 0) +
-      (e.tokens_cache_5m_write == null && e.tokens_cache_1h_write == null
-        ? (e.tokens_cache_write ?? 0)
-        : 0);
+    const m = resolveMillicents(e, ts);
+    const cacheTokens = sumCacheTokens(e);
     return {
       ts: e.ts,
       source: e.source,
@@ -706,6 +667,45 @@ function statCard(s: SumBucket): StatCard {
     tokensTotal: s.tokensTotal,
     costCents: millicentsToCents(s.millicents),
   };
+}
+
+/**
+ * Sum of cache_5m_write + cache_1h_write, falling back to legacy
+ * cache_write when both new columns are null (pre-migration-0015 rows).
+ */
+function sumCacheWriteTokens(e: RawEvent): number {
+  return (
+    (e.tokens_cache_5m_write ?? 0) +
+    (e.tokens_cache_1h_write ?? 0) +
+    (e.tokens_cache_5m_write == null && e.tokens_cache_1h_write == null
+      ? (e.tokens_cache_write ?? 0)
+      : 0)
+  );
+}
+
+/** All cache tokens (reads + writes incl. legacy fallback). */
+function sumCacheTokens(e: RawEvent): number {
+  return (e.tokens_cache_read ?? 0) + sumCacheWriteTokens(e);
+}
+
+/**
+ * Cost: trust the cached millicents from migration 0015 first.
+ * Falls back to live computation for legacy rows where the column
+ * is still NULL (will be populated by a later backfill).
+ */
+function resolveMillicents(e: RawEvent, ts: Date): number | null {
+  if (e.cost_millicents != null) return e.cost_millicents;
+  return costMillicents({
+    model:                 e.model,
+    tokens_input:          e.tokens_input,
+    tokens_output:         e.tokens_output,
+    tokens_reasoning:      e.tokens_reasoning,
+    tokens_cache_read:     e.tokens_cache_read,
+    tokens_cache_write:    e.tokens_cache_write,
+    tokens_cache_5m_write: e.tokens_cache_5m_write,
+    tokens_cache_1h_write: e.tokens_cache_1h_write,
+    ts,
+  });
 }
 
 function clampDays(d: number): number {
