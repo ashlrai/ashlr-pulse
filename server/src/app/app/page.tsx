@@ -27,7 +27,7 @@ import { loadDashboard, type ScopeFilter } from "@/lib/dashboard-data";
 import { getOrComputeBriefing, type BriefingInputs } from "@/lib/briefing";
 import { detectAnomaly } from "@/lib/anomalies";
 import { generateInsights, type Recommendation } from "@/lib/cost-insights";
-import { forecast, sumForecast } from "@/lib/forecast";
+import { forecast, sumForecast, type ForecastPoint } from "@/lib/forecast";
 import { sql } from "@/lib/db";
 import { listViews, type DashboardView, viewToHref } from "@/lib/dashboard-view-db";
 import { primaryOrgForUser } from "@/lib/org-db";
@@ -45,7 +45,7 @@ import { StackedAreaChart } from "@/components/charts/StackedAreaChart";
 import { HBarChart } from "@/components/charts/HBarChart";
 import { DonutChart } from "@/components/charts/DonutChart";
 import { Heatmap } from "@/components/charts/Heatmap";
-import { LineChart } from "@/components/charts/LineChart";
+import { LineChart, type LinePoint } from "@/components/charts/LineChart";
 import { RadialGauge } from "@/components/charts/RadialGauge";
 
 import { palette, space } from "@/lib/theme";
@@ -995,8 +995,8 @@ function InsightCard({ rec }: { rec: Recommendation }): ReactElement {
 
 function buildTrajectoryWithForecast(
   history: { bucket: string; cents: number }[],
-  projection: import("@/lib/forecast").ForecastPoint[],
-): import("@/components/charts/LineChart").LinePoint[] {
+  projection: ForecastPoint[],
+): LinePoint[] {
   // Splice historical cumulative cost (in dollars) with projected
   // cumulative cost. The two series ride a single x-axis: history rows
   // omit the `projected` key (so the projected line doesn't render
@@ -1004,8 +1004,7 @@ function buildTrajectoryWithForecast(
   // The boundary day carries both keys so both lines connect through
   // the same point — visually continuous.
   if (history.length === 0) return [];
-  type LP = import("@/components/charts/LineChart").LinePoint;
-  const out: LP[] = history.map((p) => ({
+  const out: LinePoint[] = history.map((p) => ({
     bucket: p.bucket,
     cost: p.cents / 100,
   }));
