@@ -24,6 +24,14 @@
 -- same repo + same source = an extremely specific match).
 --
 -- Formula must match server/src/lib/otel-genai.ts makeDedupKey().
+--
+-- IMPORTANT: drop the unique index from 0017 BEFORE the UPDATE.
+-- Coarsening the time bucket merges previously-distinct dedup_keys
+-- onto the same value, which would violate the unique constraint
+-- mid-UPDATE and abort the migration. We re-create the index after
+-- the DELETE collapses the duplicates.
+
+DROP INDEX IF EXISTS uq_activity_event_dedup;
 
 UPDATE activity_event
 SET dedup_key = LEFT(encode(digest(
@@ -51,3 +59,8 @@ WITH ranked AS (
 )
 DELETE FROM activity_event
 WHERE id IN (SELECT id FROM ranked WHERE rn > 1);
+
+-- Recreate the universal partial unique now that duplicates are gone.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_activity_event_dedup
+  ON activity_event (user_id, dedup_key)
+  WHERE dedup_key IS NOT NULL;
