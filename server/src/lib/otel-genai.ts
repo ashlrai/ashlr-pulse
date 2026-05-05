@@ -135,12 +135,20 @@ function asFloat(m: Map<string, unknown>, k: string): number | null {
 }
 
 /**
- * Truncate ISO8601 timestamp to second resolution — the dedup key
- * must collapse twin-emission within the same second but not events
- * one full second apart.
+ * Truncate ISO8601 timestamp to HOUR resolution. Twin-emission of the
+ * same logical assistant turn from cmux / agent / in-process exporter
+ * spreads over 10-40s, so a finer bucket (second or minute) leaves
+ * those duplicates with distinct dedup_keys. An hour bucket collapses
+ * all emissions of one turn into a single key while keeping events
+ * that genuinely span hour boundaries distinct.
+ *
+ * False-positive risk (two distinct events with byte-for-byte
+ * identical token vectors in the same hour) is bounded by how
+ * specific the rest of the key is — model + 7 token columns + repo +
+ * source.
  */
-function tsSecond(iso: string): string {
-  return iso.slice(0, 19); // "2026-05-04T21:12:55"
+function tsHour(iso: string): string {
+  return iso.slice(0, 13); // "2026-05-04T21"
 }
 
 /**
@@ -170,7 +178,7 @@ function makeDedupKey(
 ): string {
   const canonical = [
     userId,
-    tsSecond(ts),
+    tsHour(ts),
     model ?? "",
     String(tokensIn ?? 0),
     String(tokensOut ?? 0),

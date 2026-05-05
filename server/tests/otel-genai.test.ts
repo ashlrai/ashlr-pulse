@@ -298,6 +298,30 @@ describe("spanToActivityEvent", () => {
     expect(a!.dedup_key).not.toBe(b!.dedup_key);
   });
 
+  it("dedup_key collapses content-identical emissions across multiple seconds within the same hour", () => {
+    // Real production pattern from 2026-05-04: agent + in-process
+    // exporter both emit the same logical assistant turn over a
+    // 10-40s window. Different ts → different ts-second bucket →
+    // dedup miss. Hour bucket collapses them.
+    const make = (offsetSec: number): Parameters<typeof spanToActivityEvent>[0] => ({
+      name: "gen_ai.request",
+      startTimeUnixNano: String(1_714_300_000_000_000_000n + BigInt(offsetSec) * 1_000_000_000n),
+      endTimeUnixNano:   String(1_714_300_000_500_000_000n + BigInt(offsetSec) * 1_000_000_000n),
+      attributes: [
+        { key: "gen_ai.system",              value: { stringValue: "anthropic" } },
+        { key: "gen_ai.request.model",       value: { stringValue: "claude-opus-4-7" } },
+        { key: "gen_ai.usage.input_tokens",  value: { intValue: 1900 } },
+        { key: "gen_ai.usage.output_tokens", value: { intValue: 100 } },
+        { key: "gen_ai.usage.cache_read_tokens", value: { intValue: 862_000 } },
+      ],
+    });
+    const a = spanToActivityEvent(make(0),  "mason");
+    const b = spanToActivityEvent(make(25), "mason");
+    const c = spanToActivityEvent(make(26), "mason");
+    expect(a!.dedup_key).toBe(b!.dedup_key);
+    expect(a!.dedup_key).toBe(c!.dedup_key);
+  });
+
   it("ashlr.source=git overrides the derived source label", () => {
     // The pulse-agent emits git-commit spans with gen_ai.system=anthropic (to
     // pass the GenAI-shape gate) plus ashlr.source=git so the UI can show
