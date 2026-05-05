@@ -10,7 +10,7 @@
  */
 
 import { sql } from "@/lib/db";
-import { costUsdCents } from "@/lib/pricing";
+import { costMillicents, millicentsToCents } from "@/lib/pricing";
 import { retentionCutoff, type PlanLimits } from "@/lib/plan-gate";
 
 export interface ScopeFilter {
@@ -34,14 +34,21 @@ export interface LoadOpts {
 }
 
 export interface DashboardData {
-  /** Today (last 24h) summary. */
-  today: { events: number; tokens: number; costCents: number | null };
-  /** Yesterday (24-48h ago). */
-  yesterday: { events: number; tokens: number; costCents: number | null };
-  /** Last-7d totals. */
-  week: { events: number; tokens: number; costCents: number | null };
+  /** Today (last 24h) summary. `tokens` is BILLABLE tokens (input +
+   *  output + reasoning) so the displayed $/token ratio matches
+   *  intuition. `tokensTotal` includes cache reads & writes which
+   *  drive cost but inflate the denominator if shown directly. */
+  today: StatCard;
+  yesterday: StatCard;
+  week: StatCard;
   /** Daily totals over the last 14 days, with deltas baked in. */
   daily: DailyAggregate[];
+  /** Per-day stacked token breakdown by type (Wave 1 token-trust chart). */
+  tokenBreakdown: { bucket: string; input: number; output: number; reasoning: number; cache_read: number; cache_5m_write: number; cache_1h_write: number; cache_write_legacy: number }[];
+  /** Per-day cost stacked by model, last chartDays. Wave 2/3 chart. */
+  byModel: { bucket: string; [model: string]: string | number }[];
+  /** Models present in byModel, ordered by total cost desc. */
+  models: string[];
   /** Stacked-area chart data: 14 days × source. */
   stackedArea: { bucket: string; [source: string]: string | number }[];
   /** Sources present in the data, ordered by 14-day total desc. */
@@ -85,6 +92,17 @@ export interface GithubDaily {
   [series: string]: string | number;
 }
 
+export interface StatCard {
+  events: number;
+  /** Billable tokens: input + output + reasoning. The denominator
+   *  users intuit when they see "$X / Y tokens". */
+  tokens: number;
+  /** Full token volume including cache reads & writes — drives cost
+   *  but is shown as a secondary number to avoid the $306/M illusion. */
+  tokensTotal: number;
+  costCents: number | null;
+}
+
 export interface ProjectRollup {
   project_id: string;
   project_name: string;
@@ -98,7 +116,10 @@ export interface ProjectRollup {
 export interface DailyAggregate {
   bucket: string; // YYYY-MM-DD
   events: number;
+  /** Billable tokens (input + output + reasoning). */
   tokens: number;
+  /** Full tokens including cache. */
+  tokensTotal: number;
   costCents: number | null;
   commits: number;
 }
@@ -110,6 +131,8 @@ export interface FeedRow {
   repo: string | null;
   tokens_input: number | null;
   tokens_output: number | null;
+  /** Sum of cache_read + cache_5m + cache_1h + legacy cache_write. */
+  tokens_cache: number | null;
   duration_ms: number | null;
   costCents: number | null;
 }
@@ -122,12 +145,16 @@ interface RawEvent {
   duration_ms: number | null;
   tokens_input: number | null;
   tokens_output: number | null;
+  tokens_reasoning: number | null;
   tokens_cache_read: number | null;
   tokens_cache_write: number | null;
   tokens_cache_5m_write: number | null;
   tokens_cache_1h_write: number | null;
   tool_calls_count: number | null;
   tool_calls_types: string[] | null;
+  /** Cached cost at ingest, in millicents. NULL on legacy rows pre-0015
+   *  — we fall back to recomputing via costMillicents() per row. */
+  cost_millicents: number | null;
 }
 
 /**
@@ -166,12 +193,14 @@ export async function loadDashboard(
       duration_ms,
       tokens_input,
       tokens_output,
+      tokens_reasoning,
       tokens_cache_read,
       tokens_cache_write,
       tokens_cache_5m_write,
       tokens_cache_1h_write,
       tool_calls_count,
-      tool_calls_types
+      tool_calls_types,
+      cost_millicents
     FROM activity_event
     WHERE user_id = $1
       AND ts >= NOW() - INTERVAL '${sqlWindowDays} days'
@@ -218,8 +247,18 @@ export async function loadDashboard(
   ).catch(() => [] as { kind: string; ts: string }[]);
 
   // Load project rollups in parallel — small query, joins activity_event
-  // to project_repo. Bounded to chartDays.
-  const projectRollups = await db.unsafe<ProjectRollup[]>(
+  // to project_repo. Bounded to chartDays. Cost comes from cached
+  // cost_millicents (migration 0015); rows pre-0015 contribute zero
+  // until a backfill runs, but recent data is accurate.
+  const projectRaw = await db.unsafe<{
+    project_id: string;
+    project_name: string;
+    kind: string;
+    repos: number;
+    events: number;
+    tokens: number;
+    millicents: string | number | null;
+  }[]>(
     `
     SELECT
       p.id::text          AS project_id,
@@ -227,8 +266,8 @@ export async function loadDashboard(
       p.kind              AS kind,
       COUNT(DISTINCT pr.repo_name)::int AS repos,
       COUNT(ae.*)::int    AS events,
-      COALESCE(SUM(COALESCE(ae.tokens_input, 0) + COALESCE(ae.tokens_output, 0)), 0)::bigint::int AS tokens,
-      NULL::int           AS cents
+      COALESCE(SUM(COALESCE(ae.tokens_input, 0) + COALESCE(ae.tokens_output, 0) + COALESCE(ae.tokens_reasoning, 0)), 0)::bigint::int AS tokens,
+      COALESCE(SUM(ae.cost_millicents), 0)::bigint AS millicents
     FROM project p
     JOIN membership m  ON m.org_id    = p.org_id AND m.user_id = $1::uuid
     JOIN project_repo pr ON pr.project_id = p.id
@@ -242,9 +281,40 @@ export async function loadDashboard(
     LIMIT 20
     `,
     [userId],
-  ).catch(() => [] as ProjectRollup[]);
+  ).catch(() => [] as never[]);
+
+  // Convert millicents → integer cents at the boundary; NULL stays NULL
+  // so the UI renders "—" cleanly when there's no priced data.
+  const projectRollups: ProjectRollup[] = projectRaw.map((r) => {
+    const m = r.millicents == null ? null : Number(r.millicents);
+    return {
+      project_id: r.project_id,
+      project_name: r.project_name,
+      kind: r.kind,
+      repos: r.repos,
+      events: r.events,
+      tokens: r.tokens,
+      cents: m == null || m === 0 ? null : millicentsToCents(m),
+    };
+  });
 
   return computeAggregates(events, commits, ghEvents, projectRollups, chartDays);
+}
+
+interface BreakdownRow {
+  input: number;
+  output: number;
+  reasoning: number;
+  cache_read: number;
+  cache_5m_write: number;
+  cache_1h_write: number;
+  cache_write_legacy: number;
+}
+function blankBreakdown(): BreakdownRow {
+  return {
+    input: 0, output: 0, reasoning: 0,
+    cache_read: 0, cache_5m_write: 0, cache_1h_write: 0, cache_write_legacy: 0,
+  };
 }
 
 function computeAggregates(
@@ -264,59 +334,96 @@ function computeAggregates(
   const stackedMap = new Map<string, Record<string, number>>(); // bucket → source → tokens
   const sourceTotals = new Map<string, number>();
   const modelTokens = new Map<string, number>();
+  const modelByDayMillicents = new Map<string, Map<string, number>>(); // model → day → millicents
+  const modelTotalMillicents = new Map<string, number>(); // model → total millicents over chart window
   const repoEvents = new Map<string, number>();
   const toolCounts = new Map<string, number>();
   const heatmapMap = new Map<string, number>(); // "dow:hour" → events
   const cacheReadsByDay = new Map<string, number>();
   const cacheWritesByDay = new Map<string, number>();
+  const breakdownByDay = new Map<string, BreakdownRow>();
 
-  // Pre-fill last 14 days so charts render with empty buckets too.
+  // Pre-fill chart window so empty buckets render too.
   const daysBack = lastNDays(chartDays);
   for (const d of daysBack) {
     dailyMap.set(d, newSum());
     stackedMap.set(d, {});
     cacheReadsByDay.set(d, 0);
     cacheWritesByDay.set(d, 0);
+    breakdownByDay.set(d, blankBreakdown());
   }
 
   for (const e of events) {
     const ts = new Date(e.ts);
     const ageMs = now - ts.getTime();
-    const cents = costUsdCents({
-      model:                  e.model,
-      tokens_input:           e.tokens_input,
-      tokens_output:          e.tokens_output,
-      tokens_cache_read:      e.tokens_cache_read,
-      tokens_cache_write:     e.tokens_cache_write,
-      tokens_cache_5m_write:  e.tokens_cache_5m_write,
-      tokens_cache_1h_write:  e.tokens_cache_1h_write,
-      ts,
-    });
-    const tokens = (e.tokens_input ?? 0) + (e.tokens_output ?? 0);
+
+    // Cost: trust the cached millicents from migration 0015 first.
+    // Falls back to live computation for legacy rows where the column
+    // is still NULL (will be populated by a later backfill).
+    const millicents = e.cost_millicents != null
+      ? e.cost_millicents
+      : costMillicents({
+          model:                 e.model,
+          tokens_input:          e.tokens_input,
+          tokens_output:         e.tokens_output,
+          tokens_reasoning:      e.tokens_reasoning,
+          tokens_cache_read:     e.tokens_cache_read,
+          tokens_cache_write:    e.tokens_cache_write,
+          tokens_cache_5m_write: e.tokens_cache_5m_write,
+          tokens_cache_1h_write: e.tokens_cache_1h_write,
+          ts,
+        });
+
+    // Billable tokens: what the user pays the model to *do*. Cache reads
+    // & writes are billable too but they're a cost-mechanism artefact —
+    // showing them in the displayed denominator made $/token look 60×
+    // higher than the model rate sheet (the visible bug at /app today).
+    const billable =
+      (e.tokens_input ?? 0) +
+      (e.tokens_output ?? 0) +
+      (e.tokens_reasoning ?? 0);
+    const cacheTokens =
+      (e.tokens_cache_read ?? 0) +
+      (e.tokens_cache_5m_write ?? 0) +
+      (e.tokens_cache_1h_write ?? 0) +
+      (e.tokens_cache_5m_write == null && e.tokens_cache_1h_write == null
+        ? (e.tokens_cache_write ?? 0)
+        : 0);
+    const total = billable + cacheTokens;
     const day = ts.toISOString().slice(0, 10);
 
-    addTo(today, e, cents, ageMs <= D_MS);
-    addTo(yesterday, e, cents, ageMs > D_MS && ageMs <= 2 * D_MS);
-    addTo(week, e, cents, ageMs <= 7 * D_MS);
+    addTo(today,     ageMs <= D_MS,                        billable, total, millicents);
+    addTo(yesterday, ageMs > D_MS && ageMs <= 2 * D_MS,    billable, total, millicents);
+    addTo(week,      ageMs <= 7 * D_MS,                    billable, total, millicents);
 
-    // Daily aggregate (14 days).
     const daily = dailyMap.get(day);
-    if (daily) addTo(daily, e, cents, true);
+    if (daily) addTo(daily, true, billable, total, millicents);
 
-    // Stacked area: tokens by source, by day (14 days).
+    // Stacked area uses TOTAL tokens — lets cache-heavy sources show
+    // proportionally; the y-axis label already says "tokens per day,
+    // stacked by source" so users expect the full volume.
     const stack = stackedMap.get(day);
-    if (stack && tokens > 0) {
-      stack[e.source] = (stack[e.source] ?? 0) + tokens;
+    if (stack && total > 0) {
+      stack[e.source] = (stack[e.source] ?? 0) + total;
     }
 
-    // 14-day source totals (controls render order in the legend).
-    if (ageMs <= 14 * D_MS) {
-      sourceTotals.set(e.source, (sourceTotals.get(e.source) ?? 0) + tokens);
+    // chart-window source totals (controls render order in the legend).
+    if (ageMs <= chartDays * D_MS) {
+      sourceTotals.set(e.source, (sourceTotals.get(e.source) ?? 0) + total);
     }
 
-    // 7-day model mix by tokens.
-    if (ageMs <= 7 * D_MS && e.model && tokens > 0) {
-      modelTokens.set(e.model, (modelTokens.get(e.model) ?? 0) + tokens);
+    // 7-day model mix: BILLABLE tokens, so the donut reflects "what
+    // model did real work" not "what model wrote a lot of cache".
+    if (ageMs <= 7 * D_MS && e.model && billable > 0) {
+      modelTokens.set(e.model, (modelTokens.get(e.model) ?? 0) + billable);
+    }
+
+    // Per-model cost over chart window (millicents) for byModel chart.
+    if (ageMs <= chartDays * D_MS && e.model && millicents != null && millicents > 0) {
+      const dayMap = modelByDayMillicents.get(e.model) ?? new Map<string, number>();
+      dayMap.set(day, (dayMap.get(day) ?? 0) + millicents);
+      modelByDayMillicents.set(e.model, dayMap);
+      modelTotalMillicents.set(e.model, (modelTotalMillicents.get(e.model) ?? 0) + millicents);
     }
 
     // 7-day repo + tool counts.
@@ -331,7 +438,7 @@ function computeAggregates(
       }
     }
 
-    // 30-day heatmap (uses local-tz-ish — ts is already UTC; we accept this for now).
+    // 30-day heatmap.
     if (ageMs <= 30 * D_MS) {
       const dow = ts.getUTCDay();
       const hour = ts.getUTCHours();
@@ -339,7 +446,7 @@ function computeAggregates(
       heatmapMap.set(k, (heatmapMap.get(k) ?? 0) + 1);
     }
 
-    // Cache efficiency (14 days).
+    // Cache efficiency (chart window).
     if (cacheReadsByDay.has(day)) {
       cacheReadsByDay.set(day, (cacheReadsByDay.get(day) ?? 0) + (e.tokens_cache_read ?? 0));
       const writes =
@@ -349,6 +456,22 @@ function computeAggregates(
           ? (e.tokens_cache_write ?? 0)
           : 0);
       cacheWritesByDay.set(day, (cacheWritesByDay.get(day) ?? 0) + writes);
+    }
+
+    // Token breakdown per day (chart window) — powers the new
+    // input/output/cache-by-type stacked chart that proves the
+    // billable-vs-total split is real.
+    const bd = breakdownByDay.get(day);
+    if (bd) {
+      bd.input          += e.tokens_input          ?? 0;
+      bd.output         += e.tokens_output         ?? 0;
+      bd.reasoning      += e.tokens_reasoning      ?? 0;
+      bd.cache_read     += e.tokens_cache_read     ?? 0;
+      bd.cache_5m_write += e.tokens_cache_5m_write ?? 0;
+      bd.cache_1h_write += e.tokens_cache_1h_write ?? 0;
+      if (e.tokens_cache_5m_write == null && e.tokens_cache_1h_write == null) {
+        bd.cache_write_legacy += e.tokens_cache_write ?? 0;
+      }
     }
   }
 
@@ -396,11 +519,12 @@ function computeAggregates(
   const daily = daysBack.map<DailyAggregate>((d) => {
     const s = dailyMap.get(d)!;
     return {
-      bucket:   shortDay(d),
-      events:   s.events,
-      tokens:   s.tokens,
-      costCents: s.cents == null ? null : Math.round(s.cents),
-      commits:  commitsByDay.get(d) ?? 0,
+      bucket:      shortDay(d),
+      events:      s.events,
+      tokens:      s.tokensBillable,
+      tokensTotal: s.tokensTotal,
+      costCents:   millicentsToCents(s.millicents),
+      commits:     commitsByDay.get(d) ?? 0,
     };
   });
 
@@ -410,6 +534,40 @@ function computeAggregates(
     cost:    daily.map((d) => d.costCents ?? 0),
     commits: daily.map((d) => d.commits),
   };
+
+  // Token-type breakdown stacked chart (chart window).
+  const tokenBreakdown = daysBack.map((d) => {
+    const bd = breakdownByDay.get(d) ?? blankBreakdown();
+    return { bucket: shortDay(d), ...bd };
+  });
+
+  // Per-model cost stacked area: top 6 models by total cost over the
+  // chart window. Smaller models roll up into "other" so the chart
+  // doesn't shatter into a hundred 0.1% slices.
+  const modelOrder = [...modelTotalMillicents.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([m]) => m);
+  const TOP_MODELS = 6;
+  const topModels = modelOrder.slice(0, TOP_MODELS);
+  const otherModels = new Set(modelOrder.slice(TOP_MODELS));
+  const byModel = daysBack.map((d) => {
+    const out: { bucket: string; [k: string]: string | number } = { bucket: shortDay(d) };
+    let other = 0;
+    for (const m of topModels) {
+      const cents = millicentsToCents(modelByDayMillicents.get(m)?.get(d) ?? 0) ?? 0;
+      out[shortModel(m)] = cents;
+    }
+    if (otherModels.size > 0) {
+      for (const m of otherModels) {
+        other += modelByDayMillicents.get(m)?.get(d) ?? 0;
+      }
+      out.other = millicentsToCents(other) ?? 0;
+    }
+    return out;
+  });
+  const models = otherModels.size > 0
+    ? [...topModels.map(shortModel), "other"]
+    : topModels.map(shortModel);
 
   const modelMix = [...modelTokens.entries()]
     .sort((a, b) => b[1] - a[1])
@@ -431,10 +589,12 @@ function computeAggregates(
     return { dow, hour, value: v };
   });
 
-  let cum = 0;
-  const costTrajectory = daily.map((d) => {
-    cum += d.costCents ?? 0;
-    return { bucket: d.bucket, cents: cum };
+  // Cumulative cost in millicents — round only at display so a long
+  // trail of sub-cent events doesn't truncate to zero.
+  let cumMillicents = 0;
+  const costTrajectory = daysBack.map((d) => {
+    cumMillicents += dailyMap.get(d)?.millicents ?? 0;
+    return { bucket: shortDay(d), cents: millicentsToCents(cumMillicents) ?? 0 };
   });
 
   const cacheEfficiency = daysBack.map((d) => {
@@ -444,19 +604,31 @@ function computeAggregates(
     return { bucket: shortDay(d), ratio, reads, writes };
   });
 
-  // Recent feed: 50 newest events with derived cost.
+  // Recent feed: 50 newest events. Use cached cost first; show cache
+  // tokens distinctly so users can see WHY the cost number is what it
+  // is (was: "171 tokens / $0.41" mystery; now: "171 in/out + 65k cache").
   const feed: FeedRow[] = events.slice(0, 50).map((e) => {
     const ts = new Date(e.ts);
-    const cents = costUsdCents({
-      model:                  e.model,
-      tokens_input:           e.tokens_input,
-      tokens_output:          e.tokens_output,
-      tokens_cache_read:      e.tokens_cache_read,
-      tokens_cache_write:     e.tokens_cache_write,
-      tokens_cache_5m_write:  e.tokens_cache_5m_write,
-      tokens_cache_1h_write:  e.tokens_cache_1h_write,
-      ts,
-    });
+    const m = e.cost_millicents != null
+      ? e.cost_millicents
+      : costMillicents({
+          model:                 e.model,
+          tokens_input:          e.tokens_input,
+          tokens_output:         e.tokens_output,
+          tokens_reasoning:      e.tokens_reasoning,
+          tokens_cache_read:     e.tokens_cache_read,
+          tokens_cache_write:    e.tokens_cache_write,
+          tokens_cache_5m_write: e.tokens_cache_5m_write,
+          tokens_cache_1h_write: e.tokens_cache_1h_write,
+          ts,
+        });
+    const cacheTokens =
+      (e.tokens_cache_read ?? 0) +
+      (e.tokens_cache_5m_write ?? 0) +
+      (e.tokens_cache_1h_write ?? 0) +
+      (e.tokens_cache_5m_write == null && e.tokens_cache_1h_write == null
+        ? (e.tokens_cache_write ?? 0)
+        : 0);
     return {
       ts: e.ts,
       source: e.source,
@@ -464,28 +636,20 @@ function computeAggregates(
       repo: e.repo_name,
       tokens_input: e.tokens_input,
       tokens_output: e.tokens_output,
+      tokens_cache: cacheTokens > 0 ? cacheTokens : null,
       duration_ms: e.duration_ms,
-      costCents: cents,
+      costCents: millicentsToCents(m),
     };
   });
 
   return {
-    today: {
-      events: today.events,
-      tokens: today.tokens,
-      costCents: today.cents == null ? null : Math.round(today.cents),
-    },
-    yesterday: {
-      events: yesterday.events,
-      tokens: yesterday.tokens,
-      costCents: yesterday.cents == null ? null : Math.round(yesterday.cents),
-    },
-    week: {
-      events: week.events,
-      tokens: week.tokens,
-      costCents: week.cents == null ? null : Math.round(week.cents),
-    },
+    today:     statCard(today),
+    yesterday: statCard(yesterday),
+    week:      statCard(week),
     daily,
+    tokenBreakdown,
+    byModel,
+    models,
     stackedArea,
     sources,
     modelMix,
@@ -509,13 +673,39 @@ function computeAggregates(
 
 // ---------- helpers ----------
 
-interface SumBucket { events: number; tokens: number; cents: number | null }
-function newSum(): SumBucket { return { events: 0, tokens: 0, cents: null }; }
-function addTo(sum: SumBucket, e: RawEvent, cents: number | null, include: boolean): void {
+interface SumBucket {
+  events: number;
+  /** Billable tokens (input + output + reasoning). */
+  tokensBillable: number;
+  /** All tokens including cache. */
+  tokensTotal: number;
+  /** Cumulative cost in millicents — NULL only when no row in the
+   *  bucket had a known model. */
+  millicents: number | null;
+}
+function newSum(): SumBucket {
+  return { events: 0, tokensBillable: 0, tokensTotal: 0, millicents: null };
+}
+function addTo(
+  sum: SumBucket,
+  include: boolean,
+  billable: number,
+  total: number,
+  millicents: number | null,
+): void {
   if (!include) return;
   sum.events += 1;
-  sum.tokens += (e.tokens_input ?? 0) + (e.tokens_output ?? 0);
-  if (cents != null) sum.cents = (sum.cents ?? 0) + cents;
+  sum.tokensBillable += billable;
+  sum.tokensTotal += total;
+  if (millicents != null) sum.millicents = (sum.millicents ?? 0) + millicents;
+}
+function statCard(s: SumBucket): StatCard {
+  return {
+    events: s.events,
+    tokens: s.tokensBillable,
+    tokensTotal: s.tokensTotal,
+    costCents: millicentsToCents(s.millicents),
+  };
 }
 
 function clampDays(d: number): number {

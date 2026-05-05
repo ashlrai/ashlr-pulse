@@ -34,6 +34,7 @@ export const SHAREABLE_FIELDS = new Set<string>([
   "duration_ms",
   "tokens_input",
   "tokens_output",
+  "tokens_reasoning",          // 0015: extended-thinking tokens
   "tokens_cache_read",
   "tokens_cache_write",
   "tokens_cache_5m_write",
@@ -47,6 +48,14 @@ export const SHAREABLE_FIELDS = new Set<string>([
   "git_branch",
   "language",
   "cost_usd_cents",
+  "cost_millicents",            // 0015: precision cost cache
+  // 0015: ashlr-plugin attribution. Numbers + version strings only —
+  // no prompts, no code, no completions. Safe to share by design.
+  "tokens_saved",
+  "tokens_saved_breakdown",
+  "plugin_features",
+  "plugin_version",
+  "plugin_genome_hit_rate",
 ]);
 
 export type ValidateFieldsResult =

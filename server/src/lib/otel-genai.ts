@@ -8,6 +8,7 @@
  *   gen_ai.request.model            -> model
  *   gen_ai.usage.input_tokens       -> tokens_input
  *   gen_ai.usage.output_tokens      -> tokens_output
+ *   gen_ai.usage.reasoning_tokens   -> tokens_reasoning      (extended thinking)
  *   gen_ai.usage.cache_read_tokens     -> tokens_cache_read     (Anthropic)
  *   gen_ai.usage.cache_write_tokens    -> tokens_cache_write    (legacy flat)
  *   gen_ai.usage.cache_5m_write_tokens -> tokens_cache_5m_write (5-min ephemeral)
@@ -32,6 +33,12 @@
  *   ashlr.plugin.tokens_saved       -> tokens_saved
  *   ashlr.plugin.session_id         -> session_id (overrides claude.session.id)
  *   ashlr.plugin.repo               -> repo_name  (overrides claude.repo.name)
+ *   ashlr.plugin.savings.genome     -> tokens_saved_breakdown.genome     (int)
+ *   ashlr.plugin.savings.snipcompact -> tokens_saved_breakdown.snipcompact (int)
+ *   ashlr.plugin.savings.route      -> tokens_saved_breakdown.route      (int)
+ *   ashlr.plugin.feature_flags      -> plugin_features (TEXT[]; CSV input)
+ *   ashlr.plugin.version            -> plugin_version  (semver string)
+ *   ashlr.plugin.genome_hit_rate    -> plugin_genome_hit_rate (0..1 float)
  *
  * The plugin emitter sets `gen_ai.system` so plugin spans pass the
  * GenAI-shape gate; but we override `source` to `ashlr_plugin` so the
@@ -48,6 +55,8 @@
  * partial data from heterogeneous sources.
  */
 
+import { createHash } from "node:crypto";
+import { costMillicents, PRICE_VERSION } from "./pricing";
 import type { OtlpSpan, OtlpSpanAttribute } from "./otlp-types";
 
 export interface ActivityEventInsert {
@@ -60,6 +69,7 @@ export interface ActivityEventInsert {
   duration_ms: number | null;
   tokens_input: number | null;
   tokens_output: number | null;
+  tokens_reasoning: number | null;
   tokens_cache_read: number | null;
   tokens_cache_write: number | null;
   tokens_cache_5m_write: number | null;
@@ -73,9 +83,22 @@ export interface ActivityEventInsert {
   git_branch: string | null;
   language: string | null;
   tokens_saved: number | null;
+  tokens_saved_breakdown: Record<string, number> | null;
+  plugin_features: string[] | null;
+  plugin_version: string | null;
+  plugin_genome_hit_rate: number | null;
   /** OTLP spanId (16-byte hex) — used for idempotency on retries. May be
    *  null for legacy clients that don't set it. */
   span_id: string | null;
+  /** Cached cost at ingest time, in millicents. Avoids re-pricing on
+   *  every dashboard read. NULL only if model is unknown. */
+  cost_millicents: number | null;
+  /** Rate-table revision used to compute cost_millicents. Lets us
+   *  re-price old rows when the table changes. NULL when uncached. */
+  pricing_version: number | null;
+  /** Content hash for null-span-id dedup. SHA-256 of
+   *  (user_id, ts-second, model, tokens_in, tokens_out, repo, source). */
+  dedup_key: string | null;
   raw_otel_span: unknown;
 }
 
@@ -105,6 +128,40 @@ function asString(m: Map<string, unknown>, k: string): string | null {
 function asInt(m: Map<string, unknown>, k: string): number | null {
   const v = m.get(k);
   return typeof v === "number" && Number.isFinite(v) ? Math.trunc(v) : null;
+}
+function asFloat(m: Map<string, unknown>, k: string): number | null {
+  const v = m.get(k);
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+/**
+ * Truncate ISO8601 timestamp to second resolution — the dedup key
+ * must collapse twin-emission within the same second but not events
+ * one full second apart.
+ */
+function tsSecond(iso: string): string {
+  return iso.slice(0, 19); // "2026-05-04T21:12:55"
+}
+
+function makeDedupKey(
+  userId: string,
+  ts: string,
+  model: string | null,
+  tokensIn: number | null,
+  tokensOut: number | null,
+  repo: string | null,
+  source: string,
+): string {
+  const canonical = [
+    userId,
+    tsSecond(ts),
+    model ?? "",
+    String(tokensIn ?? 0),
+    String(tokensOut ?? 0),
+    repo ?? "",
+    source,
+  ].join("|");
+  return createHash("sha256").update(canonical).digest("hex").slice(0, 32);
 }
 
 /**
@@ -158,6 +215,53 @@ export function spanToActivityEvent(
         ? "claude_code"
         : provider ?? "unknown";
 
+  const tokensInput = asInt(attrs, "gen_ai.usage.input_tokens");
+  const tokensOutput = asInt(attrs, "gen_ai.usage.output_tokens");
+  const tokensReasoning = asInt(attrs, "gen_ai.usage.reasoning_tokens");
+  const tokensCacheRead = asInt(attrs, "gen_ai.usage.cache_read_tokens");
+  const tokensCacheWrite = asInt(attrs, "gen_ai.usage.cache_write_tokens");
+  const tokensCache5m = asInt(attrs, "gen_ai.usage.cache_5m_write_tokens");
+  const tokensCache1h = asInt(attrs, "gen_ai.usage.cache_1h_write_tokens");
+  const model = asString(attrs, "gen_ai.request.model")
+    ?? asString(attrs, "gen_ai.response.model");
+  const repoName =
+    asString(attrs, "ashlr.plugin.repo") ??
+    asString(attrs, "claude.repo.name");
+
+  // Plugin per-feature savings breakdown — only build the JSONB
+  // object if at least one of the keys was emitted, so a span with
+  // no plugin signals stays NULL (not {}).
+  const savingsGenome     = asInt(attrs, "ashlr.plugin.savings.genome");
+  const savingsSnip       = asInt(attrs, "ashlr.plugin.savings.snipcompact");
+  const savingsRoute      = asInt(attrs, "ashlr.plugin.savings.route");
+  const savings: Record<string, number> = {};
+  if (savingsGenome != null) savings.genome = savingsGenome;
+  if (savingsSnip   != null) savings.snipcompact = savingsSnip;
+  if (savingsRoute  != null) savings.route = savingsRoute;
+  const tokensSavedBreakdown = Object.keys(savings).length > 0 ? savings : null;
+
+  // Plugin feature flags — CSV in, TEXT[] out.
+  const featureFlagsRaw = asString(attrs, "ashlr.plugin.feature_flags");
+  const pluginFeatures = featureFlagsRaw
+    ? featureFlagsRaw.split(",").map((s) => s.trim()).filter(Boolean)
+    : null;
+
+  // Cache cost at ingest — stop recomputing 30k rows on every read.
+  // NULL when model is unknown; read path will render "—" or fall back.
+  const millicents = costMillicents({
+    model,
+    tokens_input:          tokensInput,
+    tokens_output:         tokensOutput,
+    tokens_reasoning:      tokensReasoning,
+    tokens_cache_read:     tokensCacheRead,
+    tokens_cache_write:    tokensCacheWrite,
+    tokens_cache_5m_write: tokensCache5m,
+    tokens_cache_1h_write: tokensCache1h,
+    ts: new Date(ts),
+  });
+
+  const dedupKey = makeDedupKey(userId, ts, model, tokensInput, tokensOutput, repoName, source);
+
   return {
     ts,
     user_id: userId,
@@ -166,26 +270,32 @@ export function spanToActivityEvent(
       asString(attrs, "claude.session.id"),
     source,
     provider,
-    model: asString(attrs, "gen_ai.request.model") ?? asString(attrs, "gen_ai.response.model"),
+    model,
     duration_ms: durationMs,
-    tokens_input: asInt(attrs, "gen_ai.usage.input_tokens"),
-    tokens_output: asInt(attrs, "gen_ai.usage.output_tokens"),
-    tokens_cache_read: asInt(attrs, "gen_ai.usage.cache_read_tokens"),
-    tokens_cache_write: asInt(attrs, "gen_ai.usage.cache_write_tokens"),
-    tokens_cache_5m_write: asInt(attrs, "gen_ai.usage.cache_5m_write_tokens"),
-    tokens_cache_1h_write: asInt(attrs, "gen_ai.usage.cache_1h_write_tokens"),
+    tokens_input: tokensInput,
+    tokens_output: tokensOutput,
+    tokens_reasoning: tokensReasoning,
+    tokens_cache_read: tokensCacheRead,
+    tokens_cache_write: tokensCacheWrite,
+    tokens_cache_5m_write: tokensCache5m,
+    tokens_cache_1h_write: tokensCache1h,
     tool_calls_count: asInt(attrs, "claude.tool.calls_count"),
     tool_calls_types: toolTypes,
     accepted_count: asInt(attrs, "claude.edits.accepted_count"),
     rejected_count: asInt(attrs, "claude.edits.rejected_count"),
     project_hash: asString(attrs, "claude.project.hash"),
-    repo_name:
-      asString(attrs, "ashlr.plugin.repo") ??
-      asString(attrs, "claude.repo.name"),
+    repo_name: repoName,
     git_branch: asString(attrs, "claude.git.branch"),
     language: asString(attrs, "claude.language"),
     tokens_saved: asInt(attrs, "ashlr.plugin.tokens_saved"),
+    tokens_saved_breakdown: tokensSavedBreakdown,
+    plugin_features: pluginFeatures,
+    plugin_version: asString(attrs, "ashlr.plugin.version"),
+    plugin_genome_hit_rate: asFloat(attrs, "ashlr.plugin.genome_hit_rate"),
     span_id: span.spanId ?? null,
+    cost_millicents: millicents,
+    pricing_version: millicents != null ? PRICE_VERSION : null,
+    dedup_key: dedupKey,
     raw_otel_span: span,
   };
 }

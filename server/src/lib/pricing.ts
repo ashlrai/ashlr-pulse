@@ -22,12 +22,25 @@
  *
  * Unknown models fall through to ZERO so partial coverage doesn't
  * silently invent dollars; the dashboard renders "—" in that case.
+ *
+ * Reasoning tokens (Anthropic extended-thinking) are priced at
+ * output_per_m_usd by default. Override per-model with
+ * reasoning_per_m_usd if a vendor charges differently.
+ *
+ * PRICE_VERSION bumps when the rate table changes meaningfully (new
+ * model added, rate changed). Stored in activity_event.pricing_version
+ * at ingest so we can re-price old rows when this number advances.
  */
+
+export const PRICE_VERSION = 2 as const;
+export function priceVersion(): number { return PRICE_VERSION; }
 
 export interface Price {
   effective: string;        // YYYY-MM-DD; >= this date this row applies
   input_per_m_usd: number;
   output_per_m_usd: number;
+  /** Anthropic extended-thinking reasoning tokens. Defaults to output rate. */
+  reasoning_per_m_usd?: number;
   /** 5-minute ephemeral cache write. If absent, falls back to legacy cache_write. */
   cache_5m_write_per_m_usd?: number;
   /** 1-hour ephemeral cache write. If absent, falls back to 2× input or legacy cache_write. */
@@ -146,6 +159,8 @@ export interface UsageInput {
   model: string | null;
   tokens_input: number | null;
   tokens_output: number | null;
+  /** Anthropic extended-thinking reasoning tokens. Priced at output rate by default. */
+  tokens_reasoning?: number | null;
   /** 5-minute ephemeral cache write tokens. Optional; only newer rows have it. */
   tokens_cache_5m_write?: number | null;
   /** 1-hour ephemeral cache write tokens. Optional; only newer rows have it. */
@@ -161,7 +176,17 @@ export interface UsageInput {
   ts?: Date;
 }
 
-export function costUsdCents(u: UsageInput): number | null {
+/**
+ * Compute cost in millicents (1/1000 of a cent). Use this for ingest
+ * caching and any aggregation that sums many small values — rounding
+ * to integer cents per-event loses precision when sub-cent values
+ * accumulate (very common: 100 input tokens at $5/M = 0.05¢ each
+ * rounds to zero).
+ *
+ * Returns null when the model is unknown so callers can render "—"
+ * instead of a fake $0.
+ */
+export function costMillicents(u: UsageInput): number | null {
   if (!u.model) return null;
   const p = lookup(u.model, u.ts ?? new Date());
   if (!p) return null;
@@ -180,17 +205,42 @@ export function costUsdCents(u: UsageInput): number | null {
   const legacyCacheTokens = !has5m && !has1h ? (u.tokens_cache_write ?? 0) : 0;
   const legacyRate = p.cache_1h_write_per_m_usd ?? p.cache_write_per_m_usd ?? 0;
 
-  const cents =
-    ((u.tokens_input  ?? 0) * p.input_per_m_usd +
-     (u.tokens_output ?? 0) * p.output_per_m_usd +
+  // Reasoning tokens — Anthropic extended-thinking. Priced at output
+  // rate unless the model overrides via reasoning_per_m_usd.
+  const reasoningRate = p.reasoning_per_m_usd ?? p.output_per_m_usd;
+
+  // dollars-per-token = rate / 1_000_000
+  // millicents-per-token = (rate / 1_000_000) * 100 * 1000 = rate / 10
+  // So cents-per-token × 1000 = millicents-per-token = (tokens × rate) / 10
+  const millicents =
+    ((u.tokens_input      ?? 0) * p.input_per_m_usd +
+     (u.tokens_output     ?? 0) * p.output_per_m_usd +
+     (u.tokens_reasoning  ?? 0) * reasoningRate +
      (u.tokens_cache_read ?? 0) * (p.cache_read_per_m_usd ?? 0) +
      cache5mTokens * cache5mRate +
      cache1hTokens * cache1hRate +
      legacyCacheTokens * legacyRate) /
-    1_000_000 *
-    100;
+    10;
 
-  return Math.round(cents);
+  return Math.round(millicents);
+}
+
+/**
+ * Cost in integer cents — for display and APIs that talked in cents
+ * before millicents existed. Sub-cent values still round to an
+ * integer, so for cumulative aggregates prefer summing millicents
+ * via costMillicents() and rounding at display time.
+ */
+export function costUsdCents(u: UsageInput): number | null {
+  const m = costMillicents(u);
+  if (m == null) return null;
+  return Math.round(m / 1000);
+}
+
+/** Round a millicent value to integer cents at display time. */
+export function millicentsToCents(m: number | null | undefined): number | null {
+  if (m == null) return null;
+  return Math.round(m / 1000);
 }
 
 /** Format an integer cent count as "$1.23" (or "—" when null). */

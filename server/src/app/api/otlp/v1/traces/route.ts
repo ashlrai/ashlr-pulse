@@ -129,10 +129,14 @@ export async function POST(req: Request): Promise<Response> {
   const db = sql();
   let inserted = 0;
   try {
-    // ON CONFLICT DO NOTHING handles the (user_id, span_id) unique index
-    // from migration 0007 — agent retries after a flaky network round-trip
-    // can't double-count tokens. Rows with span_id IS NULL (legacy / shell
-    // hook spans) bypass the partial unique index and always insert.
+    // ON CONFLICT DO NOTHING handles two unique indexes:
+    //   - (user_id, span_id) WHERE span_id IS NOT NULL   [migration 0007]
+    //   - (user_id, dedup_key) WHERE span_id IS NULL     [migration 0015]
+    // The first catches agent retries after a flaky network round-trip.
+    // The second catches twin-emission (cmux multi-instance, or agent
+    // tailer + in-process exporter both firing) that produces semantically
+    // identical events with no span_id — which previously walked past
+    // dedupe and left walls of duplicate rows in the activity feed.
     const result = await db`
       INSERT INTO activity_event ${db(rows, [
         "ts",
@@ -144,6 +148,7 @@ export async function POST(req: Request): Promise<Response> {
         "duration_ms",
         "tokens_input",
         "tokens_output",
+        "tokens_reasoning",
         "tokens_cache_read",
         "tokens_cache_write",
         "tokens_cache_5m_write",
@@ -157,7 +162,14 @@ export async function POST(req: Request): Promise<Response> {
         "git_branch",
         "language",
         "tokens_saved",
+        "tokens_saved_breakdown",
+        "plugin_features",
+        "plugin_version",
+        "plugin_genome_hit_rate",
         "span_id",
+        "cost_millicents",
+        "pricing_version",
+        "dedup_key",
         "raw_otel_span",
       ])}
       ON CONFLICT DO NOTHING

@@ -26,6 +26,10 @@ import { loadMissedRepos } from "@/lib/missed-repos";
 import { loadDashboard, type ScopeFilter } from "@/lib/dashboard-data";
 import { getOrComputeBriefing, type BriefingInputs } from "@/lib/briefing";
 import { detectAnomaly } from "@/lib/anomalies";
+import { generateInsights, type Recommendation } from "@/lib/cost-insights";
+import { forecast, sumForecast } from "@/lib/forecast";
+import { sql } from "@/lib/db";
+import { listViews, type DashboardView, viewToHref } from "@/lib/dashboard-view-db";
 import { primaryOrgForUser } from "@/lib/org-db";
 import { limitsFor, retentionCutoff, FREE_LIMITS } from "@/lib/plan-gate";
 
@@ -94,10 +98,12 @@ export default async function Page({
   const isFreeTier = limits.retention_days < 90;
 
   // Run all the heavy lifts in parallel.
-  const [data, agentStatus, missedRepos] = await Promise.all([
+  const [data, agentStatus, missedRepos, pluginImpact, savedViews] = await Promise.all([
     loadDashboard(targetUserId, scope, { chartDays: windowOpt.days, limits }),
     isOwnView ? getAgentStatus(me.id, nowUtc) : Promise.resolve(null),
     isOwnView ? loadMissedRepos(me.id, since24hUtc, nowUtc.toISOString()) : Promise.resolve([]),
+    isOwnView ? loadPluginImpact(targetUserId) : Promise.resolve(null),
+    isOwnView ? listViews(me.id).catch(() => [] as DashboardView[]) : Promise.resolve([] as DashboardView[]),
   ]);
 
   // Compute the prior-week median so the AI briefing has a baseline.
@@ -136,6 +142,37 @@ export default async function Page({
 
   const agentSeenSecs = agentStatus?.seconds_ago ?? null;
   const agentAlive = agentSeenSecs != null && agentSeenSecs < 5 * 60;
+
+  // ---- Forecast: extend cost-trajectory N days into the future.
+  // Project from daily.costCents (in cents) × 1000 → millicents for the
+  // forecaster, then collapse back. Bands widen with sqrt(d).
+  const dailyMillicents = data.daily.map((d) => (d.costCents ?? 0) * 1000);
+  const projection = forecast({ history: dailyMillicents, horizon: 30 });
+  const projTotal = sumForecast(projection);
+
+  // ---- Cost insights: only call the LLM for Pro/Team. Pure aggregates.
+  const insights: Recommendation[] = limits.ai_features
+    ? await generateInsights({
+        byModel: data.modelMix.map((m) => ({
+          model: m.label,
+          billable: m.value,
+          cache: 0,             // not broken out by model on the read path yet
+          events: 0,
+          cost_cents: 0,        // dashboard doesn't currently aggregate cost by model;
+                                // the LLM gets the high-level mix and the totals.
+        })),
+        byRepo: data.topRepos.slice(0, 8).map((r) => ({
+          repo: r.label,
+          billable: r.value,
+          events: r.value,
+          cost_cents: 0,
+          model: null,
+        })),
+        pluginFeatures: pluginImpact?.features ?? [],
+        totalCostCents: data.daily.reduce((a, d) => a + (d.costCents ?? 0), 0),
+        cacheHitRate: cacheHit,
+      })
+    : [];
 
   const briefingInputs: BriefingInputs = {
     events:        data.today.events,
@@ -185,8 +222,11 @@ export default async function Page({
         </div>
       )}
 
-      {/* Window selector chip group. */}
-      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: space.x3 }}>
+      {/* Saved views tab strip + window selector. */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: space.x3, marginBottom: space.x3, flexWrap: "wrap" }}>
+        {isOwnView && (
+          <SavedViewsTabStrip views={savedViews} currentWin={windowOpt.value} />
+        )}
         <ChipGroup
           current={windowOpt.value}
           options={WIN_OPTIONS.map((o) => ({ label: o.label, value: o.value }))}
@@ -209,7 +249,7 @@ export default async function Page({
           label="tokens · 24h"
           value={abbrev(data.today.tokens)}
           delta={tokensDelta}
-          hint={baselineTokens ? `vs ${abbrev(baselineTokens)} median` : undefined}
+          hint={tokenStatHint(data.today, baselineTokens)}
           sparkline={data.sparklines.tokens}
         />
         <StatCard
@@ -235,6 +275,32 @@ export default async function Page({
           <BriefingPanel userId={targetUserId} inputs={briefingInputs} aiEnabled={limits.ai_features} />
         </Suspense>
       </div>
+
+      {/* Cost optimizer cards — Pro/Team only, rendered when LLM has
+          something specific to suggest. Heuristics fill in if no LLM. */}
+      {insights.length > 0 && (
+        <div style={{ marginTop: space.x5 }}>
+          <Card>
+            <CardHeader
+              title="suggestions"
+              hint="automatic cost optimization, generated from your usage"
+            />
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: space.x3, marginTop: space.x3 }}>
+              {insights.map((r, i) => (
+                <InsightCard key={i} rec={r} />
+              ))}
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {/* Plugin Impact card — visible whenever the ashlr-plugin has
+          contributed any tokens_saved in the user's history. */}
+      {pluginImpact && pluginImpact.tokensSaved > 0 && (
+        <div style={{ marginTop: space.x5 }}>
+          <PluginImpactCard impact={pluginImpact} />
+        </div>
+      )}
 
       {/* Anomaly badges row (numeric, instant). */}
       {(eventAnomaly || tokenAnomaly || costAnomaly) && (
@@ -286,16 +352,71 @@ export default async function Page({
           )}
         </ChartFrame>
 
-        <ChartFrame title={`cost trajectory · last ${windowOpt.days}d`} hint="cumulative dollars" accent={palette.magenta}>
+        <ChartFrame
+          title={`cost trajectory · last ${windowOpt.days}d + 30d projection`}
+          hint={projTotal.p50 > 0 ? `~$${(projTotal.p50 / 100_000).toFixed(0)} projected next 30d · ±$${((projTotal.p90 - projTotal.p10) / 200_000).toFixed(0)}` : "cumulative dollars"}
+          accent={palette.magenta}
+        >
           {data.costTrajectory.length > 0 ? (
             <LineChart
-              data={data.costTrajectory.map((p) => ({ bucket: p.bucket, cost: p.cents / 100 }))}
-              series={[{ key: "cost", label: "cumulative $", color: palette.magenta }]}
+              data={buildTrajectoryWithForecast(data.costTrajectory, projection)}
+              series={[
+                { key: "cost",       label: "cumulative $",   color: palette.magenta },
+                { key: "projected",  label: "projected",      color: palette.amber },
+              ]}
               yFormat="dollars-int"
               valueFormat="dollars-2dp"
             />
           ) : (
             <EmptyChart label="No cost data yet." />
+          )}
+        </ChartFrame>
+
+        {/* Token-type breakdown — proves the billable-vs-total split.
+            Stacked area shows where the volume actually goes:
+            input + output (real work) vs cache (mechanism). */}
+        <ChartFrame
+          title={`token mix · last ${windowOpt.days}d`}
+          hint="input · output · reasoning · cache (read + 5m + 1h)"
+          accent={palette.cyan}
+        >
+          {data.tokenBreakdown.some((b) =>
+            b.input + b.output + b.reasoning + b.cache_read + b.cache_5m_write + b.cache_1h_write + b.cache_write_legacy > 0
+          ) ? (
+            <StackedAreaChart
+              data={data.tokenBreakdown}
+              series={["input", "output", "reasoning", "cache_read", "cache_5m_write", "cache_1h_write", "cache_write_legacy"]}
+              valueFormat="abbrev"
+            />
+          ) : (
+            <EmptyChart label="No token data yet." />
+          )}
+        </ChartFrame>
+
+        {/* Per-model cost stacked area — answers "which model drives spend?"
+            Series are ordered by 14d cost desc; long tail collapses to "other". */}
+        <ChartFrame
+          title={`cost by model · last ${windowOpt.days}d`}
+          hint="daily cost ($) stacked by model"
+          accent={palette.amber}
+        >
+          {data.models.length > 0 ? (
+            <StackedAreaChart
+              data={data.byModel.map((row) => {
+                // Convert cents → dollars for display continuity with the
+                // cost-trajectory chart.
+                const out: { bucket: string; [k: string]: string | number } = { bucket: row.bucket as string };
+                for (const m of data.models) {
+                  const v = row[m];
+                  out[m] = typeof v === "number" ? v / 100 : 0;
+                }
+                return out;
+              })}
+              series={data.models}
+              valueFormat="dollars-2dp"
+            />
+          ) : (
+            <EmptyChart label="No priced data yet." />
           )}
         </ChartFrame>
 
@@ -539,7 +660,8 @@ function ProjectRollupTable({
           <th style={{ ...th, textAlign: "right" }}>repos</th>
           <th style={{ ...th, textAlign: "right" }}>events</th>
           <th style={{ ...th, textAlign: "right" }}>tokens</th>
-          <th style={{ ...th, width: "30%" }}></th>
+          <th style={{ ...th, textAlign: "right" }}>cost</th>
+          <th style={{ ...th, width: "25%" }}></th>
         </tr>
       </thead>
       <tbody>
@@ -557,6 +679,9 @@ function ProjectRollupTable({
             </td>
             <td style={{ ...td, textAlign: "right", color: palette.text, fontVariantNumeric: "tabular-nums" }}>
               {abbrev(r.tokens)}
+            </td>
+            <td style={{ ...td, textAlign: "right", color: palette.magenta, fontVariantNumeric: "tabular-nums" }}>
+              {fmtUsd(r.cents)}
             </td>
             <td style={td}>
               <div style={{ height: 6, background: palette.bgRaised, borderRadius: 3, overflow: "hidden" }}>
@@ -624,6 +749,11 @@ function ActivityFeed({ feed }: { feed: import("@/lib/dashboard-data").FeedRow[]
           <span style={{ color: palette.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {r.repo ?? "—"}
             {r.model && <span style={{ color: palette.textDim, marginLeft: 8 }}>· {r.model}</span>}
+            {r.tokens_cache != null && r.tokens_cache > 0 && (
+              <span style={{ color: palette.textMute, marginLeft: 8, fontSize: 10 }}>
+                + {abbrev(r.tokens_cache)} cache
+              </span>
+            )}
           </span>
           <span style={{ color: palette.textDim, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
             {abbrev((r.tokens_input ?? 0) + (r.tokens_output ?? 0))}
@@ -646,6 +776,255 @@ const th: React.CSSProperties = {
 };
 const td: React.CSSProperties = { padding: "8px 6px", color: palette.text };
 
+function SavedViewsTabStrip({
+  views,
+  currentWin,
+}: { views: DashboardView[]; currentWin: string }): ReactElement {
+  // "All" is implicit — always present, leftmost, links to /app with no
+  // overrides so it cleanly resets state.
+  const tabs = [
+    { label: "All", href: "/app", active: views.every((v) => v.filter.win !== currentWin) && currentWin === "14" },
+    ...views.map((v) => ({
+      label: v.name,
+      href: viewToHref(v.filter),
+      active: false, // we don't have a reliable way to know which view is
+                     // currently active without diffing all filter dims;
+                     // the user re-clicks if they want to switch.
+    })),
+  ];
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: space.x2, flexWrap: "wrap" }}>
+      {tabs.map((t) => (
+        <a
+          key={t.label + t.href}
+          href={t.href}
+          style={{
+            fontSize: 11,
+            padding: "4px 10px",
+            border: `1px solid ${t.active ? palette.cyan : palette.border}`,
+            borderRadius: 999,
+            color: t.active ? palette.cyan : palette.textDim,
+            textDecoration: "none",
+            background: t.active ? `${palette.cyan}15` : "transparent",
+            letterSpacing: 0.3,
+          }}
+        >
+          {t.label}
+        </a>
+      ))}
+      <a
+        href="/share?save_view=1"
+        title="Save the current filters as a named view (coming soon)"
+        style={{
+          fontSize: 11,
+          padding: "4px 10px",
+          border: `1px dashed ${palette.border}`,
+          borderRadius: 999,
+          color: palette.textMute,
+          textDecoration: "none",
+        }}
+      >
+        + save current
+      </a>
+    </div>
+  );
+}
+
+interface PluginImpact {
+  tokensSaved: number;
+  breakdown: { genome: number; snipcompact: number; route: number };
+  features: string[];
+  estUsdSavedCents: number;
+  daysCovered: number;
+}
+
+async function loadPluginImpact(userId: string): Promise<PluginImpact | null> {
+  // Sum tokens_saved + per-feature breakdown over the last 14d. Models
+  // are NOT joined to a price here — the counterfactual cost estimate
+  // uses input rate as a conservative lower bound.
+  const db = sql();
+  try {
+    const rows = await db<{
+      tokens_saved: string | number | null;
+      saved_genome: string | number | null;
+      saved_snip:   string | number | null;
+      saved_route:  string | number | null;
+      features:     string[] | null;
+    }[]>`
+      SELECT
+        COALESCE(SUM(tokens_saved), 0)::bigint                                         AS tokens_saved,
+        COALESCE(SUM((tokens_saved_breakdown->>'genome')::int), 0)::bigint             AS saved_genome,
+        COALESCE(SUM((tokens_saved_breakdown->>'snipcompact')::int), 0)::bigint        AS saved_snip,
+        COALESCE(SUM((tokens_saved_breakdown->>'route')::int), 0)::bigint              AS saved_route,
+        ARRAY(
+          SELECT DISTINCT unnest(plugin_features)
+          FROM activity_event
+          WHERE user_id = ${userId}::uuid
+            AND ts >= NOW() - INTERVAL '14 days'
+            AND plugin_features IS NOT NULL
+        ) AS features
+      FROM activity_event
+      WHERE user_id = ${userId}::uuid
+        AND ts >= NOW() - INTERVAL '14 days'
+        AND tokens_saved IS NOT NULL
+        AND tokens_saved > 0
+    `;
+    const r = rows[0];
+    if (!r) return null;
+    const tokensSaved = Number(r.tokens_saved ?? 0);
+    if (tokensSaved === 0) return null;
+    // Conservative counterfactual: input rate of $5/M (Opus 4.7).
+    const estUsdSavedCents = Math.round(tokensSaved * 5 / 10_000); // tokens × $5/M → cents
+    return {
+      tokensSaved,
+      breakdown: {
+        genome:      Number(r.saved_genome ?? 0),
+        snipcompact: Number(r.saved_snip   ?? 0),
+        route:       Number(r.saved_route  ?? 0),
+      },
+      features: r.features ?? [],
+      estUsdSavedCents,
+      daysCovered: 14,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function PluginImpactCard({ impact }: { impact: PluginImpact }): ReactElement {
+  const totalBreakdown =
+    impact.breakdown.genome + impact.breakdown.snipcompact + impact.breakdown.route;
+  const pct = (n: number): number =>
+    totalBreakdown === 0 ? 0 : Math.round((n / totalBreakdown) * 100);
+  return (
+    <Card accent={palette.green}>
+      <CardHeader
+        title="ashlr-plugin impact"
+        hint={`last ${impact.daysCovered}d · ${impact.features.join(" · ") || "unspecified features"}`}
+      />
+      <div style={{ display: "flex", alignItems: "baseline", gap: space.x4, marginTop: space.x3, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontSize: 28, color: palette.green, fontVariantNumeric: "tabular-nums" }}>
+            {abbrev(impact.tokensSaved)}
+          </div>
+          <div style={{ fontSize: 11, color: palette.textMute, letterSpacing: 0.5, textTransform: "uppercase" }}>
+            tokens saved
+          </div>
+        </div>
+        <div>
+          <div style={{ fontSize: 22, color: palette.cyan, fontVariantNumeric: "tabular-nums" }}>
+            ~${(impact.estUsdSavedCents / 100).toFixed(2)}
+          </div>
+          <div style={{ fontSize: 11, color: palette.textMute, letterSpacing: 0.5, textTransform: "uppercase" }}>
+            estimated — conservative
+          </div>
+        </div>
+        {totalBreakdown > 0 && (
+          <div style={{ flex: 1, minWidth: 240 }}>
+            <BreakdownBar parts={[
+              { label: "genome",      value: impact.breakdown.genome,      pct: pct(impact.breakdown.genome),      color: palette.green },
+              { label: "snipcompact", value: impact.breakdown.snipcompact, pct: pct(impact.breakdown.snipcompact), color: palette.cyan },
+              { label: "route",       value: impact.breakdown.route,       pct: pct(impact.breakdown.route),       color: palette.amber },
+            ]} />
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+function BreakdownBar({
+  parts,
+}: { parts: { label: string; value: number; pct: number; color: string }[] }): ReactElement {
+  return (
+    <div>
+      <div style={{ display: "flex", height: 8, borderRadius: 4, overflow: "hidden", background: palette.bgRaised }}>
+        {parts.map((p) => (
+          p.pct > 0 && (
+            <div key={p.label} style={{ width: `${p.pct}%`, background: p.color, transition: "width 0.5s ease" }} />
+          )
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: space.x3, fontSize: 11, marginTop: space.x2, flexWrap: "wrap" }}>
+        {parts.map((p) => (
+          <span key={p.label} style={{ color: palette.textDim }}>
+            <span style={{ color: p.color }}>●</span> {p.label} · {abbrev(p.value)}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function InsightCard({ rec }: { rec: Recommendation }): ReactElement {
+  const accent =
+    rec.kind === "model_swap"            ? palette.cyan :
+    rec.kind === "enable_plugin_feature" ? palette.green :
+    rec.kind === "cache_strategy"        ? palette.amber :
+                                            palette.magenta;
+  return (
+    <div style={{
+      border: `1px solid ${accent}30`,
+      borderRadius: 8,
+      padding: space.x3,
+      background: `${accent}08`,
+    }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: space.x2, marginBottom: space.x2 }}>
+        <span style={{
+          fontSize: 10, letterSpacing: 0.5, textTransform: "uppercase",
+          color: accent,
+        }}>{rec.kind.replace(/_/g, " ")}</span>
+        {rec.est_savings_usd_month > 0 && (
+          <span style={{ fontSize: 10, color: palette.textMute, marginLeft: "auto" }}>
+            ~${rec.est_savings_usd_month}/mo
+          </span>
+        )}
+      </div>
+      <div style={{ fontSize: 13, color: palette.text, fontWeight: 500, marginBottom: space.x2 }}>
+        {rec.title}
+      </div>
+      <div style={{ fontSize: 12, color: palette.textDim, lineHeight: 1.5, marginBottom: space.x2 }}>
+        {rec.detail}
+      </div>
+      <div style={{ fontSize: 11, color: accent }}>
+        {rec.cta} →
+      </div>
+    </div>
+  );
+}
+
+function buildTrajectoryWithForecast(
+  history: { bucket: string; cents: number }[],
+  projection: import("@/lib/forecast").ForecastPoint[],
+): import("@/components/charts/LineChart").LinePoint[] {
+  // Splice historical cumulative cost (in dollars) with projected
+  // cumulative cost. The two series ride a single x-axis: history rows
+  // omit the `projected` key (so the projected line doesn't render
+  // there), future rows omit `cost` (so the actual line stops cleanly).
+  // The boundary day carries both keys so both lines connect through
+  // the same point — visually continuous.
+  if (history.length === 0) return [];
+  type LP = import("@/components/charts/LineChart").LinePoint;
+  const out: LP[] = history.map((p) => ({
+    bucket: p.bucket,
+    cost: p.cents / 100,
+  }));
+
+  let runningCents = history[history.length - 1].cents;
+  // Anchor projection at the last historical point.
+  out[out.length - 1].projected = runningCents / 100;
+  for (const f of projection) {
+    runningCents += f.p50 / 1000; // millicents → cents
+    const date = new Date();
+    date.setUTCDate(date.getUTCDate() + f.d);
+    out.push({
+      bucket: date.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" }),
+      projected: runningCents / 100,
+    });
+  }
+  return out;
+}
+
 function buildHref(params: Record<string, string | undefined>): string {
   const qs = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
@@ -659,6 +1038,20 @@ function abbrev(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000)     return `${(n / 1_000).toFixed(1)}k`;
   return `${n}`;
+}
+
+function tokenStatHint(
+  today: { tokens: number; tokensTotal: number },
+  baseline: number,
+): string | undefined {
+  // Show cache load explicitly so users understand why cost can be
+  // large even when the displayed (billable) token count is small.
+  // "6.2M billable" + "+ 187M cache" is the honest split; previously
+  // we showed only the billable number while pricing the cache.
+  const cacheTokens = Math.max(0, today.tokensTotal - today.tokens);
+  const baselinePart = baseline ? `vs ${abbrev(baseline)} median` : null;
+  const cachePart    = cacheTokens > 0 ? `+ ${abbrev(cacheTokens)} cache` : null;
+  return [cachePart, baselinePart].filter(Boolean).join(" · ") || undefined;
 }
 
 function median(arr: number[]): number {

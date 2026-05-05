@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { costUsdCents, fmtUsd } from "../src/lib/pricing";
+import { costUsdCents, costMillicents, millicentsToCents, fmtUsd, PRICE_VERSION } from "../src/lib/pricing";
 
 describe("costUsdCents", () => {
   test("opus 4.7 — current rates: 1M in / 1M out = $5 + $25 = $30", () => {
@@ -98,6 +98,88 @@ describe("costUsdCents", () => {
     expect(
       costUsdCents({ model: "gpt-4o", tokens_input: null, tokens_output: null }),
     ).toBe(0);
+  });
+});
+
+describe("reasoning tokens", () => {
+  test("opus 4.7 — reasoning billed at output rate by default", () => {
+    // 1M reasoning tokens × $25/M = $25.00 = 2500 cents
+    const cents = costUsdCents({
+      model: "claude-opus-4-7",
+      tokens_input: 0,
+      tokens_output: 0,
+      tokens_reasoning: 1_000_000,
+    });
+    expect(cents).toBe(2500);
+  });
+
+  test("reasoning + output adds correctly", () => {
+    // 100k input ($5/M=$0.50) + 100k output ($25/M=$2.50) + 100k reasoning ($25/M=$2.50) = $5.50
+    const cents = costUsdCents({
+      model: "claude-opus-4-7",
+      tokens_input: 100_000,
+      tokens_output: 100_000,
+      tokens_reasoning: 100_000,
+    });
+    expect(cents).toBe(550);
+  });
+
+  test("null reasoning treated as zero", () => {
+    const cents = costUsdCents({
+      model: "claude-opus-4-7",
+      tokens_input: 1_000_000,
+      tokens_output: 1_000_000,
+      tokens_reasoning: null,
+    });
+    expect(cents).toBe(3000);
+  });
+});
+
+describe("costMillicents", () => {
+  test("returns 1000× costUsdCents for round inputs", () => {
+    const usage = {
+      model: "claude-opus-4-7",
+      tokens_input: 1_000_000,
+      tokens_output: 1_000_000,
+    };
+    expect(costMillicents(usage)).toBe(3_000_000);
+    expect(costUsdCents(usage)).toBe(3000);
+  });
+
+  test("preserves sub-cent precision that costUsdCents rounds away", () => {
+    // 100 input tokens at $5/M = 0.0005 dollars = 0.05 cents = 50 millicents
+    const m = costMillicents({
+      model: "claude-opus-4-7",
+      tokens_input: 100,
+      tokens_output: 0,
+    });
+    expect(m).toBe(50);            // exact in millicents
+    expect(costUsdCents({ model: "claude-opus-4-7", tokens_input: 100, tokens_output: 0 })).toBe(0); // rounds to 0¢
+  });
+
+  test("unknown model → null", () => {
+    expect(costMillicents({ model: "fictional", tokens_input: 1, tokens_output: 1 })).toBeNull();
+  });
+});
+
+describe("millicentsToCents", () => {
+  test.each([
+    [null, null],
+    [undefined, null],
+    [0, 0],
+    [499, 0],     // sub-cent rounds down
+    [500, 1],     // half rounds up
+    [3_000_000, 3000],
+  ])("%s → %s", (m, expected) => {
+    expect(millicentsToCents(m as number | null | undefined)).toBe(expected);
+  });
+});
+
+describe("PRICE_VERSION", () => {
+  test("is a positive integer that can be persisted", () => {
+    expect(typeof PRICE_VERSION).toBe("number");
+    expect(PRICE_VERSION).toBeGreaterThan(0);
+    expect(Number.isInteger(PRICE_VERSION)).toBe(true);
   });
 });
 

@@ -139,6 +139,117 @@ describe("spanToActivityEvent", () => {
     expect(row!.tokens_input).toBeNull();
   });
 
+  it("maps gen_ai.usage.reasoning_tokens to tokens_reasoning", () => {
+    // 2026-04-01 in nanoseconds — Opus 4.7's price entry is effective
+    // 2026-01-01 so the lookup must succeed. (An earlier ts would return
+    // null cost because no price ladder covers it.)
+    const ts2026 = "1775337600000000000";
+    const row = spanToActivityEvent(
+      {
+        name: "gen_ai.request",
+        startTimeUnixNano: ts2026,
+        endTimeUnixNano:   "1775337600500000000",
+        attributes: [
+          { key: "gen_ai.system",                value: { stringValue: "anthropic" } },
+          { key: "gen_ai.request.model",         value: { stringValue: "claude-opus-4-7" } },
+          { key: "gen_ai.usage.input_tokens",    value: { intValue: 100 } },
+          { key: "gen_ai.usage.output_tokens",   value: { intValue: 50 } },
+          { key: "gen_ai.usage.reasoning_tokens", value: { intValue: 8000 } },
+        ],
+      },
+      "mason",
+    );
+    expect(row).not.toBeNull();
+    expect(row!.tokens_reasoning).toBe(8000);
+    // 100 in × $5/M + 50 out × $25/M + 8000 reasoning × $25/M
+    // = 0.0005 + 0.00125 + 0.20 = 0.20175 → 20175 millicents (rounded)
+    expect(row!.cost_millicents).not.toBeNull();
+    expect(row!.cost_millicents!).toBeGreaterThan(20000);
+    expect(row!.cost_millicents!).toBeLessThan(21000);
+    expect(row!.pricing_version).toBeGreaterThan(0);
+  });
+
+  it("maps ashlr-plugin per-feature savings into JSONB breakdown", () => {
+    const row = spanToActivityEvent(
+      {
+        name: "gen_ai.request",
+        attributes: [
+          { key: "gen_ai.system",                    value: { stringValue: "anthropic" } },
+          { key: "gen_ai.request.model",             value: { stringValue: "claude-opus-4-7" } },
+          { key: "ashlr.plugin.tokens_saved",        value: { intValue: 1500 } },
+          { key: "ashlr.plugin.savings.genome",      value: { intValue: 1000 } },
+          { key: "ashlr.plugin.savings.snipcompact", value: { intValue: 400 } },
+          { key: "ashlr.plugin.savings.route",       value: { intValue: 100 } },
+          { key: "ashlr.plugin.feature_flags",       value: { stringValue: "genome,snipcompact,route" } },
+          { key: "ashlr.plugin.version",             value: { stringValue: "0.7.0" } },
+          { key: "ashlr.plugin.genome_hit_rate",     value: { doubleValue: 0.83 } },
+        ],
+      },
+      "mason",
+    );
+    expect(row).not.toBeNull();
+    expect(row!.tokens_saved).toBe(1500);
+    expect(row!.tokens_saved_breakdown).toEqual({ genome: 1000, snipcompact: 400, route: 100 });
+    expect(row!.plugin_features).toEqual(["genome", "snipcompact", "route"]);
+    expect(row!.plugin_version).toBe("0.7.0");
+    expect(row!.plugin_genome_hit_rate).toBeCloseTo(0.83, 5);
+  });
+
+  it("plugin breakdown stays null when no per-feature attrs are present", () => {
+    const row = spanToActivityEvent(
+      {
+        name: "gen_ai.request",
+        attributes: [
+          { key: "gen_ai.system", value: { stringValue: "anthropic" } },
+          { key: "gen_ai.request.model", value: { stringValue: "claude-opus-4-7" } },
+          { key: "ashlr.plugin.tokens_saved", value: { intValue: 50 } },
+        ],
+      },
+      "mason",
+    );
+    expect(row!.tokens_saved_breakdown).toBeNull();
+    expect(row!.plugin_features).toBeNull();
+    expect(row!.plugin_version).toBeNull();
+  });
+
+  it("dedup_key is identical for two spans with the same content", () => {
+    const make = (): Parameters<typeof spanToActivityEvent>[0] => ({
+      name: "gen_ai.request",
+      startTimeUnixNano: "1714300000000000000",
+      endTimeUnixNano:   "1714300000500000000",
+      attributes: [
+        { key: "gen_ai.system",              value: { stringValue: "anthropic" } },
+        { key: "gen_ai.request.model",       value: { stringValue: "claude-opus-4-7" } },
+        { key: "gen_ai.usage.input_tokens",  value: { intValue: 250 } },
+        { key: "gen_ai.usage.output_tokens", value: { intValue: 80 } },
+        { key: "claude.repo.name",           value: { stringValue: "ashlrai/timeline" } },
+      ],
+    });
+    const a = spanToActivityEvent(make(), "mason");
+    const b = spanToActivityEvent(make(), "mason");
+    expect(a!.dedup_key).toBe(b!.dedup_key);
+    expect(a!.dedup_key).not.toBeNull();
+  });
+
+  it("dedup_key differs when token counts differ", () => {
+    const base: Parameters<typeof spanToActivityEvent>[0] = {
+      name: "gen_ai.request",
+      startTimeUnixNano: "1714300000000000000",
+      endTimeUnixNano:   "1714300000500000000",
+      attributes: [
+        { key: "gen_ai.system",              value: { stringValue: "anthropic" } },
+        { key: "gen_ai.request.model",       value: { stringValue: "claude-opus-4-7" } },
+        { key: "gen_ai.usage.input_tokens",  value: { intValue: 250 } },
+        { key: "gen_ai.usage.output_tokens", value: { intValue: 80 } },
+      ],
+    };
+    const a = spanToActivityEvent(base, "mason");
+    const variant = JSON.parse(JSON.stringify(base)) as typeof base;
+    variant.attributes![2].value = { intValue: 999 };
+    const b = spanToActivityEvent(variant, "mason");
+    expect(a!.dedup_key).not.toBe(b!.dedup_key);
+  });
+
   it("ashlr.source=git overrides the derived source label", () => {
     // The pulse-agent emits git-commit spans with gen_ai.system=anthropic (to
     // pass the GenAI-shape gate) plus ashlr.source=git so the UI can show
