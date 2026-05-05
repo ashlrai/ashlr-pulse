@@ -243,6 +243,79 @@ export function millicentsToCents(m: number | null | undefined): number | null {
   return Math.round(m / 1000);
 }
 
+export interface CostBreakdownMillicents {
+  input: number;
+  output: number;
+  reasoning: number;
+  cache_read: number;
+  cache_5m_write: number;
+  cache_1h_write: number;
+  /** Legacy pre-split cache_write tokens billed at the 1h rate. */
+  cache_write_legacy: number;
+  /** Sum of every component above. */
+  total: number;
+}
+
+/**
+ * Per-component cost in millicents — same accounting as
+ * costMillicents but with each component exposed so the dashboard
+ * can render an auditable "where the money went" panel. Anthropic
+ * charges cache write tokens at 1.25-2× input rate, which often
+ * dominates total spend for cmux + long-context workloads in ways
+ * the rate-sheet headlines ($5/$25 input/output) don't make obvious.
+ */
+export function costBreakdownMillicents(u: UsageInput): CostBreakdownMillicents | null {
+  if (!u.model) return null;
+  const p = lookup(u.model, u.ts ?? new Date());
+  if (!p) return null;
+
+  const has5m = u.tokens_cache_5m_write != null && u.tokens_cache_5m_write > 0;
+  const has1h = u.tokens_cache_1h_write != null && u.tokens_cache_1h_write > 0;
+  const cache5mTokens = has5m ? (u.tokens_cache_5m_write ?? 0) : 0;
+  const cache1hTokens = has1h ? (u.tokens_cache_1h_write ?? 0) : 0;
+  const cache5mRate = p.cache_5m_write_per_m_usd ?? p.cache_write_per_m_usd ?? 0;
+  const cache1hRate = p.cache_1h_write_per_m_usd ?? p.cache_write_per_m_usd ?? 0;
+
+  const legacyCacheTokens = !has5m && !has1h ? (u.tokens_cache_write ?? 0) : 0;
+  const legacyRate = p.cache_1h_write_per_m_usd ?? p.cache_write_per_m_usd ?? 0;
+
+  const reasoningRate = p.reasoning_per_m_usd ?? p.output_per_m_usd;
+
+  // millicents per token = rate / 10  (see costMillicents()).
+  const input              = Math.round(((u.tokens_input      ?? 0) * p.input_per_m_usd)             / 10);
+  const output             = Math.round(((u.tokens_output     ?? 0) * p.output_per_m_usd)            / 10);
+  const reasoning          = Math.round(((u.tokens_reasoning  ?? 0) * reasoningRate)                 / 10);
+  const cache_read         = Math.round(((u.tokens_cache_read ?? 0) * (p.cache_read_per_m_usd ?? 0)) / 10);
+  const cache_5m_write     = Math.round((cache5mTokens             * cache5mRate)                    / 10);
+  const cache_1h_write     = Math.round((cache1hTokens             * cache1hRate)                    / 10);
+  const cache_write_legacy = Math.round((legacyCacheTokens         * legacyRate)                     / 10);
+
+  return {
+    input, output, reasoning,
+    cache_read, cache_5m_write, cache_1h_write, cache_write_legacy,
+    total: input + output + reasoning + cache_read + cache_5m_write + cache_1h_write + cache_write_legacy,
+  };
+}
+
+export function emptyBreakdown(): CostBreakdownMillicents {
+  return {
+    input: 0, output: 0, reasoning: 0,
+    cache_read: 0, cache_5m_write: 0, cache_1h_write: 0, cache_write_legacy: 0,
+    total: 0,
+  };
+}
+
+export function addBreakdown(a: CostBreakdownMillicents, b: CostBreakdownMillicents): void {
+  a.input              += b.input;
+  a.output             += b.output;
+  a.reasoning          += b.reasoning;
+  a.cache_read         += b.cache_read;
+  a.cache_5m_write     += b.cache_5m_write;
+  a.cache_1h_write     += b.cache_1h_write;
+  a.cache_write_legacy += b.cache_write_legacy;
+  a.total              += b.total;
+}
+
 /** Format an integer cent count as "$1.23" (or "—" when null). */
 export function fmtUsd(cents: number | null | undefined): string {
   if (cents == null) return "—";

@@ -10,7 +10,11 @@
  */
 
 import { sql } from "@/lib/db";
-import { costMillicents, millicentsToCents } from "@/lib/pricing";
+import {
+  costMillicents, millicentsToCents,
+  costBreakdownMillicents, emptyBreakdown, addBreakdown,
+  type CostBreakdownMillicents,
+} from "@/lib/pricing";
 import { retentionCutoff, type PlanLimits } from "@/lib/plan-gate";
 
 export interface ScopeFilter {
@@ -43,6 +47,11 @@ export interface DashboardData {
   week: StatCard;
   /** Daily totals over the last 14 days, with deltas baked in. */
   daily: DailyAggregate[];
+  /** Last-24h cost decomposed by component so users can see exactly
+   *  where the money went. cache_5m/1h writes often dominate cmux
+   *  workloads even though the rate-sheet headline numbers ($5/$25
+   *  input/output for Opus 4.7) don't suggest it. */
+  costBreakdown24h: CostBreakdownMillicents;
   /** Per-day stacked token breakdown by type (Wave 1 token-trust chart). */
   tokenBreakdown: { bucket: string; input: number; output: number; reasoning: number; cache_read: number; cache_5m_write: number; cache_1h_write: number; cache_write_legacy: number }[];
   /** Per-day cost stacked by model, last chartDays. Wave 2/3 chart. */
@@ -351,6 +360,7 @@ function computeAggregates(
   const cacheReadsByDay = new Map<string, number>();
   const cacheWritesByDay = new Map<string, number>();
   const breakdownByDay = new Map<string, BreakdownRow>();
+  const costBreakdown24h = emptyBreakdown();
 
   // Pre-fill chart window so empty buckets render too.
   const daysBack = lastNDays(chartDays);
@@ -381,6 +391,20 @@ function computeAggregates(
     const day = ts.toISOString().slice(0, 10);
 
     addTo(today,     ageMs <= D_MS,                        billable, total, millicents);
+    if (ageMs <= D_MS) {
+      const bd = costBreakdownMillicents({
+        model:                 e.model,
+        tokens_input:          e.tokens_input,
+        tokens_output:         e.tokens_output,
+        tokens_reasoning:      e.tokens_reasoning,
+        tokens_cache_read:     e.tokens_cache_read,
+        tokens_cache_write:    e.tokens_cache_write,
+        tokens_cache_5m_write: e.tokens_cache_5m_write,
+        tokens_cache_1h_write: e.tokens_cache_1h_write,
+        ts,
+      });
+      if (bd) addBreakdown(costBreakdown24h, bd);
+    }
     addTo(yesterday, ageMs > D_MS && ageMs <= 2 * D_MS,    billable, total, millicents);
     addTo(week,      ageMs <= 7 * D_MS,                    billable, total, millicents);
 
@@ -611,6 +635,7 @@ function computeAggregates(
     yesterday: statCard(yesterday),
     week:      statCard(week),
     daily,
+    costBreakdown24h,
     tokenBreakdown,
     byModel,
     models,

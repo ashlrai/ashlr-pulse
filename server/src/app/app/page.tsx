@@ -276,6 +276,23 @@ export default async function Page({
         </Suspense>
       </div>
 
+      {/* Cost breakdown panel — auditable decomposition of the 24h
+          number into Anthropic's actual rate-sheet components. Cache
+          writes (5m at 1.25× input rate, 1h at 2.00×) often dominate
+          cmux/long-context spend; the headline $5/$25 input/output
+          rates make this surprising the first time. */}
+      {data.costBreakdown24h.total > 0 && (
+        <div style={{ marginTop: space.x5 }}>
+          <Card>
+            <CardHeader
+              title="cost breakdown · 24h"
+              hint="auditable decomposition by Anthropic rate component — sums to the cost shown above"
+            />
+            <CostBreakdownPanel breakdown={data.costBreakdown24h} />
+          </Card>
+        </div>
+      )}
+
       {/* Cost optimizer cards — Pro/Team only, rendered when LLM has
           something specific to suggest. Heuristics fill in if no LLM. */}
       {insights.length > 0 && (
@@ -952,6 +969,78 @@ function BreakdownBar({
           </span>
         ))}
       </div>
+    </div>
+  );
+}
+
+function CostBreakdownPanel({
+  breakdown,
+}: { breakdown: import("@/lib/pricing").CostBreakdownMillicents }): ReactElement {
+  // Order rows by typical magnitude so the dominant components surface
+  // at the top. cache_read is usually the biggest line in cmux flows
+  // (10% of input rate × huge cache volumes); 5m/1h writes follow.
+  const rows: { label: string; rate: string; ms: number; color: string }[] = [
+    { label: "input",            rate: "1.00× model rate",  ms: breakdown.input,              color: palette.cyan    },
+    { label: "output",           rate: "1.00× output rate", ms: breakdown.output,             color: palette.magenta },
+    { label: "reasoning",        rate: "1.00× output rate", ms: breakdown.reasoning,          color: palette.purple  },
+    { label: "cache read",       rate: "0.10× input rate",  ms: breakdown.cache_read,         color: palette.green   },
+    { label: "cache write · 5m", rate: "1.25× input rate",  ms: breakdown.cache_5m_write,     color: palette.amber   },
+    { label: "cache write · 1h", rate: "2.00× input rate",  ms: breakdown.cache_1h_write,     color: palette.amber   },
+    { label: "cache (legacy)",   rate: "1.25-2× input",     ms: breakdown.cache_write_legacy, color: palette.textDim },
+  ].filter((r) => r.ms > 0);
+  const total = breakdown.total || 1;
+  return (
+    <div style={{ marginTop: space.x3 }}>
+      <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
+        <thead>
+          <tr style={{ textAlign: "left", borderBottom: `1px solid ${palette.border}` }}>
+            <th style={th}>component</th>
+            <th style={th}>rate</th>
+            <th style={{ ...th, textAlign: "right" }}>$</th>
+            <th style={{ ...th, textAlign: "right" }}>%</th>
+            <th style={{ ...th, width: "30%" }}></th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => {
+            const pct = (r.ms / total) * 100;
+            return (
+              <tr key={r.label} style={{ borderBottom: `1px dashed ${palette.border}` }}>
+                <td style={td}>
+                  <span style={{ color: r.color }}>●</span>
+                  <span style={{ color: palette.text, marginLeft: 8 }}>{r.label}</span>
+                </td>
+                <td style={{ ...td, color: palette.textMute, fontSize: 11 }}>{r.rate}</td>
+                <td style={{ ...td, textAlign: "right", color: palette.text, fontVariantNumeric: "tabular-nums" }}>
+                  {fmtUsd(Math.round(r.ms / 1000))}
+                </td>
+                <td style={{ ...td, textAlign: "right", color: palette.textDim, fontVariantNumeric: "tabular-nums" }}>
+                  {pct.toFixed(1)}%
+                </td>
+                <td style={td}>
+                  <div style={{ height: 6, background: palette.bgRaised, borderRadius: 3, overflow: "hidden" }}>
+                    <div style={{ height: "100%", width: `${Math.min(100, pct)}%`, background: r.color, transition: "width 0.5s ease" }} />
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+          <tr style={{ borderTop: `1px solid ${palette.border}` }}>
+            <td style={{ ...td, color: palette.text, fontWeight: 500 }}>total</td>
+            <td style={td}></td>
+            <td style={{ ...td, textAlign: "right", color: palette.magenta, fontWeight: 500, fontVariantNumeric: "tabular-nums" }}>
+              {fmtUsd(Math.round(breakdown.total / 1000))}
+            </td>
+            <td style={{ ...td, textAlign: "right", color: palette.textDim }}>100%</td>
+            <td style={td}></td>
+          </tr>
+        </tbody>
+      </table>
+      {breakdown.cache_5m_write + breakdown.cache_1h_write + breakdown.cache_write_legacy > breakdown.input + breakdown.output + breakdown.reasoning && (
+        <div style={{ marginTop: space.x3, fontSize: 11, color: palette.textMute, lineHeight: 1.5 }}>
+          Cache writes ({fmtUsd(Math.round((breakdown.cache_5m_write + breakdown.cache_1h_write + breakdown.cache_write_legacy) / 1000))}) outweigh input + output + reasoning ({fmtUsd(Math.round((breakdown.input + breakdown.output + breakdown.reasoning) / 1000))}). Anthropic charges 5-minute cache writes at 1.25× and 1-hour writes at 2.00× input rate, so cmux + long-context flows pay more for caching context than for the model invocations themselves.
+        </div>
+      )}
     </div>
   );
 }
