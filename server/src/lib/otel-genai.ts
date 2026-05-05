@@ -143,8 +143,20 @@ function tsSecond(iso: string): string {
   return iso.slice(0, 19); // "2026-05-04T21:12:55"
 }
 
+/**
+ * Produce the content-hash dedup key. Must stay in lock-step with the
+ * SQL formula in db/migrations/0017_dedup_universal.sql or backfilled
+ * dedup_keys won't collide with newly-ingested ones.
+ *
+ * Includes session_id so cmux running multiple Claude Code instances
+ * against the SAME conversation collapses to one row (each instance
+ * emits its own span with a different span_id but identical logical
+ * content). Distinct sessions stay distinct even if they happen to
+ * land identical token counts in the same second.
+ */
 function makeDedupKey(
   userId: string,
+  sessionId: string | null,
   ts: string,
   model: string | null,
   tokensIn: number | null,
@@ -154,6 +166,7 @@ function makeDedupKey(
 ): string {
   const canonical = [
     userId,
+    sessionId ?? "",
     tsSecond(ts),
     model ?? "",
     String(tokensIn ?? 0),
@@ -260,14 +273,17 @@ export function spanToActivityEvent(
     ts: new Date(ts),
   });
 
-  const dedupKey = makeDedupKey(userId, ts, model, tokensInput, tokensOutput, repoName, source);
+  // session_id is the cmux discriminator: same session across N
+  // instances dedupes; distinct sessions stay distinct.
+  const sessionId =
+    asString(attrs, "ashlr.plugin.session_id") ??
+    asString(attrs, "claude.session.id");
+  const dedupKey = makeDedupKey(userId, sessionId, ts, model, tokensInput, tokensOutput, repoName, source);
 
   return {
     ts,
     user_id: userId,
-    session_id:
-      asString(attrs, "ashlr.plugin.session_id") ??
-      asString(attrs, "claude.session.id"),
+    session_id: sessionId,
     source,
     provider,
     model,
