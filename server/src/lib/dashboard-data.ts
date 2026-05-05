@@ -153,8 +153,11 @@ interface RawEvent {
   tool_calls_count: number | null;
   tool_calls_types: string[] | null;
   /** Cached cost at ingest, in millicents. NULL on legacy rows pre-0015
-   *  — we fall back to recomputing via costMillicents() per row. */
-  cost_millicents: number | null;
+   *  — we fall back to recomputing via costMillicents() per row.
+   *  postgres-js returns int8 columns as either bigint or string
+   *  depending on driver config, so the runtime type is wider than
+   *  the schema's "BIGINT" suggests; resolveMillicents() coerces. */
+  cost_millicents: number | bigint | string | null;
 }
 
 /**
@@ -694,7 +697,10 @@ function sumCacheTokens(e: RawEvent): number {
  * is still NULL (will be populated by a later backfill).
  */
 function resolveMillicents(e: RawEvent, ts: Date): number | null {
-  if (e.cost_millicents != null) return e.cost_millicents;
+  // Coerce at the boundary: bigint from postgres-js mixed with the
+  // `number` math elsewhere triggers `Cannot mix BigInt and other
+  // types` at runtime, even though tsc accepts the union.
+  if (e.cost_millicents != null) return Number(e.cost_millicents);
   return costMillicents({
     model:                 e.model,
     tokens_input:          e.tokens_input,
