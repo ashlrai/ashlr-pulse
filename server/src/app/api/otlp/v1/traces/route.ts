@@ -20,6 +20,7 @@ import { spanToActivityEvent } from "@/lib/otel-genai";
 import { verifyPat } from "@/lib/pat";
 import { checkBucket } from "@/lib/rate-limit";
 import { log, requestId } from "@/lib/logger";
+import { incrCounter } from "@/lib/metrics";
 import type { OtlpTracesPayload } from "@/lib/otlp-types";
 
 export const runtime = "nodejs";
@@ -52,6 +53,7 @@ async function resolveUserId(
 
 export async function POST(req: Request): Promise<Response> {
   const rid = requestId(req);
+  const startedAt = Date.now();
 
   const auth = await resolveUserId(req);
   if (!auth) {
@@ -177,7 +179,17 @@ export async function POST(req: Request): Promise<Response> {
     inserted = result.count ?? 0;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    log.error({ msg: "otlp: db insert failed", err: message, request_id: rid, user_id: userId, status: 500 });
+    incrCounter("otlp.ingest.db_failed");
+    incrCounter("otlp.spans.dropped", rows.length);
+    log.error({
+      msg: "otlp: db insert failed",
+      err: message,
+      request_id: rid,
+      user_id: userId,
+      status: 500,
+      duration_ms: Date.now() - startedAt,
+      dropped_spans: rows.length,
+    });
     return NextResponse.json(
       { error: "db insert failed", detail: message },
       { status: 500, headers: { "x-request-id": rid } },
@@ -185,7 +197,18 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   const dedup = rows.length - inserted;
-  log.info({ msg: "otlp: accepted", spans: rows.length, inserted, dedup, request_id: rid, user_id: userId });
+  incrCounter("otlp.ingest.ok");
+  incrCounter("otlp.spans.inserted", inserted);
+  incrCounter("otlp.spans.deduped", dedup);
+  log.info({
+    msg: "otlp: accepted",
+    spans: rows.length,
+    inserted,
+    dedup,
+    request_id: rid,
+    user_id: userId,
+    duration_ms: Date.now() - startedAt,
+  });
   return NextResponse.json(
     { partialSuccess: { rejectedSpans: 0 }, accepted: rows.length, inserted, dedup },
     { headers: { "x-request-id": rid } },

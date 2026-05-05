@@ -22,6 +22,7 @@
  */
 
 import { log } from "./logger";
+import { incrCounter, recordTickResult } from "./metrics";
 
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const FIFTEEN_MIN_MS = 15 * 60 * 1000;
@@ -57,6 +58,7 @@ export function startBackgroundCron(): void {
 async function tick(endpoint: "github-sync" | "digest"): Promise<void> {
   const port = process.env.PORT ?? "3000";
   const url = `http://127.0.0.1:${port}/api/cron/${endpoint}`;
+  const startedAt = Date.now();
   try {
     const r = await fetch(url, {
       method: "POST",
@@ -66,8 +68,15 @@ async function tick(endpoint: "github-sync" | "digest"): Promise<void> {
       },
       body: "{}",
     });
-    log.info({ msg: "cron: tick complete", endpoint, status: r.status });
+    const duration_ms = Date.now() - startedAt;
+    log.info({ msg: "cron: tick complete", endpoint, status: r.status, duration_ms });
+    incrCounter(`cron.${endpoint}.${r.ok ? "ok" : "fail"}`);
+    recordTickResult({ endpoint, status: r.status, duration_ms });
   } catch (err) {
-    log.error({ msg: "cron: tick failed", endpoint, err: err instanceof Error ? err.message : String(err) });
+    const duration_ms = Date.now() - startedAt;
+    const message = err instanceof Error ? err.message : String(err);
+    log.error({ msg: "cron: tick failed", endpoint, err: message, duration_ms });
+    incrCounter(`cron.${endpoint}.error`);
+    recordTickResult({ endpoint, status: null, duration_ms, error: message });
   }
 }

@@ -49,6 +49,16 @@ import { LineChart, type LinePoint } from "@/components/charts/LineChart";
 import { RadialGauge } from "@/components/charts/RadialGauge";
 
 import { palette, space } from "@/lib/theme";
+import { ProjectRollupTable } from "./_components/ProjectRollupTable";
+import { ActivityFeed } from "./_components/ActivityFeed";
+import {
+  abbrev,
+  fmtAgoShort,
+  kindColor,
+  kindChip,
+  th,
+  td,
+} from "./_components/dashboard-format";
 
 export const dynamic = "force-dynamic";
 
@@ -664,134 +674,11 @@ function RecentCommits({
   );
 }
 
-function ProjectRollupTable({
-  rows,
-}: { rows: import("@/lib/dashboard-data").ProjectRollup[] }): ReactElement {
-  const max = Math.max(...rows.map((r) => r.tokens), 1);
-  return (
-    <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
-      <thead>
-        <tr style={{ textAlign: "left", borderBottom: `1px solid ${palette.border}` }}>
-          <th style={th}>project</th>
-          <th style={th}>kind</th>
-          <th style={{ ...th, textAlign: "right" }}>repos</th>
-          <th style={{ ...th, textAlign: "right" }}>events</th>
-          <th style={{ ...th, textAlign: "right" }}>tokens</th>
-          <th style={{ ...th, textAlign: "right" }}>cost</th>
-          <th style={{ ...th, width: "25%" }}></th>
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((r) => (
-          <tr key={r.project_id} style={{ borderBottom: `1px dashed ${palette.border}` }}>
-            <td style={td}>
-              <span style={{ color: palette.text, fontWeight: 500 }}>{r.project_name}</span>
-            </td>
-            <td style={td}>
-              <span style={kindChip(r.kind)}>{r.kind}</span>
-            </td>
-            <td style={{ ...td, textAlign: "right", color: palette.textDim }}>{r.repos}</td>
-            <td style={{ ...td, textAlign: "right", color: palette.textDim, fontVariantNumeric: "tabular-nums" }}>
-              {r.events.toLocaleString()}
-            </td>
-            <td style={{ ...td, textAlign: "right", color: palette.text, fontVariantNumeric: "tabular-nums" }}>
-              {abbrev(r.tokens)}
-            </td>
-            <td style={{ ...td, textAlign: "right", color: palette.magenta, fontVariantNumeric: "tabular-nums" }}>
-              {fmtUsd(r.cents)}
-            </td>
-            <td style={td}>
-              <div style={{ height: 6, background: palette.bgRaised, borderRadius: 3, overflow: "hidden" }}>
-                <div
-                  style={{
-                    height: "100%",
-                    width: `${Math.min(100, (r.tokens / max) * 100)}%`,
-                    background: kindColor(r.kind),
-                    transition: "width 0.5s ease",
-                  }}
-                />
-              </div>
-            </td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  );
-}
-
-function kindColor(kind: string): string {
-  if (kind === "saas")       return palette.green;
-  if (kind === "client")     return palette.magenta;
-  if (kind === "internal")   return palette.cyan;
-  if (kind === "experiment") return palette.amber;
-  return palette.textDim;
-}
-
-function kindChip(kind: string): React.CSSProperties {
-  const c = kindColor(kind);
-  return {
-    color: c,
-    background: `${c}10`,
-    border: `1px solid ${c}30`,
-    padding: "2px 8px",
-    borderRadius: 999,
-    fontSize: 10,
-    letterSpacing: "0.5px",
-    textTransform: "uppercase",
-  };
-}
-
-function ActivityFeed({ feed }: { feed: import("@/lib/dashboard-data").FeedRow[] }): ReactElement {
-  if (feed.length === 0) {
-    return <div style={{ color: palette.textMute, fontSize: 12 }}>No recent activity.</div>;
-  }
-  return (
-    <ul style={{ listStyle: "none", padding: 0, margin: 0, fontSize: 11 }}>
-      {feed.map((r, i) => (
-        <li
-          key={i}
-          style={{
-            display: "grid",
-            gridTemplateColumns: "60px 70px 1fr 70px 60px",
-            gap: 8,
-            alignItems: "baseline",
-            padding: "5px 0",
-            borderBottom: `1px dashed ${palette.border}`,
-          }}
-        >
-          <span style={{ color: palette.textMute, fontSize: 10 }}>
-            {fmtAgoShort(new Date(r.ts))}
-          </span>
-          <span style={{ color: palette.cyan, fontSize: 10 }}>{r.source}</span>
-          <span style={{ color: palette.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {r.repo ?? "—"}
-            {r.model && <span style={{ color: palette.textDim, marginLeft: 8 }}>· {r.model}</span>}
-            {r.tokens_cache != null && r.tokens_cache > 0 && (
-              <span style={{ color: palette.textMute, marginLeft: 8, fontSize: 10 }}>
-                + {abbrev(r.tokens_cache)} cache
-              </span>
-            )}
-          </span>
-          <span style={{ color: palette.textDim, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
-            {abbrev((r.tokens_input ?? 0) + (r.tokens_output ?? 0))}
-          </span>
-          <span style={{ color: palette.magenta, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
-            {fmtUsd(r.costCents)}
-          </span>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────────
-
-const th: React.CSSProperties = {
-  padding: "8px 6px", color: palette.textDim,
-  fontSize: 11, fontWeight: 500, letterSpacing: "0.5px",
-  textTransform: "uppercase",
-};
-const td: React.CSSProperties = { padding: "8px 6px", color: palette.text };
+// ProjectRollupTable / ActivityFeed / kind helpers moved to
+// ./_components/* — imported at the top. Format helpers (`abbrev`,
+// `fmtAgoShort`, `th`, `td`, `kindColor`, `kindChip`) live in
+// ./_components/dashboard-format and are re-imported here so the
+// other inline components below can keep using them unchanged.
 
 function SavedViewsTabStrip({
   views,
@@ -1122,11 +1009,7 @@ function buildHref(params: Record<string, string | undefined>): string {
   return s ? `/app?${s}` : "/app";
 }
 
-function abbrev(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000)     return `${(n / 1_000).toFixed(1)}k`;
-  return `${n}`;
-}
+// `abbrev` is now imported from ./_components/dashboard-format.
 
 function tokenStatHint(
   today: { tokens: number; tokensTotal: number },
@@ -1159,13 +1042,7 @@ function fmtAgo(d: Date): string {
   return `${Math.round(s / 86400)}d ago`;
 }
 
-function fmtAgoShort(d: Date): string {
-  const s = Math.max(0, Math.round((Date.now() - d.getTime()) / 1000));
-  if (s < 60)    return `${s}s`;
-  if (s < 3600)  return `${Math.round(s / 60)}m`;
-  if (s < 86400) return `${Math.round(s / 3600)}h`;
-  return `${Math.round(s / 86400)}d`;
-}
+// `fmtAgoShort` is now imported from ./_components/dashboard-format.
 
 async function buildScopeFilter(grants: PeerShareRow[]): Promise<ScopeFilter> {
   // Resolve grants → a UNION of (repo glob LIKE, project_id repo set).

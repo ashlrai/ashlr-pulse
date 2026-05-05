@@ -30,6 +30,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { revalidatePath } from "next/cache";
 import type Stripe from "stripe";
 import { stripe, stripeWebhookSecret } from "@/lib/stripe";
 import { planFromPriceId } from "@/lib/billing-config";
@@ -45,6 +46,23 @@ import {
   customerIdOfSession,
 } from "@/lib/stripe-mapping";
 import { log } from "@/lib/logger";
+
+/**
+ * After plan flips we tell Next to drop server-render caches for the
+ * pages that bind on plan limits. Server components re-fetch on next
+ * request so a downgrade doesn't briefly grant paid features.
+ */
+function revalidatePlanGatedPages(): void {
+  for (const path of ["/billing", "/app", "/share", "/settings"]) {
+    try {
+      revalidatePath(path);
+    } catch (err) {
+      log.warn(
+        { msg: "stripe webhook: revalidatePath failed", path, err: err instanceof Error ? err.message : String(err) },
+      );
+    }
+  }
+}
 
 export const runtime = "nodejs";
 // The Stripe signature is HMAC of the raw body — Next must not transform it.
@@ -126,6 +144,7 @@ async function handleSubscription(
       current_period_end: null,
       trial_ends_at: null,
     });
+    revalidatePlanGatedPages();
     return;
   }
 
@@ -156,6 +175,7 @@ async function handleSubscription(
     current_period_end: itemPeriodEnd(item),
     trial_ends_at: sub.trial_end ? new Date(sub.trial_end * 1000) : null,
   });
+  revalidatePlanGatedPages();
 }
 
 async function handleCheckoutCompleted(session: Stripe.Checkout.Session): Promise<void> {

@@ -10,6 +10,7 @@
 import { NextResponse } from "next/server";
 import { sql } from "@/lib/db";
 import { llmStatus } from "@/lib/llm";
+import { metricsSnapshot } from "@/lib/metrics";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -79,6 +80,7 @@ export async function GET(): Promise<Response> {
     latency_ms: Date.now() - startedAt,
     auth,                // { configured, url, error } — never logs the key
     llm: llmStatus(),    // { configured, provider, model } — no secrets
+    metrics: metricsSnapshot(), // counters + cron-tick ring; no PII
     ts: new Date().toISOString(),
   };
   return NextResponse.json(body, { status: dbOk ? 200 : 503 });
