@@ -63,7 +63,12 @@ export default function RootLayout({ children }: { children: ReactNode }): React
           }
           a { color: inherit; text-decoration: none; }
           a:hover { text-decoration: underline; }
-          code { font-family: var(--font-mono), ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em; background: #f6f6f6; padding: 1px 5px; border-radius: 3px; }
+          /* Default code styling — transparent so it inherits the surrounding
+             theme. Dashboard pages render on a dark background; the prior
+             #f6f6f6 fill made repo names render as white-on-white in
+             /projects > Unassigned Repos. Pages that want a chip-style
+             background set it inline. */
+          code { font-family: var(--font-mono), ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em; background: transparent; color: inherit; padding: 0; border-radius: 3px; }
           button { font-family: inherit; }
           table { border-collapse: collapse; }
           ::selection { background: rgba(124,255,160,0.35); color: inherit; }

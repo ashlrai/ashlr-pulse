@@ -87,7 +87,14 @@ export default async function TokensPage({
         <Card>
           <CardHeader title={`active tokens · ${pats.length}`} />
           {pats.length === 0 ? (
-            <p style={{ color: palette.textMute, fontSize: 12, margin: 0 }}>no active tokens.</p>
+            <div style={{ padding: `${space.x3}px 0`, color: palette.textDim, fontSize: 13, lineHeight: 1.6 }}>
+              <div style={{ color: palette.text, marginBottom: space.x1 }}>No tokens yet.</div>
+              Create a Personal Access Token above to authorize the local
+              {" "}<code style={{ color: palette.cyan }}>pulse-agent</code>{" "}
+              to send OTLP spans to this server. The token is shown once at
+              creation — copy it then; it&apos;s SHA-256 hashed in storage
+              and can&apos;t be recovered.
+            </div>
           ) : (
             <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
               <thead>

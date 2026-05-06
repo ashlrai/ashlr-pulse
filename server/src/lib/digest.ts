@@ -56,6 +56,13 @@ export interface DigestSelf {
   github: DigestSelfGitHub;
   /** Repos that had GitHub commits yesterday but zero token activity. */
   missedRepos: string[];
+  /**
+   * Headline anomaly callouts derived purely from yesterday's
+   * composition (no extra SQL): single-repo dominance, single-source
+   * dominance, idle-repo signal. Rendered as a banner at the top of
+   * the digest so a busy reader sees the signal first.
+   */
+  anomalies: string[];
 }
 
 export interface DigestPeer {
@@ -270,6 +277,61 @@ function aggregateBySource(rows: ActivityRow[]): DigestSelfBySource[] {
     .sort((a, b) => b.tokens - a.tokens);
 }
 
+/**
+ * Pure-function anomaly detection over yesterday's already-aggregated
+ * data. No SQL, no baselines — just composition checks meant to surface
+ * "if you read only one line of the digest, it should be this one."
+ *
+ * Returned strings render as a banner at the top of the email. Order
+ * matters — most-actionable first.
+ */
+function computeAnomalies(input: {
+  bySource: DigestSelfBySource[];
+  byRepo: DigestSelfByRepo[];
+  missedRepos: string[];
+}): string[] {
+  const out: string[] = [];
+
+  // Single-repo dominance: one repo is >60% of the day's billable tokens.
+  // Flags "all my work yesterday went into client-x" so the user notices
+  // when one engagement is eating the day.
+  const totalTokens = input.byRepo.reduce((s, r) => s + r.tokens, 0);
+  if (totalTokens > 0 && input.byRepo.length >= 2) {
+    const top = input.byRepo[0];
+    const share = top.tokens / totalTokens;
+    if (share > 0.6) {
+      out.push(
+        `${top.repo} dominated yesterday — ${Math.round(share * 100)}% of tokens (${top.events} events).`,
+      );
+    }
+  }
+
+  // Single-source dominance: one tool drove >80% of activity. Worth a
+  // callout in the multi-tool persona (Claude Code + Cursor + Copilot).
+  const totalEvents = input.bySource.reduce((s, r) => s + r.events, 0);
+  if (totalEvents > 0 && input.bySource.length >= 2) {
+    const topSrc = input.bySource[0];
+    const srcShare = topSrc.events / totalEvents;
+    if (srcShare > 0.8) {
+      out.push(
+        `${topSrc.source} drove ${Math.round(srcShare * 100)}% of yesterday's events — your other tools were quiet.`,
+      );
+    }
+  }
+
+  // Missed-repo signal: GitHub commits landed for repos with zero AI
+  // activity (someone else worked, or you worked without AI).
+  if (input.missedRepos.length > 0) {
+    const sample = input.missedRepos.slice(0, 3).join(", ");
+    const more = input.missedRepos.length > 3 ? ` (+${input.missedRepos.length - 3} more)` : "";
+    out.push(
+      `Commits landed in ${input.missedRepos.length} repo${input.missedRepos.length === 1 ? "" : "s"} with no AI activity yesterday: ${sample}${more}.`,
+    );
+  }
+
+  return out;
+}
+
 function aggregateByRepo(rows: ActivityRow[]): DigestSelfByRepo[] {
   const map = new Map<string, { events: number; tokens: number; cents: number | null }>();
   for (const r of rows) {
@@ -428,12 +490,14 @@ export async function buildDigest(
   // entirely — it's just noise for users without projects defined.
   const projectsMeaningful = byProject.some((p) => p.project_id !== null);
 
+  const bySource = aggregateBySource(selfRows);
   const self: DigestSelf = {
-    bySource: aggregateBySource(selfRows),
+    bySource,
     byRepo,
     byProject: projectsMeaningful ? byProject : [],
     github,
     missedRepos,
+    anomalies: computeAnomalies({ bySource, byRepo, missedRepos }),
   };
 
   // Peers

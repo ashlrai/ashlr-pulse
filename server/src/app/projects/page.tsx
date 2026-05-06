@@ -203,6 +203,19 @@ export default async function ProjectsPage({
           </Card>
         )}
 
+        {unassigned.length === 0 && projects.length > 0 && (
+          <Card>
+            <CardHeader
+              title="unassigned repos · 0"
+              hint="every repo with recent activity is in a project — nice"
+            />
+            <p style={{ color: palette.textDim, fontSize: 13, margin: `${space.x2}px 0 0`, lineHeight: 1.6 }}>
+              Connect more repos via <a href="/github" style={{ color: palette.cyan }}>GitHub</a>
+              {" "}or wait for new spans to land — newly-seen repos will appear here for assignment.
+            </p>
+          </Card>
+        )}
+
         {unassigned.length > 0 && projects.length > 0 && (
           <Card>
             <CardHeader
@@ -253,7 +266,10 @@ export default async function ProjectsPage({
                   }}
                 >
                   <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-                    <span style={{ fontWeight: 600, color: palette.text }}>{p.name}</span>
+                    <a
+                      href={`/projects/${p.id}`}
+                      style={{ fontWeight: 600, color: palette.text, textDecoration: "none" }}
+                    >{p.name}</a>
                     <span style={{ fontSize: 11, color: palette.textDim, textTransform: "uppercase", letterSpacing: "0.5px" }}>
                       {p.kind}
                     </span>

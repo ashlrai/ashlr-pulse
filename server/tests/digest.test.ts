@@ -122,7 +122,7 @@ const emptyPayload: DigestPayload = {
   user_id: "u1",
   email: "mason@evero.test",
   dateLabel: "Fri, Apr 24",
-  self: { bySource: [], byRepo: [], byProject: [], github: { commits: 0, prs_opened: 0, prs_merged: 0 }, missedRepos: [] },
+  self: { bySource: [], byRepo: [], byProject: [], github: { commits: 0, prs_opened: 0, prs_merged: 0 }, missedRepos: [], anomalies: [] },
   peers: [],
   empty: true,
 };
@@ -143,6 +143,7 @@ const fullPayload: DigestPayload = {
     byProject: [],
     github: { commits: 6, prs_opened: 1, prs_merged: 1 },
     missedRepos: ["ashlr/legacy-tool"],
+    anomalies: [],
   },
   peers: [
     {

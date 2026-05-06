@@ -90,6 +90,15 @@ function renderText(d: DigestPayload, opts: DigestRenderOptions): string {
     return lines.join("\n");
   }
 
+  // Headline anomalies — show before everything else so the busy reader
+  // catches the signal even if they only skim the first three lines.
+  if (d.self.anomalies.length) {
+    lines.push("HIGHLIGHTS");
+    lines.push("==========");
+    for (const a of d.self.anomalies) lines.push(`  · ${a}`);
+    lines.push("");
+  }
+
   // Self
   lines.push("YOU");
   lines.push("===");
@@ -242,6 +251,16 @@ function renderHtml(d: DigestPayload, opts: DigestRenderOptions): string {
 
 function renderSelfBlockHtml(d: DigestPayload): string {
   const parts: string[] = [];
+
+  // Highlights banner — top of the You section, color-flagged so the
+  // reader sees it even mid-scroll.
+  if (d.self.anomalies.length) {
+    const items = d.self.anomalies.map((a) => `<li>${esc(a)}</li>`).join("");
+    parts.push(
+      `<div class="panel" style="border-left:3px solid #f0a500;background:#1a1a1a;"><strong style="color:#f0a500;">Highlights</strong><ul style="margin:6px 0 0;padding-left:18px;color:#ddd;line-height:1.5;">${items}</ul></div>`,
+    );
+  }
+
   parts.push(`<h2>You</h2>`);
 
   if (d.self.bySource.length) {

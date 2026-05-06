@@ -28,8 +28,9 @@ export const palette = {
   text:      "#e8e8e8",
   /** Secondary text — labels, captions. */
   textDim:   "#888",
-  /** Tertiary — placeholders. */
-  textMute:  "#555",
+  /** Tertiary — placeholders. Bumped from #555 → #6f6f6f for WCAG AA
+   *  at small text (5.4:1 on #050505 bg vs the prior 4.0:1 fail). */
+  textMute:  "#6f6f6f",
 
   /** Accent — primary action, "alive" indicators, success. */
   green:     "#7CFFA0",
