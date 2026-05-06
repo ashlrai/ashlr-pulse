@@ -30,6 +30,41 @@ export interface OrgPlanRef {
   subscription_status: "active" | "trialing" | "past_due" | "canceled" | "incomplete" | null;
 }
 
+/**
+ * How the org pays Anthropic, independent of their Pulse plan tier.
+ *   - api          — pay-as-you-go API; rate-card cost = real bill.
+ *   - pro/max-*    — Claude Code subscription; in-quota cache + reasonable
+ *                    input/output usage is included in the flat plan price.
+ *                    Rate-card cost shown in Pulse is hypothetical.
+ *   - team         — Anthropic Team plan; usage-based per-seat.
+ *   - unknown      — user hasn't said yet; treat as api but flag in UI.
+ */
+export type BillingMode = "api" | "pro" | "max-100" | "max-200" | "team" | "unknown";
+
+/**
+ * Approximate monthly cap (in dollars of rate-card-equivalent cost) for
+ * Claude Code subscription tiers. Lets the dashboard render
+ * "X% of monthly cap used" without pretending to know exact Anthropic-
+ * internal token quotas.
+ *
+ * These values come from Anthropic's published "≈ N× Pro usage" claims
+ * (Pro ≈ $20 of API usage, Max-100 ≈ 5× = $100, Max-200 ≈ 20× = $400 of
+ * API equivalence). Used only as a denominator for percent-of-cap display;
+ * the user can override in /settings if their experience differs.
+ */
+export const BILLING_MODE_MONTHLY_CAP_USD: Record<BillingMode, number | null> = {
+  api: null,
+  pro: 100,         // ~5× the $20 plan price (Anthropic claims "~$100 of API usage")
+  "max-100": 500,
+  "max-200": 2000,
+  team: null,       // usage-based; no fixed cap
+  unknown: null,
+};
+
+export function isSubscriptionMode(m: BillingMode | null | undefined): boolean {
+  return m === "pro" || m === "max-100" || m === "max-200";
+}
+
 export const FREE_LIMITS: PlanLimits = {
   max_members: 1,
   max_projects: 1,

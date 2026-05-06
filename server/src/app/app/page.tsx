@@ -31,7 +31,14 @@ import { forecast, sumForecast, type ForecastPoint } from "@/lib/forecast";
 import { sql } from "@/lib/db";
 import { listViews, type DashboardView, viewToHref } from "@/lib/dashboard-view-db";
 import { primaryOrgForUser } from "@/lib/org-db";
-import { limitsFor, retentionCutoff, FREE_LIMITS } from "@/lib/plan-gate";
+import {
+  limitsFor,
+  retentionCutoff,
+  FREE_LIMITS,
+  isSubscriptionMode,
+  BILLING_MODE_MONTHLY_CAP_USD,
+  type BillingMode,
+} from "@/lib/plan-gate";
 
 import { Header } from "@/components/Header";
 import { StatCard } from "@/components/StatCard";
@@ -62,7 +69,24 @@ import {
 
 export const dynamic = "force-dynamic";
 
-interface SearchParams { as?: string; win?: string }
+interface SearchParams { as?: string; win?: string; src?: string }
+
+// Sources that match the activity_event.source CHECK constraint.
+const SOURCE_OPTIONS = [
+  { value: "",             label: "all" },
+  { value: "claude_code",  label: "claude code" },
+  { value: "cursor",       label: "cursor" },
+  { value: "copilot",      label: "copilot" },
+  { value: "wakatime",     label: "wakatime" },
+  { value: "shell",        label: "shell" },
+  { value: "git",          label: "git" },
+  { value: "ashlr_plugin", label: "plugin" },
+];
+
+function resolveSourceFilter(raw: string | undefined): string | null {
+  if (!raw) return null;
+  return SOURCE_OPTIONS.some((o) => o.value === raw) ? raw : null;
+}
 
 const WIN_OPTIONS = [
   { label: "7d",  value: "7",  days: 7  },
@@ -82,7 +106,7 @@ export default async function Page({
   const me = await currentUser();
   if (!me) redirect("/login");
 
-  const { as, win } = await searchParams;
+  const { as, win, src } = await searchParams;
   const windowOpt = resolveWindow(win);
   let targetUserId = me.id;
   let scope: ScopeFilter = { repoClauseSql: "", repoParams: [] };
@@ -106,10 +130,19 @@ export default async function Page({
   const org = isOwnView ? await primaryOrgForUser(me.id) : null;
   const limits = org ? limitsFor(org) : FREE_LIMITS;
   const isFreeTier = limits.retention_days < 90;
+  // billingMode controls whether the COST card is "your bill" (api) or
+  // "rate-card hypothetical" (subscription). Peer-shared views always
+  // render the owner's true rate-card cost — they explicitly opted into
+  // sharing it, and we don't have the peer's billing_mode anyway.
+  const billingMode: BillingMode = isOwnView
+    ? ((org?.billing_mode ?? "api") as BillingMode)
+    : "api";
+  const isSubMode = isSubscriptionMode(billingMode);
+  const monthlyCapUsd = BILLING_MODE_MONTHLY_CAP_USD[billingMode];
 
   // Run all the heavy lifts in parallel.
   const [data, agentStatus, missedRepos, pluginImpact, savedViews] = await Promise.all([
-    loadDashboard(targetUserId, scope, { chartDays: windowOpt.days, limits }),
+    loadDashboard(targetUserId, scope, { chartDays: windowOpt.days, limits, sourceFilter: resolveSourceFilter(src) }),
     isOwnView ? getAgentStatus(me.id, nowUtc) : Promise.resolve(null),
     isOwnView ? loadMissedRepos(me.id, since24hUtc, nowUtc.toISOString()) : Promise.resolve([]),
     isOwnView ? loadPluginImpact(targetUserId) : Promise.resolve(null),
@@ -240,7 +273,19 @@ export default async function Page({
         <ChipGroup
           current={windowOpt.value}
           options={WIN_OPTIONS.map((o) => ({ label: o.label, value: o.value }))}
-          hrefFor={(v) => buildHref({ as, win: v })}
+          hrefFor={(v) => buildHref({ as, win: v, src })}
+        />
+      </div>
+
+      {/* Source filter — narrow the dashboard to a single tool (or sum
+          across all). The current value `src` flows into loadDashboard's
+          sourceFilter and is preserved in saved-view + window switches. */}
+      <div style={{ display: "flex", alignItems: "center", gap: space.x2, marginTop: space.x3 }}>
+        <span style={{ color: palette.textDim, fontSize: 11, letterSpacing: "0.5px", textTransform: "uppercase" }}>source</span>
+        <ChipGroup
+          current={src ?? ""}
+          options={SOURCE_OPTIONS.map((o) => ({ label: o.label, value: o.value }))}
+          hrefFor={(v) => buildHref({ as, win, src: v || undefined })}
         />
       </div>
 
@@ -264,10 +309,16 @@ export default async function Page({
         />
         <StatCard
           accent="magenta"
-          label="cost · 24h"
+          label={isSubMode ? "rate-card · 24h" : "cost · 24h"}
           value={fmtUsd(data.today.costCents)}
           delta={costDelta}
-          hint={baselineCost ? `vs ${fmtUsd(baselineCost)} median` : undefined}
+          hint={
+            isSubMode
+              ? `subscription mode — what API users would pay${baselineCost ? ` · vs ${fmtUsd(baselineCost)} median` : ""}`
+              : baselineCost
+                ? `vs ${fmtUsd(baselineCost)} median`
+                : undefined
+          }
           sparkline={data.sparklines.cost}
         />
         <StatCard
@@ -291,12 +342,28 @@ export default async function Page({
           writes (5m at 1.25× input rate, 1h at 2.00×) often dominate
           cmux/long-context spend; the headline $5/$25 input/output
           rates make this surprising the first time. */}
+      {isSubMode && (
+        <div style={{ marginTop: space.x4 }}>
+          <Banner variant="info">
+            <strong>Subscription mode ({billingMode}).</strong>{" "}
+            The cost numbers below are <em>API rate-card</em> — what an API
+            user would pay at Anthropic&apos;s published rates. Your real
+            bill is the flat plan price{monthlyCapUsd ? ` (~$${monthlyCapUsd}/mo cap` : ""}{monthlyCapUsd ? ")" : ""}.
+            Change in <a href="/settings" style={{ color: palette.cyan }}>settings</a>.
+          </Banner>
+        </div>
+      )}
+
       {data.costBreakdown24h.total > 0 && (
         <div style={{ marginTop: space.x5 }}>
           <Card>
             <CardHeader
-              title="cost breakdown · 24h"
-              hint="auditable decomposition by Anthropic rate component — sums to the cost shown above"
+              title={isSubMode ? "rate-card breakdown · 24h" : "cost breakdown · 24h"}
+              hint={
+                isSubMode
+                  ? "what an API user would pay — your subscription bills these as flat plan price"
+                  : "auditable decomposition by Anthropic rate component — sums to the cost shown above"
+              }
             />
             <CostBreakdownPanel breakdown={data.costBreakdown24h} />
           </Card>
@@ -1050,7 +1117,11 @@ async function buildScopeFilter(grants: PeerShareRow[]): Promise<ScopeFilter> {
   // Otherwise we collect LIKE patterns and project_ids, then expand
   // project_ids to their repo lists via project_repo, and build a
   // single (LIKE OR LIKE OR repo_name IN (…)) clause.
-  let pIdx = 2; // $1 is user_id, scope params start at $2
+  // Scope params land in $4+ — the dashboard SQL reserves
+  //   $1 = user_id, $2 = retCutoff, $3 = sourceFilter
+  // before any peer-share clause params. Keep this in lock-step with
+  // dashboard-data.ts:loadDashboard's bind layout.
+  let pIdx = 4;
   const ors: string[] = [];
   const params: (string | number)[] = [];
   const projectIds: string[] = [];

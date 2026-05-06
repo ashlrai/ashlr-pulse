@@ -35,6 +35,13 @@ export interface LoadOpts {
    * is applied (no-op for paid plans).
    */
   limits?: PlanLimits;
+  /**
+   * Filter activity by source: 'claude_code', 'cursor', 'copilot',
+   * 'shell', 'git', 'wakatime', 'ashlr_plugin'. When omitted, all sources
+   * are included. Validated against the schema's source enum at the
+   * route layer.
+   */
+  sourceFilter?: string | null;
 }
 
 export interface DashboardData {
@@ -191,11 +198,15 @@ export async function loadDashboard(
   // the user picks a 7d chart range. ~30k rows × in-memory bucketing
   // is well under postgres-js + Node's memory budget.
   const sqlWindowDays = Math.max(chartDays, 30);
-  // Retention cutoff travels as a bind parameter ($2) so we never
-  // interpolate timestamps into the SQL string. NULL means "no
-  // retention clamp" and the OR-NULL fragment becomes a no-op.
-  // Bind layout: $1 user_id, $2 retCutoff (nullable), $3+ scope params.
+  // Bind layout (fixed slots, then variadic):
+  //   $1 = user_id
+  //   $2 = retCutoff (nullable; NULL → no retention clamp)
+  //   $3 = sourceFilter (nullable; NULL → all sources)
+  //   $4+ = scope params from buildScopeFilter (peer-share)
+  // The OR-NULL fragments turn each fixed slot into a no-op when the
+  // bind is NULL — keeps the SQL string static so postgres can plan it.
   const retParam: string | null = retCutoff ? retCutoff.toISOString() : null;
+  const sourceParam: string | null = opts.sourceFilter ?? null;
   const events = await db.unsafe<RawEvent[]>(
     `
     SELECT
@@ -218,10 +229,11 @@ export async function loadDashboard(
     WHERE user_id = $1
       AND ts >= NOW() - INTERVAL '${sqlWindowDays} days'
       AND ($2::timestamptz IS NULL OR ts >= $2::timestamptz)
+      AND ($3::text IS NULL OR source = $3::text)
       ${scope.repoClauseSql}
     ORDER BY ts DESC
     `,
-    [userId, retParam, ...scope.repoParams],
+    [userId, retParam, sourceParam, ...scope.repoParams],
   );
 
   // Pull last chartDays of github commits (subjects only — public info).

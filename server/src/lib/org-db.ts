@@ -12,7 +12,7 @@
  */
 
 import { sql } from "./db";
-import type { OrgPlanRef } from "./plan-gate";
+import type { OrgPlanRef, BillingMode } from "./plan-gate";
 
 export type OrgPlan = "free" | "pro" | "team";
 
@@ -35,6 +35,8 @@ export interface OrgRow extends OrgPlanRef {
   current_period_end: string | null;
   trial_ends_at: string | null;
   created_at: string;
+  /** How the org pays Anthropic. See lib/plan-gate#BillingMode. */
+  billing_mode: BillingMode;
 }
 
 export async function getOrgById(orgId: string): Promise<OrgRow | null> {
@@ -45,7 +47,8 @@ export async function getOrgById(orgId: string): Promise<OrgRow | null> {
            subscription_status,
            current_period_end::text AS current_period_end,
            trial_ends_at::text      AS trial_ends_at,
-           created_at::text         AS created_at
+           created_at::text         AS created_at,
+           COALESCE(billing_mode, 'api') AS billing_mode
     FROM org WHERE id = ${orgId}::uuid
   `;
   return row ?? null;
@@ -105,6 +108,21 @@ export async function countProjects(orgId: string): Promise<number> {
 }
 
 /** Is the user an owner/admin of this org? Used for billing actions. */
+/**
+ * Update an org's billing_mode. Only an admin should call this; the
+ * route handler is responsible for authorization. Validates against the
+ * BillingMode enum at the SQL CHECK constraint level.
+ */
+export async function setBillingMode(orgId: string, mode: BillingMode): Promise<void> {
+  const db = sql();
+  await db`
+    UPDATE org
+    SET billing_mode = ${mode}::text,
+        billing_mode_set_at = now()
+    WHERE id = ${orgId}::uuid
+  `;
+}
+
 export async function isOrgAdmin(orgId: string, userId: string): Promise<boolean> {
   const db = sql();
   const [row] = await db<{ role: string }[]>`
@@ -125,7 +143,8 @@ export async function getOrgByStripeCustomerId(
            subscription_status,
            current_period_end::text AS current_period_end,
            trial_ends_at::text      AS trial_ends_at,
-           created_at::text         AS created_at
+           created_at::text         AS created_at,
+           COALESCE(billing_mode, 'api') AS billing_mode
     FROM org WHERE stripe_customer_id = ${customerId}
   `;
   return row ?? null;
