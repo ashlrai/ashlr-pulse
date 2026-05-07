@@ -123,6 +123,38 @@ const PRICES: Record<string, Price[]> = {
       cache_write_per_m_usd: 6,
     },
   ],
+  // Sonnet 4 (the original — no decimal). Same $3/$15 sheet as 4.5+.
+  "claude-sonnet-4": [
+    {
+      effective: "2025-05-01",
+      input_per_m_usd: 3, output_per_m_usd: 15,
+      cache_5m_write_per_m_usd: 3.75, cache_1h_write_per_m_usd: 6,
+      cache_read_per_m_usd: 0.30,
+      cache_write_per_m_usd: 6,
+    },
+  ],
+  // Sonnet 3.7 — deprecated but still on the rate card at $3/$15.
+  "claude-sonnet-3-7": [
+    {
+      effective: "2025-02-01",
+      input_per_m_usd: 3, output_per_m_usd: 15,
+      cache_5m_write_per_m_usd: 3.75, cache_1h_write_per_m_usd: 6,
+      cache_read_per_m_usd: 0.30,
+      cache_write_per_m_usd: 6,
+    },
+  ],
+  // Sonnet 3.5 — legacy. Same $3/$15 rates as the rest of the Sonnet line.
+  // Not listed on the current Anthropic pricing page (deprecated past
+  // visible state) but real spans still exist in long-running ingests.
+  "claude-sonnet-3-5": [
+    {
+      effective: "2024-06-01",
+      input_per_m_usd: 3, output_per_m_usd: 15,
+      cache_5m_write_per_m_usd: 3.75, cache_1h_write_per_m_usd: 6,
+      cache_read_per_m_usd: 0.30,
+      cache_write_per_m_usd: 6,
+    },
+  ],
 
   // ── Anthropic Haiku 4.5 ──
   "claude-haiku-4-5": [
@@ -134,6 +166,36 @@ const PRICES: Record<string, Price[]> = {
       cache_write_per_m_usd: 2,
     },
   ],
+  // Haiku 3.5 — $0.80 / $4 with proportional cache rates.
+  "claude-haiku-3-5": [
+    {
+      effective: "2024-11-01",
+      input_per_m_usd: 0.80, output_per_m_usd: 4,
+      cache_5m_write_per_m_usd: 1, cache_1h_write_per_m_usd: 1.6,
+      cache_read_per_m_usd: 0.08,
+      cache_write_per_m_usd: 1.6,
+    },
+  ],
+  // Haiku 3 — original Haiku rate sheet ($0.25 / $1.25).
+  "claude-haiku-3": [
+    {
+      effective: "2024-03-01",
+      input_per_m_usd: 0.25, output_per_m_usd: 1.25,
+      cache_5m_write_per_m_usd: 0.30, cache_1h_write_per_m_usd: 0.50,
+      cache_read_per_m_usd: 0.03,
+      cache_write_per_m_usd: 0.50,
+    },
+  ],
+  // Opus 3 (deprecated) — same $15/$75 sheet as Opus 4 / 4.1.
+  "claude-opus-3": [
+    {
+      effective: "2024-03-01",
+      input_per_m_usd: 15, output_per_m_usd: 75,
+      cache_5m_write_per_m_usd: 18.75, cache_1h_write_per_m_usd: 30,
+      cache_read_per_m_usd: 1.50,
+      cache_write_per_m_usd: 30,
+    },
+  ],
 
   // ── OpenAI ── (cache rates ignored — OpenAI bundles cached input
   //                into a single discounted rate)
@@ -141,8 +203,50 @@ const PRICES: Record<string, Price[]> = {
   "gpt-4o-mini": [{ effective: "2025-01-01", input_per_m_usd: 0.15, output_per_m_usd: 0.6 }],
 };
 
+/**
+ * Map Anthropic API model IDs (which include date suffixes and legacy
+ * "claude-3-X-Y" naming) to canonical PRICES keys. The agent and
+ * dashboards should pass the friendly name when they have it, but
+ * direct-API consumers (Cursor, raw curl, etc.) emit the dated form
+ * — we want to price both.
+ *
+ * Examples:
+ *   claude-opus-4-20250514       → claude-opus-4
+ *   claude-opus-4-1-20250805     → claude-opus-4-1
+ *   claude-3-5-haiku-20241022    → claude-haiku-3-5
+ *   claude-3-7-sonnet-20250219   → claude-sonnet-3-7
+ *   claude-3-opus-20240229       → claude-opus-3
+ *   claude-3-haiku-20240307      → claude-haiku-3
+ *   claude-opus-4-7              → claude-opus-4-7  (already canonical)
+ */
+export function normalizeModel(raw: string): string {
+  // Already canonical.
+  if (raw in PRICES) return raw;
+
+  // Strip a trailing dated suffix `-YYYYMMDD`.
+  const stripped = raw.replace(/-\d{8}$/, "");
+  if (stripped !== raw && stripped in PRICES) return stripped;
+
+  // Legacy naming: `claude-3-X-Y` → `claude-Y-3-X`. We rewrite
+  // `claude-<major>-<minor>-<family>(-<...>)` to `claude-<family>-<major>-<minor>`,
+  // then re-check both with and without the date suffix.
+  const legacy = stripped.match(/^claude-(\d+)(?:-(\d+))?-(opus|sonnet|haiku)$/);
+  if (legacy) {
+    const [, major, minor, family] = legacy;
+    const candidate = minor
+      ? `claude-${family}-${major}-${minor}`
+      : `claude-${family}-${major}`;
+    if (candidate in PRICES) return candidate;
+  }
+
+  // Final fallback: hand the raw string back so lookup() returns null
+  // and the caller renders "—" instead of inventing dollars.
+  return raw;
+}
+
 function lookup(model: string, when: Date): Price | null {
-  const ladder = PRICES[model];
+  const canonical = normalizeModel(model);
+  const ladder = PRICES[canonical];
   if (!ladder) return null;
   // Pick the most recent effective date that's not in the future.
   const wts = when.toISOString().slice(0, 10);

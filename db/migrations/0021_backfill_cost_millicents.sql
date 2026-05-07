@@ -78,13 +78,70 @@ UPDATE activity_event SET cost_millicents = ROUND((
               AND (tokens_cache_1h_write IS NULL OR tokens_cache_1h_write = 0)
             THEN COALESCE(tokens_cache_write, 0) * 2 ELSE 0 END)
 
+  -- Haiku 3.5 — $0.80 / $4.
+  WHEN model = 'claude-haiku-3-5' THEN
+    COALESCE(tokens_input, 0)        * 0.80
+    + COALESCE(tokens_output, 0)     * 4
+    + COALESCE(tokens_reasoning, 0)  * 4
+    + COALESCE(tokens_cache_read, 0) * 0.08
+    + (CASE WHEN tokens_cache_5m_write IS NOT NULL AND tokens_cache_5m_write > 0
+            THEN tokens_cache_5m_write * 1 ELSE 0 END)
+    + (CASE WHEN tokens_cache_1h_write IS NOT NULL AND tokens_cache_1h_write > 0
+            THEN tokens_cache_1h_write * 1.6 ELSE 0 END)
+    + (CASE WHEN (tokens_cache_5m_write IS NULL OR tokens_cache_5m_write = 0)
+              AND (tokens_cache_1h_write IS NULL OR tokens_cache_1h_write = 0)
+            THEN COALESCE(tokens_cache_write, 0) * 1.6 ELSE 0 END)
+
+  -- Haiku 3 — $0.25 / $1.25.
+  WHEN model = 'claude-haiku-3' THEN
+    COALESCE(tokens_input, 0)        * 0.25
+    + COALESCE(tokens_output, 0)     * 1.25
+    + COALESCE(tokens_reasoning, 0)  * 1.25
+    + COALESCE(tokens_cache_read, 0) * 0.03
+    + (CASE WHEN tokens_cache_5m_write IS NOT NULL AND tokens_cache_5m_write > 0
+            THEN tokens_cache_5m_write * 0.30 ELSE 0 END)
+    + (CASE WHEN tokens_cache_1h_write IS NOT NULL AND tokens_cache_1h_write > 0
+            THEN tokens_cache_1h_write * 0.50 ELSE 0 END)
+    + (CASE WHEN (tokens_cache_5m_write IS NULL OR tokens_cache_5m_write = 0)
+              AND (tokens_cache_1h_write IS NULL OR tokens_cache_1h_write = 0)
+            THEN COALESCE(tokens_cache_write, 0) * 0.50 ELSE 0 END)
+
+  -- Sonnet 4 / 3.7 / 3.5 — $3 / $15 (same sheet as Sonnet 4.5/4.6).
+  WHEN model IN ('claude-sonnet-4', 'claude-sonnet-3-7', 'claude-sonnet-3-5') THEN
+    COALESCE(tokens_input, 0)        * 3
+    + COALESCE(tokens_output, 0)     * 15
+    + COALESCE(tokens_reasoning, 0)  * 15
+    + COALESCE(tokens_cache_read, 0) * 0.3
+    + (CASE WHEN tokens_cache_5m_write IS NOT NULL AND tokens_cache_5m_write > 0
+            THEN tokens_cache_5m_write * 3.75 ELSE 0 END)
+    + (CASE WHEN tokens_cache_1h_write IS NOT NULL AND tokens_cache_1h_write > 0
+            THEN tokens_cache_1h_write * 6 ELSE 0 END)
+    + (CASE WHEN (tokens_cache_5m_write IS NULL OR tokens_cache_5m_write = 0)
+              AND (tokens_cache_1h_write IS NULL OR tokens_cache_1h_write = 0)
+            THEN COALESCE(tokens_cache_write, 0) * 6 ELSE 0 END)
+
+  -- Opus 3 — $15 / $75 (deprecated, same as Opus 4 / 4.1).
+  WHEN model = 'claude-opus-3' THEN
+    COALESCE(tokens_input, 0)        * 15
+    + COALESCE(tokens_output, 0)     * 75
+    + COALESCE(tokens_reasoning, 0)  * 75
+    + COALESCE(tokens_cache_read, 0) * 1.5
+    + (CASE WHEN tokens_cache_5m_write IS NOT NULL AND tokens_cache_5m_write > 0
+            THEN tokens_cache_5m_write * 18.75 ELSE 0 END)
+    + (CASE WHEN tokens_cache_1h_write IS NOT NULL AND tokens_cache_1h_write > 0
+            THEN tokens_cache_1h_write * 30 ELSE 0 END)
+    + (CASE WHEN (tokens_cache_5m_write IS NULL OR tokens_cache_5m_write = 0)
+              AND (tokens_cache_1h_write IS NULL OR tokens_cache_1h_write = 0)
+            THEN COALESCE(tokens_cache_write, 0) * 30 ELSE 0 END)
+
   ELSE NULL  -- unknown model — leave NULL so resolveMillicents falls back at render
   END
 ) / 10)::bigint
 WHERE cost_millicents IS NULL
   AND model IN (
     'claude-opus-4-7', 'claude-opus-4-6', 'claude-opus-4-5',
-    'claude-opus-4', 'claude-opus-4-1',
-    'claude-sonnet-4-5', 'claude-sonnet-4-6',
-    'claude-haiku-4-5'
+    'claude-opus-4', 'claude-opus-4-1', 'claude-opus-3',
+    'claude-sonnet-4-6', 'claude-sonnet-4-5', 'claude-sonnet-4',
+    'claude-sonnet-3-7', 'claude-sonnet-3-5',
+    'claude-haiku-4-5', 'claude-haiku-3-5', 'claude-haiku-3'
   );

@@ -183,6 +183,123 @@ describe("PRICE_VERSION", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Newly-added models from Anthropic's published rate card (2026-05-06).
+// One canary test per model — proves the rate sheet entries are correct
+// and that normalizeModel maps the dated/legacy variants to them.
+// ---------------------------------------------------------------------------
+
+describe("rate sheet — full Anthropic table", () => {
+  // 1M tokens of pure input keeps the math obvious: cents == base rate × 100.
+  const oneMInput = (model: string): number | null =>
+    costUsdCents({ model, tokens_input: 1_000_000, tokens_output: 0, ts: new Date("2026-05-06") });
+
+  test.each([
+    ["claude-opus-4-7",   500],   // $5 / M input
+    ["claude-opus-4-6",   500],
+    ["claude-opus-4-5",   500],
+    ["claude-opus-4-1",   1500],  // $15 / M (legacy)
+    ["claude-opus-4",     1500],
+    ["claude-sonnet-4-6", 300],   // $3 / M
+    ["claude-sonnet-4-5", 300],
+    ["claude-sonnet-4",   300],
+    ["claude-sonnet-3-7", 300],
+    ["claude-sonnet-3-5", 300],
+    ["claude-haiku-4-5",  100],   // $1 / M
+    ["claude-haiku-3-5",  80],    // $0.80 / M
+    ["claude-haiku-3",    25],    // $0.25 / M
+    ["claude-opus-3",     1500],  // $15 / M (deprecated)
+  ])("1M input on %s → %s¢", (model, expectedCents) => {
+    expect(oneMInput(model)).toBe(expectedCents);
+  });
+
+  test.each([
+    ["claude-opus-4-7",   2500],
+    ["claude-opus-4-1",   7500],
+    ["claude-sonnet-4-6", 1500],
+    ["claude-haiku-4-5",  500],
+    ["claude-haiku-3-5",  400],
+    ["claude-haiku-3",    125],
+  ])("1M output on %s → %s¢", (model, expectedCents) => {
+    expect(
+      costUsdCents({ model, tokens_input: 0, tokens_output: 1_000_000, ts: new Date("2026-05-06") }),
+    ).toBe(expectedCents);
+  });
+
+  test("Haiku 3.5 cache rates match Anthropic table (cache_read $0.08, 5m $1, 1h $1.6)", () => {
+    // 1M tokens through each cache slot, in cents.
+    const cents = costUsdCents({
+      model: "claude-haiku-3-5",
+      tokens_input: 0, tokens_output: 0,
+      tokens_cache_read: 1_000_000,
+      tokens_cache_5m_write: 1_000_000,
+      tokens_cache_1h_write: 1_000_000,
+      ts: new Date("2026-05-06"),
+    });
+    // 0.08 + 1 + 1.6 = $2.68 = 268 cents
+    expect(cents).toBe(268);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// normalizeModel — maps dated/legacy API IDs to canonical PRICES keys.
+// ---------------------------------------------------------------------------
+
+import { normalizeModel } from "../src/lib/pricing";
+
+describe("normalizeModel", () => {
+  test("already-canonical names pass through unchanged", () => {
+    expect(normalizeModel("claude-opus-4-7")).toBe("claude-opus-4-7");
+    expect(normalizeModel("claude-sonnet-4-6")).toBe("claude-sonnet-4-6");
+    expect(normalizeModel("claude-haiku-4-5")).toBe("claude-haiku-4-5");
+  });
+
+  test("strips trailing -YYYYMMDD date suffix", () => {
+    expect(normalizeModel("claude-opus-4-20250514")).toBe("claude-opus-4");
+    expect(normalizeModel("claude-opus-4-1-20250805")).toBe("claude-opus-4-1");
+    expect(normalizeModel("claude-sonnet-4-20250101")).toBe("claude-sonnet-4");
+  });
+
+  test("rewrites legacy claude-3-X-FAMILY → claude-FAMILY-3-X", () => {
+    expect(normalizeModel("claude-3-5-haiku-20241022")).toBe("claude-haiku-3-5");
+    expect(normalizeModel("claude-3-5-sonnet-20241022")).toBe("claude-sonnet-3-5");
+    expect(normalizeModel("claude-3-7-sonnet-20250219")).toBe("claude-sonnet-3-7");
+    expect(normalizeModel("claude-3-opus-20240229")).toBe("claude-opus-3");
+    expect(normalizeModel("claude-3-haiku-20240307")).toBe("claude-haiku-3");
+  });
+
+  test("legacy form without date works too", () => {
+    expect(normalizeModel("claude-3-5-haiku")).toBe("claude-haiku-3-5");
+    expect(normalizeModel("claude-3-opus")).toBe("claude-opus-3");
+  });
+
+  test("unknown strings pass through (lookup returns null → renders '—')", () => {
+    expect(normalizeModel("claude-unknown-99")).toBe("claude-unknown-99");
+    expect(normalizeModel("<synthetic>")).toBe("<synthetic>");
+    expect(normalizeModel("gpt-5-future")).toBe("gpt-5-future");
+  });
+});
+
+describe("end-to-end — dated API ID prices correctly via normalizer", () => {
+  test("claude-3-5-haiku-20241022 prices like claude-haiku-3-5", () => {
+    const cents = costUsdCents({
+      model: "claude-3-5-haiku-20241022",
+      tokens_input: 1_000_000, tokens_output: 0,
+      ts: new Date("2026-05-06"),
+    });
+    expect(cents).toBe(80); // $0.80 / M
+  });
+
+  test("claude-opus-4-20250514 prices like claude-opus-4 ($15 / M)", () => {
+    const cents = costUsdCents({
+      model: "claude-opus-4-20250514",
+      tokens_input: 1_000_000, tokens_output: 0,
+      ts: new Date("2026-05-06"),
+    });
+    expect(cents).toBe(1500);
+  });
+});
+
 describe("fmtUsd", () => {
   test.each([
     [null, "—"],
