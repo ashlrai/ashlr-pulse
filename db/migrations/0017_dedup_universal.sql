@@ -39,6 +39,10 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 -- 1. Drop the old narrow index. CREATE … IF NOT EXISTS in 0015 means
 --    DROP … IF EXISTS is the safe inverse for re-runs.
 DROP INDEX IF EXISTS uq_activity_event_dedup_no_span;
+-- Re-runs may already have the universal index from an earlier boot.
+-- Drop it before recomputing keys, otherwise the UPDATE can transiently
+-- violate the existing unique constraint before the cleanup CTE runs.
+DROP INDEX IF EXISTS uq_activity_event_dedup;
 
 -- 2. Recompute dedup_key for every row. Includes session_id so cmux
 --    cross-instance dedup is correct without false-positive collapses
