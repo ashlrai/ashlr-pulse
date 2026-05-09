@@ -17,7 +17,10 @@ import { palette, space } from "@/lib/theme";
 
 interface Props {
   me: CurrentUser;
-  active: "dashboard" | "ask" | "github" | "share" | "projects" | "tokens" | "settings" | "billing";
+  active:
+    | "dashboard" | "ask" | "github" | "share" | "projects"
+    | "tokens" | "settings" | "billing"
+    | "compare" | "forecast";  // top-level comparison + cost-projection pages
   /** Optional live agent status — renders the green pulse + label when alive. */
   agentAlive?: boolean;
   agentSeenSecondsAgo?: number | null;
