@@ -36,7 +36,7 @@ async function resolveUserId(
   const authz = req.headers.get("authorization");
   if (authz?.startsWith("Bearer ")) {
     const token = authz.slice(7).trim();
-    const userId = await verifyPat(token);
+    const userId = await verifyPat(token, "ingest");
     if (!userId) return null;
     // Use first 26 chars of token as bucket key (prefix + 16 hex chars).
     // Never use the full token as a map key — keep the key non-reversible.
@@ -173,7 +173,6 @@ export async function POST(req: Request): Promise<Response> {
         "cost_millicents",
         "pricing_version",
         "dedup_key",
-        "raw_otel_span",
         "codex_plan_type",
         "codex_originator",
         "codex_parent_thread_id",

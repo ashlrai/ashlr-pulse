@@ -73,7 +73,7 @@ export async function GET(req: Request): Promise<Response> {
 
   const label = consumed.agent_label ?? "unnamed";
   const patName = `agent-init: ${label} (${new Date().toISOString().slice(0, 10)})`;
-  const minted = await mintPat(consumed.user_id, patName);
+  const minted = await mintPat(consumed.user_id, patName, ["ingest", "heartbeat"]);
 
   log.info({
     msg: "onboard: pat issued",

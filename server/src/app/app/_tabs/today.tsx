@@ -18,6 +18,7 @@ import { Banner } from "@/components/ui/Banner";
 import { Skeleton } from "@/components/ui/Skeleton";
 
 import { ProjectRollupTable } from "../_components/ProjectRollupTable";
+import { RepoAgentRollupTable } from "../_components/RepoAgentRollupTable";
 import { ActivityFeed } from "../_components/ActivityFeed";
 import {
   abbrev,
@@ -178,6 +179,20 @@ export async function TodayTab({
           {eventAnomaly && <AnomalyChip color={palette.green}   msg={eventAnomaly.message} />}
           {tokenAnomaly && <AnomalyChip color={palette.cyan}    msg={tokenAnomaly.message} />}
           {costAnomaly  && <AnomalyChip color={palette.magenta} msg={costAnomaly.message} />}
+        </div>
+      )}
+
+      {/* Repo x agent scoreboard */}
+      {data.repoAgentRollup.length > 0 && (
+        <div style={{ marginTop: space.x6 }}>
+          <Card accent={palette.purple}>
+            <CardHeader
+              title={`repo x agent scoreboard · last ${data.chartDays}d`}
+              hint="active span minutes, Claude Code/Codex event mix, tokens, commits, and PR throughput"
+              right={isOwnView ? <a href="/share" style={{ color: palette.cyan, textDecoration: "none" }}>invite teammate →</a> : undefined}
+            />
+            <RepoAgentRollupTable rows={data.repoAgentRollup} />
+          </Card>
         </div>
       )}
 

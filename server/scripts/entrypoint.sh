@@ -11,7 +11,7 @@
 
 set -e
 
-echo "[entrypoint] running migrations against ${DATABASE_URL%%@*}@..."
+echo "[entrypoint] running database migrations"
 
 for f in /app/db/migrations/*.sql; do
   echo "[entrypoint] applying $(basename "$f")"

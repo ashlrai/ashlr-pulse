@@ -34,7 +34,19 @@ import { Button } from "@/components/ui/Button";
 import { Input, Select, Field } from "@/components/ui/Input";
 import { palette, radius, space } from "@/lib/theme";
 
-const DEFAULT_FIELDS = ["ts", "source", "model", "tokens_input", "tokens_output", "repo_name"];
+const DEFAULT_FIELDS = [
+  "ts",
+  "source",
+  "model",
+  "duration_ms",
+  "tokens_input",
+  "tokens_output",
+  "tokens_reasoning",
+  "tool_calls_count",
+  "tool_calls_types",
+  "repo_name",
+  "cost_millicents",
+];
 
 async function createShareAction(formData: FormData): Promise<void> {
   "use server";

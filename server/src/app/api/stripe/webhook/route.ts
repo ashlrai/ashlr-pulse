@@ -13,11 +13,10 @@
  *     exact bytes; req.json() would normalize and break verification.
  *
  * Idempotency:
- *   - All UPDATEs are full-row writes — receiving the same event twice is
- *     a no-op.
- *   - We do NOT dedupe on event.id; Stripe retries can re-deliver after
- *     hours, and Pulse should always converge to "current state" rather
- *     than ignoring late events.
+ *   - We record Stripe event.id before side effects. Duplicate deliveries
+ *     return 200 without replaying writes.
+ *   - State updates still write full rows so out-of-order distinct events
+ *     converge from their own payloads.
  *
  * Events handled:
  *   - customer.subscription.created/updated  → setBillingState (plan, status, dates)
@@ -38,6 +37,8 @@ import {
   setBillingState,
   linkStripeCustomer,
   getOrgByStripeCustomerId,
+  markStripeWebhookEvent,
+  unmarkStripeWebhookEvent,
 } from "@/lib/org-db";
 import {
   mapSubscriptionStatus,
@@ -87,9 +88,18 @@ export async function POST(req: Request): Promise<Response> {
     return NextResponse.json({ error: "signature verify failed" }, { status: 400 });
   }
 
+  let eventMarked = false;
   try {
+    eventMarked = await markStripeWebhookEvent(event.id, event.type);
+    if (!eventMarked) {
+      log.info({ event_id: event.id, event_type: event.type }, "stripe webhook: duplicate ignored");
+      return NextResponse.json({ received: true, duplicate: true });
+    }
     await handleEvent(event);
   } catch (err) {
+    if (eventMarked) {
+      await unmarkStripeWebhookEvent(event.id).catch(() => {});
+    }
     // 500 → Stripe will retry with backoff. Log enough to debug but never
     // log secret-bearing fields from the event payload.
     log.error(

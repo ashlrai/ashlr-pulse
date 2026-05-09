@@ -38,7 +38,7 @@ export async function POST(req: Request): Promise<Response> {
     );
   }
   const token = authz.slice(7).trim();
-  const userId = await verifyPat(token);
+  const userId = await verifyPat(token, "heartbeat");
   if (!userId) {
     return NextResponse.json(
       { error: "unauthorized" },

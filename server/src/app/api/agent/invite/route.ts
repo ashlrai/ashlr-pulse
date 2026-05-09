@@ -1,14 +1,8 @@
 /**
  * POST /api/agent/invite — agent-facing one-shot invite creation.
  *
- * Mirrors /api/invite/create but uses PAT bearer auth (same pattern as
- * /api/agent/heartbeat). This unblocks `pulse-agent invite <email>`,
- * which the docs (AGENTS.md) advertise but couldn't be implemented
- * against /api/invite/create — that route is cookie-session-only by
- * design ("we want the human user intent, not an agent's").
- *
- * The PAT was already minted via browser-mediated approval, so this
- * endpoint *is* still proof of human intent; it just runs at the TTY.
+ * Mirrors /api/invite/create but uses an explicitly scoped PAT bearer auth.
+ * Default agent tokens do not include this scope.
  *
  * Body (all optional):
  *   {
@@ -57,7 +51,7 @@ export async function POST(req: Request): Promise<Response> {
     );
   }
   const token = authz.slice(7).trim();
-  const userId = await verifyPat(token);
+  const userId = await verifyPat(token, "invite:create");
   if (!userId) {
     return NextResponse.json(
       { error: "unauthorized" },

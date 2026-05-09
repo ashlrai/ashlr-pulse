@@ -49,8 +49,8 @@ export async function currentUser(): Promise<CurrentUser | null> {
 
 /**
  * Ensure the user has at least one org. If none exists, auto-creates one
- * using the local-part of their email as the slug (lowercased, non-alnum
- * chars replaced with hyphens). Returns the org id.
+ * with a slug tied to this local user id. Email local-parts are not unique
+ * across domains, so they must never be the sole org identity.
  */
 export async function ensureDefaultOrg(userId: string, email: string): Promise<string> {
   const db = sql();
@@ -63,25 +63,33 @@ export async function ensureDefaultOrg(userId: string, email: string): Promise<s
   `;
   if (existing) return existing.org_id;
 
-  // Derive slug from email local part.
+  // Derive a readable but collision-resistant slug from the email local
+  // part plus the stable local user id. Never upsert into an existing slug:
+  // if a collision somehow happens, selecting by membership remains the
+  // only way a user can join an org.
   const localPart = email.split("@")[0] ?? email;
-  const slug = localPart.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  const base = localPart.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "user";
+  const slug = `${base}-${userId.replace(/-/g, "").slice(0, 12)}`;
 
-  // Upsert org (slug may collide if same email logs in on two concurrent
-  // requests — ON CONFLICT keeps it idempotent).
   const [org] = await db<{ id: string }[]>`
     INSERT INTO org (name, slug)
     VALUES (${slug}, ${slug})
-    ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name
+    ON CONFLICT (slug) DO NOTHING
     RETURNING id::text AS id
   `;
+  const orgId = org?.id ?? (await db<{ id: string }[]>`
+    SELECT id::text AS id FROM org WHERE slug = ${slug}
+  `)[0]?.id;
+  if (!orgId) {
+    throw new Error("failed to create default org");
+  }
 
   await db`
     INSERT INTO membership (org_id, user_id, role)
-    VALUES (${org.id}, ${userId}, 'owner')
+    VALUES (${orgId}, ${userId}, 'owner')
     ON CONFLICT DO NOTHING
   `;
-  return org.id;
+  return orgId;
 }
 
 /**

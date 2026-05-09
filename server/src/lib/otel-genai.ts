@@ -113,7 +113,6 @@ export interface ActivityEventInsert {
   /** Content hash for null-span-id dedup. SHA-256 of
    *  (user_id, ts-second, model, tokens_in, tokens_out, repo, source). */
   dedup_key: string | null;
-  raw_otel_span: unknown;
 
   // ── Codex-specific (NULL for non-codex sources) ────────────────────────
   codex_plan_type: string | null;
@@ -357,8 +356,6 @@ export function spanToActivityEvent(
     cost_millicents: millicents,
     pricing_version: millicents != null ? PRICE_VERSION : null,
     dedup_key: dedupKey,
-    raw_otel_span: span,
-
     // Codex-specific. asInt/asString return null when the attribute is
     // absent, so non-codex sources end up with null in every codex_* field.
     codex_plan_type: asString(attrs, "ashlr.codex.plan_type"),

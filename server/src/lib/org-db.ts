@@ -349,3 +349,26 @@ export async function setBillingState(
     WHERE id = ${orgId}::uuid
   `;
 }
+
+/**
+ * Durable Stripe webhook idempotency. Returns true only for the first time
+ * an event ID is seen; duplicate deliveries should return 200 without
+ * replaying side effects.
+ */
+export async function markStripeWebhookEvent(
+  eventId: string,
+  eventType: string,
+): Promise<boolean> {
+  const db = sql();
+  const result = await db`
+    INSERT INTO stripe_webhook_event (event_id, event_type)
+    VALUES (${eventId}, ${eventType})
+    ON CONFLICT (event_id) DO NOTHING
+  `;
+  return result.count === 1;
+}
+
+export async function unmarkStripeWebhookEvent(eventId: string): Promise<void> {
+  const db = sql();
+  await db`DELETE FROM stripe_webhook_event WHERE event_id = ${eventId}`;
+}

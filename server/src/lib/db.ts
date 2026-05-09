@@ -6,7 +6,7 @@
  *
  * postgres-js rather than pg because it's sharper on types and has a
  * smaller surface for what we need (simple parameterized queries +
- * JSON handling for raw_otel_span).
+ * JSON handling for JSONB helper columns.
  */
 
 import postgres from "postgres";
@@ -27,7 +27,7 @@ export function sql(): postgres.Sql {
     idle_timeout: 30,
     connect_timeout: 10,
     // OTel uses nanosecond timestamps; keep JSON as string here so we don't
-    // lose precision when we route through the `raw_otel_span` column.
+    // lose precision when we route through JSONB helper columns.
     types: {
       bigint: postgres.BigInt,
     },

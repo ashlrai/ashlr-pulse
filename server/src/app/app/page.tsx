@@ -61,6 +61,8 @@ interface SearchParams {
   tab?: string;
   view?: string;
   project?: string;
+  accepted?: string;
+  from?: string;
 }
 
 const TABS = ["today", "trends", "compare", "costs", "tools"] as const;
@@ -109,7 +111,7 @@ export default async function Page({
   const me = await currentUser();
   if (!me) redirect("/login");
 
-  const { as, win, src, tab: tabParam } = await searchParams;
+  const { as, win, src, tab: tabParam, accepted, from } = await searchParams;
   const activeTab = resolveTab(tabParam);
   const windowOpt = resolveWindow(win);
 
@@ -240,6 +242,10 @@ export default async function Page({
     isOwnView,
   };
 
+  const acceptedGrant = accepted
+    ? (await listGrantsForViewer(me.id)).find((g) => !from || g.owner_email === from)
+    : undefined;
+
   return (
     <DashboardShell>
       <Header
@@ -255,6 +261,15 @@ export default async function Page({
           <Banner variant="info" title={`viewing ${peerLabel}'s activity`}>
             scope filtered by active peer-share grants ·{" "}
             <a href="/app" style={{ color: palette.cyan }}>back to your view</a>
+          </Banner>
+        </div>
+      )}
+
+      {accepted && acceptedGrant && !peerLabel && (
+        <div style={{ marginBottom: space.x4 }}>
+          <Banner variant="success" title="invite accepted">
+            You can now view {acceptedGrant.owner_email}&apos;s shared agentic-engineering stats.{" "}
+            <a href={`/app?as=${acceptedGrant.owner_id}`} style={{ color: palette.cyan }}>Open shared dashboard →</a>
           </Banner>
         </div>
       )}

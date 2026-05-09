@@ -83,6 +83,10 @@ export interface DashboardData {
   topRepos: { label: string; value: number }[];
   /** Top tools by call count, last 7d. */
   topTools: { label: string; value: number }[];
+  /** Repo × agent scoreboard over the selected chart window. */
+  repoAgentRollup: RepoAgentRollup[];
+  /** Tool × model call-count matrix over the selected chart window. */
+  toolModelMatrix: ToolModelMatrix;
   /** Hour-of-day × day-of-week heatmap, last 30d. */
   heatmap: { dow: number; hour: number; value: number }[];
   /** Cumulative cost over last 14d. */
@@ -135,6 +139,27 @@ export interface ProjectRollup {
   tokens: number;
   cents: number | null;
   repos: number;
+}
+
+export interface RepoAgentRollup {
+  repo: string;
+  claudeEvents: number;
+  codexEvents: number;
+  otherEvents: number;
+  claudeMinutes: number;
+  codexMinutes: number;
+  totalMinutes: number;
+  tokens: number;
+  costCents: number | null;
+  commits: number;
+  prsOpened: number;
+  prsMerged: number;
+}
+
+export interface ToolModelMatrix {
+  rows: string[];
+  cols: string[];
+  cells: number[][];
 }
 
 export interface DailyAggregate {
@@ -244,9 +269,13 @@ export async function loadDashboard(
     [userId, retParam, sourceParam, ...scope.repoParams],
   );
 
+  const githubRepoClauseSql = scope.repoClauseSql.replaceAll("repo_name", "gr.full_name");
+
   // Pull last chartDays of github commits (subjects only — public info).
   // github_event ⨝ github_account (account_id) ⨝ github_repo (repo_id).
-  // Retention cutoff at $2 (nullable) — see events query above.
+  // Retention cutoff at $2 (nullable) — see events query above. $3 is
+  // reserved as a dummy slot so peer-share repo params retain their $4+
+  // placeholder numbering from buildScopeFilter().
   const commits = await db.unsafe<{ subject: string; repo: string; sha: string; ts: string }[]>(
     `
     SELECT
@@ -261,24 +290,29 @@ export async function loadDashboard(
       AND ge.kind    = 'commit'
       AND ge.ts >= NOW() - INTERVAL '${chartDays} days'
       AND ($2::timestamptz IS NULL OR ge.ts >= $2::timestamptz)
+      AND ($3::text IS NULL OR $3::text IS NULL)
+      ${githubRepoClauseSql}
     ORDER BY ge.ts DESC
     LIMIT 50
     `,
-    [userId, retParam],
+    [userId, retParam, sourceParam, ...scope.repoParams],
   ).catch(() => [] as { subject: string; repo: string; sha: string; ts: string }[]);
 
   // Pull GitHub events for daily PR throughput aggregation.
-  const ghEvents = await db.unsafe<{ kind: string; ts: string }[]>(
+  const ghEvents = await db.unsafe<{ kind: string; repo: string; ts: string }[]>(
     `
-    SELECT ge.kind, ge.ts::text AS ts
+    SELECT ge.kind, gr.full_name AS repo, ge.ts::text AS ts
     FROM github_event ge
     JOIN github_account ga ON ga.id = ge.account_id
+    JOIN github_repo    gr ON gr.id = ge.repo_id
     WHERE ga.user_id = $1::uuid
       AND ge.ts >= NOW() - INTERVAL '${chartDays} days'
       AND ($2::timestamptz IS NULL OR ge.ts >= $2::timestamptz)
+      AND ($3::text IS NULL OR $3::text IS NULL)
+      ${githubRepoClauseSql}
     `,
-    [userId, retParam],
-  ).catch(() => [] as { kind: string; ts: string }[]);
+    [userId, retParam, sourceParam, ...scope.repoParams],
+  ).catch(() => [] as { kind: string; repo: string; ts: string }[]);
 
   // Load project rollups in parallel — small query, joins activity_event
   // to project_repo. Bounded to chartDays. Cost comes from cached
@@ -360,7 +394,7 @@ function blankBreakdown(): BreakdownRow {
 function computeAggregates(
   events: RawEvent[],
   commits: { subject: string; repo: string; sha: string; ts: string }[],
-  ghEvents: { kind: string; ts: string }[],
+  ghEvents: { kind: string; repo: string; ts: string }[],
   byProject: ProjectRollup[],
   chartDays: number,
   subscriptionSources: Set<string> | undefined,
@@ -379,6 +413,8 @@ function computeAggregates(
   const modelTotalMillicents = new Map<string, number>(); // model → total millicents over chart window
   const repoEvents = new Map<string, number>();
   const toolCounts = new Map<string, number>();
+  const repoAgents = new Map<string, RepoAgentAccumulator>();
+  const toolModels = new Map<string, Map<string, number>>();
   const heatmapMap = new Map<string, number>(); // "dow:hour" → events
   const cacheReadsByDay = new Map<string, number>();
   const cacheWritesByDay = new Map<string, number>();
@@ -412,6 +448,7 @@ function computeAggregates(
     const cacheTokens = sumCacheTokens(e);
     const total = billable + cacheTokens;
     const day = ts.toISOString().slice(0, 10);
+    const inChartWindow = ageMs <= chartDays * D_MS;
 
     addTo(today,     ageMs <= D_MS,                        billable, total, millicents);
     if (ageMs <= D_MS) {
@@ -443,7 +480,7 @@ function computeAggregates(
     }
 
     // chart-window source totals (controls render order in the legend).
-    if (ageMs <= chartDays * D_MS) {
+    if (inChartWindow) {
       sourceTotals.set(e.source, (sourceTotals.get(e.source) ?? 0) + total);
     }
 
@@ -454,7 +491,7 @@ function computeAggregates(
     }
 
     // Per-model cost over chart window (millicents) for byModel chart.
-    if (ageMs <= chartDays * D_MS && e.model && millicents != null && millicents > 0) {
+    if (inChartWindow && e.model && millicents != null && millicents > 0) {
       const dayMap = modelByDayMillicents.get(e.model) ?? new Map<string, number>();
       dayMap.set(day, (dayMap.get(day) ?? 0) + millicents);
       modelByDayMillicents.set(e.model, dayMap);
@@ -470,6 +507,34 @@ function computeAggregates(
         }
       } else if (e.tool_calls_count != null && e.tool_calls_count > 0) {
         toolCounts.set("(unspecified)", (toolCounts.get("(unspecified)") ?? 0) + e.tool_calls_count);
+      }
+    }
+
+    if (inChartWindow) {
+      if (e.repo_name) {
+        const r = ensureRepoAgent(repoAgents, e.repo_name);
+        const minutes = Math.max(0, e.duration_ms ?? 0) / 60_000;
+        if (e.source === "claude_code") {
+          r.claudeEvents += 1;
+          r.claudeMinutes += minutes;
+        } else if (e.source === "codex") {
+          r.codexEvents += 1;
+          r.codexMinutes += minutes;
+        } else {
+          r.otherEvents += 1;
+        }
+        r.totalMinutes += minutes;
+        r.tokens += billable;
+        if (millicents != null) r.millicents += millicents;
+      }
+
+      const model = shortModel(e.model ?? "unknown");
+      if (e.tool_calls_types && e.tool_calls_types.length > 0) {
+        for (const t of e.tool_calls_types) {
+          incrementToolModel(toolModels, t, model, 1);
+        }
+      } else if (e.tool_calls_count != null && e.tool_calls_count > 0) {
+        incrementToolModel(toolModels, "(unspecified)", model, e.tool_calls_count);
       }
     }
 
@@ -514,18 +579,23 @@ function computeAggregates(
   // GitHub PRs / reviews per day (chart window).
   const githubByDay = new Map<string, { commits: number; prs_opened: number; prs_merged: number; reviews: number }>();
   const ghTotals = { commits: 0, prs_opened: 0, prs_merged: 0, reviews: 0 };
+  const githubRepoTotals = new Map<string, { commits: number; prsOpened: number; prsMerged: number }>();
   for (const ev of ghEvents) {
     const day = ev.ts.slice(0, 10);
     const cur = githubByDay.get(day) ?? { commits: 0, prs_opened: 0, prs_merged: 0, reviews: 0 };
+    const repo = ensureGithubRepo(githubRepoTotals, ev.repo);
     if (ev.kind === "commit") {
       cur.commits += 1;
       ghTotals.commits += 1;
+      repo.commits += 1;
     } else if (ev.kind === "pr_opened") {
       cur.prs_opened += 1;
       ghTotals.prs_opened += 1;
+      repo.prsOpened += 1;
     } else if (ev.kind === "pr_merged") {
       cur.prs_merged += 1;
       ghTotals.prs_merged += 1;
+      repo.prsMerged += 1;
     } else if (ev.kind === "review" || ev.kind === "pr_reviewed") {
       cur.reviews += 1;
       ghTotals.reviews += 1;
@@ -613,6 +683,9 @@ function computeAggregates(
     .slice(0, 8)
     .map(([t, v]) => ({ label: t, value: v }));
 
+  const repoAgentRollup = buildRepoAgentRollup(repoAgents, githubRepoTotals);
+  const toolModelMatrix = buildToolModelMatrix(toolModels);
+
   const heatmap = [...heatmapMap.entries()].map(([k, v]) => {
     const [dow, hour] = k.split(":").map((x) => Number.parseInt(x, 10));
     return { dow, hour, value: v };
@@ -667,6 +740,8 @@ function computeAggregates(
     modelMix,
     topRepos,
     topTools,
+    repoAgentRollup,
+    toolModelMatrix,
     heatmap,
     costTrajectory,
     cacheEfficiency,
@@ -684,6 +759,112 @@ function computeAggregates(
 }
 
 // ---------- helpers ----------
+
+interface RepoAgentAccumulator {
+  claudeEvents: number;
+  codexEvents: number;
+  otherEvents: number;
+  claudeMinutes: number;
+  codexMinutes: number;
+  totalMinutes: number;
+  tokens: number;
+  millicents: number;
+}
+
+function ensureRepoAgent(map: Map<string, RepoAgentAccumulator>, repo: string): RepoAgentAccumulator {
+  const existing = map.get(repo);
+  if (existing) return existing;
+  const next: RepoAgentAccumulator = {
+    claudeEvents: 0,
+    codexEvents: 0,
+    otherEvents: 0,
+    claudeMinutes: 0,
+    codexMinutes: 0,
+    totalMinutes: 0,
+    tokens: 0,
+    millicents: 0,
+  };
+  map.set(repo, next);
+  return next;
+}
+
+function ensureGithubRepo(
+  map: Map<string, { commits: number; prsOpened: number; prsMerged: number }>,
+  repo: string,
+): { commits: number; prsOpened: number; prsMerged: number } {
+  const existing = map.get(repo);
+  if (existing) return existing;
+  const next = { commits: 0, prsOpened: 0, prsMerged: 0 };
+  map.set(repo, next);
+  return next;
+}
+
+function incrementToolModel(
+  map: Map<string, Map<string, number>>,
+  tool: string,
+  model: string,
+  count: number,
+): void {
+  const row = map.get(tool) ?? new Map<string, number>();
+  row.set(model, (row.get(model) ?? 0) + count);
+  map.set(tool, row);
+}
+
+function buildRepoAgentRollup(
+  repoAgents: Map<string, RepoAgentAccumulator>,
+  githubRepoTotals: Map<string, { commits: number; prsOpened: number; prsMerged: number }>,
+): RepoAgentRollup[] {
+  const repos = new Set<string>([...repoAgents.keys(), ...githubRepoTotals.keys()]);
+  return [...repos].map((repo) => {
+    const a = repoAgents.get(repo);
+    const gh = githubRepoTotals.get(repo);
+    return {
+      repo,
+      claudeEvents: Math.round(a?.claudeEvents ?? 0),
+      codexEvents: Math.round(a?.codexEvents ?? 0),
+      otherEvents: Math.round(a?.otherEvents ?? 0),
+      claudeMinutes: round1(a?.claudeMinutes ?? 0),
+      codexMinutes: round1(a?.codexMinutes ?? 0),
+      totalMinutes: round1(a?.totalMinutes ?? 0),
+      tokens: Math.round(a?.tokens ?? 0),
+      costCents: millicentsToCents(a?.millicents ?? 0),
+      commits: gh?.commits ?? 0,
+      prsOpened: gh?.prsOpened ?? 0,
+      prsMerged: gh?.prsMerged ?? 0,
+    };
+  }).sort((a, b) => (
+    b.totalMinutes - a.totalMinutes ||
+    (b.claudeEvents + b.codexEvents + b.otherEvents) - (a.claudeEvents + a.codexEvents + a.otherEvents) ||
+    b.commits - a.commits
+  )).slice(0, 12);
+}
+
+function buildToolModelMatrix(toolModels: Map<string, Map<string, number>>): ToolModelMatrix {
+  const rowTotals = [...toolModels.entries()]
+    .map(([tool, models]) => [tool, [...models.values()].reduce((a, b) => a + b, 0)] as const)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10);
+  const modelTotals = new Map<string, number>();
+  for (const [, models] of toolModels) {
+    for (const [model, count] of models) {
+      modelTotals.set(model, (modelTotals.get(model) ?? 0) + count);
+    }
+  }
+  const rows = rowTotals.map(([tool]) => tool);
+  const cols = [...modelTotals.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 8)
+    .map(([model]) => model);
+  const cells = rows.map((tool) => {
+    const models = toolModels.get(tool) ?? new Map<string, number>();
+    return cols.map((model) => models.get(model) ?? 0);
+  });
+  return { rows, cols, cells };
+}
+
+function round1(n: number): number {
+  return Math.round(n * 10) / 10;
+}
 
 interface SumBucket {
   events: number;

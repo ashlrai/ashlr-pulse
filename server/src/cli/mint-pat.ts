@@ -2,7 +2,7 @@
 /**
  * mint-pat.ts — generate a personal access token for the given user.
  *
- *   bun run src/cli/mint-pat.ts <user_id> <name>
+ *   bun run src/cli/mint-pat.ts <user_id> <name> [scope,scope]
  *
  * Prints the token to stdout exactly once. We persist only the SHA-256
  * hash, so this is the only chance to capture it. Pipe to a file or paste
@@ -12,12 +12,13 @@
 import { mintPat } from "../lib/pat";
 
 async function main(): Promise<void> {
-  const [userId, name] = process.argv.slice(2);
+  const [userId, name, scopesCsv] = process.argv.slice(2);
   if (!userId || !name) {
     console.error("usage: bun run src/cli/mint-pat.ts <user_id> <name>");
     process.exit(1);
   }
-  const { token, id } = await mintPat(userId, name);
+  const scopes = scopesCsv ? scopesCsv.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
+  const { token, id } = await mintPat(userId, name, scopes);
   console.log(`pat_id: ${id}`);
   console.log(`token:  ${token}`);
   console.log("\nstore this — we cannot show it again.");
