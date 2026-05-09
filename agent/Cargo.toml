@@ -1,6 +1,6 @@
 [package]
 name = "pulse-agent"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 license = "MIT"
 description = "Local agent for Ashlr Pulse: captures Claude Code, terminal AI CLIs (codex, aider, sgpt, …), and git activity, forwarding via OTLP/HTTP."
