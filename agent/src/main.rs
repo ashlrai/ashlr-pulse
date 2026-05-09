@@ -5,7 +5,7 @@
 //!   doctor  — validates config + connectivity, prints status
 //!   login   — stores PAT in OS keyring, writes stub config
 
-use pulse_agent::{auth, backfill, claude, config, git, heartbeat, invite, onboard, orchestrator, otlp, shell, state};
+use pulse_agent::{auth, backfill, claude, codex, config, git, heartbeat, invite, onboard, orchestrator, otlp, shell, state};
 
 use std::sync::Arc;
 
@@ -165,6 +165,22 @@ async fn cmd_run() -> Result<()> {
         git::run(repos, git_exporter, git_state, git_rx).await;
     });
 
+    // Codex CLI rollout-JSONL tailer — opt-in via codex.enabled (default true).
+    // Idle no-op if ~/.codex/sessions does not exist on this machine.
+    let codex_handle = if cfg.codex.enabled {
+        let codex_exporter = exporter.clone();
+        let codex_state    = state.clone();
+        let codex_rx       = shutdown_rx.clone();
+        let sessions_dir   = cfg.codex_sessions_dir();
+        info!(sessions = %sessions_dir.display(), "codex tailer enabled");
+        Some(tokio::spawn(async move {
+            codex::run(sessions_dir, codex_exporter, codex_state, codex_rx).await;
+        }))
+    } else {
+        info!("codex tailer disabled by config");
+        None
+    };
+
     // Heartbeat — pings the server every 60s so the dashboard can show
     // "agent: alive 30s ago" instead of going silently stale.
     let heartbeat_rx = shutdown_rx.clone();
@@ -196,6 +212,9 @@ async fn cmd_run() -> Result<()> {
 
     let _ = tokio::join!(claude_handle, git_handle, heartbeat_handle);
     if let Some(h) = shell_handle {
+        let _ = h.await;
+    }
+    if let Some(h) = codex_handle {
         let _ = h.await;
     }
     info!("pulse-agent stopped");
@@ -235,10 +254,32 @@ async fn cmd_doctor() -> Result<()> {
         }
 
         let offsets = db.list_file_offsets().unwrap_or_default();
-        println!("\nclaude session files tracked: {}", offsets.len());
-        if let Some((path, offset)) = offsets.last() {
+        let claude_offsets: Vec<_> = offsets.iter()
+            .filter(|(p, _)| !p.contains("/.codex/sessions/"))
+            .collect();
+        let codex_offsets: Vec<_> = offsets.iter()
+            .filter(|(p, _)| p.contains("/.codex/sessions/"))
+            .collect();
+        println!("\nclaude session files tracked: {}", claude_offsets.len());
+        if let Some((path, offset)) = claude_offsets.last() {
             println!("  last: {} @ {} bytes", path, offset);
         }
+        println!("codex rollout files tracked: {}", codex_offsets.len());
+        if let Some((path, offset)) = codex_offsets.last() {
+            println!("  last: {} @ {} bytes", path, offset);
+        }
+    }
+
+    // Codex source check — Codex CLI is optional; show what we found.
+    let codex_dir = cfg.codex_sessions_dir();
+    println!("\ncodex sessions dir: {}", codex_dir.display());
+    println!("codex enabled    : {}", cfg.codex.enabled);
+    if codex_dir.exists() {
+        let count = codex::walk_rollout_files(&codex_dir)
+            .map(|v| v.len()).unwrap_or(0);
+        println!("codex rollout files: {} discovered", count);
+    } else {
+        println!("codex rollout files: (sessions dir does not exist — Codex CLI not installed?)");
     }
 
     print!("\npinging {} ... ", cfg.server.url);

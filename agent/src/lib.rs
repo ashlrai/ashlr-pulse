@@ -3,6 +3,7 @@
 pub mod auth;
 pub mod backfill;
 pub mod claude;
+pub mod codex;
 pub mod config;
 pub mod git;
 pub mod heartbeat;

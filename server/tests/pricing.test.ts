@@ -184,6 +184,58 @@ describe("PRICE_VERSION", () => {
 });
 
 // ---------------------------------------------------------------------------
+// OpenAI gpt-5 family — Codex CLI emits these. Tests verify both that
+// the rate sheet entries are correct AND that normalizeModel handles
+// Codex's dotted form (gpt-5.5) plus the -codex suffix.
+// ---------------------------------------------------------------------------
+
+describe("rate sheet — OpenAI gpt-5 family (Codex)", () => {
+  test("1M input on gpt-5 → 125¢ ($1.25/M)", () => {
+    expect(costUsdCents({ model: "gpt-5", tokens_input: 1_000_000, tokens_output: 0 })).toBe(125);
+  });
+  test("1M output on gpt-5 → 1000¢ ($10/M)", () => {
+    expect(costUsdCents({ model: "gpt-5", tokens_input: 0, tokens_output: 1_000_000 })).toBe(1000);
+  });
+  test("1M cached_input on gpt-5 → 62.5¢ (50% of input rate)", () => {
+    // tokens_cache_read maps to cached_input on the OpenAI side.
+    const m = costMillicents({ model: "gpt-5", tokens_input: 0, tokens_output: 0, tokens_cache_read: 1_000_000 });
+    expect(m).toBe(62500); // 62.5¢ in millicents
+  });
+  test("gpt-5-mini cheaper than gpt-5 across the board", () => {
+    const big   = costUsdCents({ model: "gpt-5",      tokens_input: 1_000_000, tokens_output: 1_000_000 });
+    const small = costUsdCents({ model: "gpt-5-mini", tokens_input: 1_000_000, tokens_output: 1_000_000 });
+    expect(big).toBeGreaterThan(small ?? 0);
+    expect(small).toBe(225); // 25¢ + 200¢
+  });
+  test("gpt-5-nano is the floor", () => {
+    const cents = costUsdCents({ model: "gpt-5-nano", tokens_input: 1_000_000, tokens_output: 1_000_000 });
+    expect(cents).toBe(45); // 5¢ + 40¢
+  });
+});
+
+describe("normalizeModel — Codex dotted variants", () => {
+  // Codex emits raw model strings like "gpt-5.5" with a dot. These must
+  // map cleanly to our table keys so cost is computed, not silently null.
+  test.each([
+    ["gpt-5",           "gpt-5"],
+    ["gpt-5.4",         "gpt-5-4"],
+    ["gpt-5.5",         "gpt-5-5"],
+    ["gpt-5.4-mini",    "gpt-5-4-mini"],
+    ["gpt-5.5-mini",    "gpt-5-5-mini"],
+    ["gpt-5-codex",     "gpt-5"],   // -codex suffix on subscription turns
+    ["gpt-5.5-codex",   "gpt-5-5"],
+  ])("%s costs > 0 (rate-sheet hit)", (raw, _canonical) => {
+    const cents = costUsdCents({ model: raw, tokens_input: 1_000_000, tokens_output: 0 });
+    expect(cents).not.toBeNull();
+    expect(cents).toBeGreaterThan(0);
+  });
+
+  test("unknown gpt-future-model → null (no fake dollars)", () => {
+    expect(costMillicents({ model: "gpt-future-model-7", tokens_input: 1_000_000, tokens_output: 0 })).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Newly-added models from Anthropic's published rate card (2026-05-06).
 // One canary test per model — proves the rate sheet entries are correct
 // and that normalizeModel maps the dated/legacy variants to them.

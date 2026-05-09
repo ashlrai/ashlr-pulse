@@ -32,7 +32,7 @@
  * at ingest so we can re-price old rows when this number advances.
  */
 
-export const PRICE_VERSION = 2 as const;
+export const PRICE_VERSION = 3 as const;
 export function priceVersion(): number { return PRICE_VERSION; }
 
 export interface Price {
@@ -197,10 +197,38 @@ const PRICES: Record<string, Price[]> = {
     },
   ],
 
-  // ── OpenAI ── (cache rates ignored — OpenAI bundles cached input
-  //                into a single discounted rate)
-  "gpt-4o":      [{ effective: "2025-01-01", input_per_m_usd: 2.5, output_per_m_usd: 10 }],
-  "gpt-4o-mini": [{ effective: "2025-01-01", input_per_m_usd: 0.15, output_per_m_usd: 0.6 }],
+  // ── OpenAI ── OpenAI charges cached input at 50% of base input rate.
+  // We populate cache_read_per_m_usd accordingly. There's no separate
+  // cache write fee — only the input is discounted on cached reads.
+  // Codex CLI emits `cached_input_tokens` (mapped to tokens_cache_read).
+  "gpt-4o":      [{ effective: "2025-01-01", input_per_m_usd: 2.5,  output_per_m_usd: 10,
+                    cache_read_per_m_usd: 1.25 }],
+  "gpt-4o-mini": [{ effective: "2025-01-01", input_per_m_usd: 0.15, output_per_m_usd: 0.6,
+                    cache_read_per_m_usd: 0.075 }],
+
+  // gpt-5 family — Codex CLI uses these. Rate sheet from OpenAI's
+  // public pricing page; reasoning_output_tokens are billed at the
+  // output rate (no separate reasoning rate today).
+  "gpt-5":       [{ effective: "2025-08-01", input_per_m_usd: 1.25, output_per_m_usd: 10,
+                    cache_read_per_m_usd: 0.625 }],
+  "gpt-5-mini":  [{ effective: "2025-08-01", input_per_m_usd: 0.25, output_per_m_usd: 2,
+                    cache_read_per_m_usd: 0.125 }],
+  "gpt-5-nano":  [{ effective: "2025-08-01", input_per_m_usd: 0.05, output_per_m_usd: 0.40,
+                    cache_read_per_m_usd: 0.025 }],
+  // gpt-5.4 / gpt-5.5 — newer revisions on the same base sheet. If
+  // OpenAI publishes distinct rates we'll add date-rolled entries; in
+  // the meantime these reuse the gpt-5 sheet as the most-conservative
+  // approximation. The subscription toggle (migration 0023) means most
+  // Codex users see $0 anyway — these rates only matter for users on
+  // raw OpenAI API access.
+  "gpt-5-4":     [{ effective: "2026-02-01", input_per_m_usd: 1.25, output_per_m_usd: 10,
+                    cache_read_per_m_usd: 0.625 }],
+  "gpt-5-4-mini":[{ effective: "2026-02-01", input_per_m_usd: 0.25, output_per_m_usd: 2,
+                    cache_read_per_m_usd: 0.125 }],
+  "gpt-5-5":     [{ effective: "2026-04-01", input_per_m_usd: 1.25, output_per_m_usd: 10,
+                    cache_read_per_m_usd: 0.625 }],
+  "gpt-5-5-mini":[{ effective: "2026-04-01", input_per_m_usd: 0.25, output_per_m_usd: 2,
+                    cache_read_per_m_usd: 0.125 }],
 };
 
 /**
@@ -226,6 +254,17 @@ export function normalizeModel(raw: string): string {
   // Strip a trailing dated suffix `-YYYYMMDD`.
   const stripped = raw.replace(/-\d{8}$/, "");
   if (stripped !== raw && stripped in PRICES) return stripped;
+
+  // Codex emits dotted version forms like `gpt-5.5`, `gpt-5.4-mini`.
+  // Convert dots to dashes so they hit our table keys.
+  if (stripped.startsWith("gpt-")) {
+    const dashed = stripped.replace(/\./g, "-");
+    if (dashed in PRICES) return dashed;
+    // Codex sometimes appends a -codex suffix on subscription-tracked
+    // turns ("gpt-5-codex"); normalize to base gpt-5.
+    const minusCodex = dashed.replace(/-codex$/, "");
+    if (minusCodex in PRICES) return minusCodex;
+  }
 
   // Legacy naming: `claude-3-X-Y` → `claude-Y-3-X`. We rewrite
   // `claude-<major>-<minor>-<family>(-<...>)` to `claude-<family>-<major>-<minor>`,

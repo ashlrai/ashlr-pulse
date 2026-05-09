@@ -48,8 +48,22 @@
  *
  *   ashlr.source  — when present, overrides the auto-derived source label.
  *                   Must be one of: 'claude_code' | 'cursor' | 'copilot' |
- *                   'wakatime' | 'git' | 'shell' | 'ashlr_plugin'.
- *                   Used by the pulse-agent to tag git-commit spans as "git".
+ *                   'wakatime' | 'git' | 'shell' | 'ashlr_plugin' | 'codex'.
+ *                   Used by the pulse-agent to tag git-commit spans as "git",
+ *                   Codex rollout events as "codex", etc.
+ *
+ * Codex-specific attributes (only present when ashlr.source = 'codex'):
+ *
+ *   gen_ai.openai.context_window      -> codex_context_window
+ *   ashlr.codex.cli_version           -> codex_cli_version
+ *   ashlr.codex.originator            -> codex_originator
+ *   ashlr.codex.parent_thread_id      -> codex_parent_thread_id
+ *   ashlr.codex.plan_type             -> codex_plan_type
+ *   ashlr.codex.rate_limit_primary_pct   -> codex_rate_limit_primary_pct
+ *   ashlr.codex.rate_limit_secondary_pct -> codex_rate_limit_secondary_pct
+ *   ashlr.codex.sandbox_policy        -> codex_sandbox_policy
+ *   ashlr.codex.approval_policy       -> codex_approval_policy
+ *   ashlr.codex.effort                -> codex_effort
  *
  * Unknown / missing attributes map to NULL — the schema is designed for
  * partial data from heterogeneous sources.
@@ -100,6 +114,18 @@ export interface ActivityEventInsert {
    *  (user_id, ts-second, model, tokens_in, tokens_out, repo, source). */
   dedup_key: string | null;
   raw_otel_span: unknown;
+
+  // ── Codex-specific (NULL for non-codex sources) ────────────────────────
+  codex_plan_type: string | null;
+  codex_originator: string | null;
+  codex_parent_thread_id: string | null;
+  codex_cli_version: string | null;
+  codex_context_window: number | null;
+  codex_rate_limit_primary_pct: number | null;
+  codex_rate_limit_secondary_pct: number | null;
+  codex_sandbox_policy: string | null;
+  codex_approval_policy: string | null;
+  codex_effort: string | null;
 }
 
 function attrValue(a: OtlpSpanAttribute): string | number | boolean | null {
@@ -233,7 +259,7 @@ export function spanToActivityEvent(
   // ashlr.source overrides automatic detection. Validated against the known
   // enum so arbitrary strings can't slip through to the DB.
   const ALLOWED_SOURCES = new Set([
-    "claude_code", "cursor", "copilot", "wakatime", "git", "shell", "ashlr_plugin",
+    "claude_code", "cursor", "copilot", "wakatime", "git", "shell", "ashlr_plugin", "codex",
   ]);
   const sourceOverride = asString(attrs, "ashlr.source");
   const source = sourceOverride && ALLOWED_SOURCES.has(sourceOverride)
@@ -332,5 +358,18 @@ export function spanToActivityEvent(
     pricing_version: millicents != null ? PRICE_VERSION : null,
     dedup_key: dedupKey,
     raw_otel_span: span,
+
+    // Codex-specific. asInt/asString return null when the attribute is
+    // absent, so non-codex sources end up with null in every codex_* field.
+    codex_plan_type: asString(attrs, "ashlr.codex.plan_type"),
+    codex_originator: asString(attrs, "ashlr.codex.originator"),
+    codex_parent_thread_id: asString(attrs, "ashlr.codex.parent_thread_id"),
+    codex_cli_version: asString(attrs, "ashlr.codex.cli_version"),
+    codex_context_window: asInt(attrs, "gen_ai.openai.context_window"),
+    codex_rate_limit_primary_pct: asInt(attrs, "ashlr.codex.rate_limit_primary_pct"),
+    codex_rate_limit_secondary_pct: asInt(attrs, "ashlr.codex.rate_limit_secondary_pct"),
+    codex_sandbox_policy: asString(attrs, "ashlr.codex.sandbox_policy"),
+    codex_approval_policy: asString(attrs, "ashlr.codex.approval_policy"),
+    codex_effort: asString(attrs, "ashlr.codex.effort"),
   };
 }

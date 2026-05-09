@@ -13,6 +13,9 @@ pub struct Config {
     pub claude: ClaudeConfig,
 
     #[serde(default)]
+    pub codex: CodexConfig,
+
+    #[serde(default)]
     pub repos: Vec<RepoConfig>,
 
     #[serde(default)]
@@ -69,6 +72,24 @@ impl Default for ClaudeConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CodexConfig {
+    /// Enable the Codex CLI rollout-JSONL tailer. Default true; set false
+    /// to disable even when ~/.codex/sessions exists.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Directory that contains the `YYYY/MM/DD/rollout-*.jsonl` hierarchy.
+    /// Defaults to `~/.codex/sessions`.
+    pub sessions_dir: Option<String>,
+}
+
+impl Default for CodexConfig {
+    fn default() -> Self {
+        CodexConfig { enabled: true, sessions_dir: None }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RepoConfig {
     pub path: String,
     /// Override for the repo name sent to the server. If absent, derived from
@@ -109,6 +130,10 @@ url = "{url}"
 [claude]
 # projects_dir = "~/.claude"
 
+[codex]
+# enabled = true
+# sessions_dir = "~/.codex/sessions"
+
 # [[repos]]
 # path = "/path/to/your/repo"
 "#
@@ -130,6 +155,20 @@ url = "{url}"
         }
     }
 
+    /// Resolved Codex sessions directory (parent of YYYY/MM/DD hierarchy).
+    /// Defaults to `~/.codex/sessions`.
+    pub fn codex_sessions_dir(&self) -> PathBuf {
+        match &self.codex.sessions_dir {
+            Some(p) => expand_tilde(p),
+            None => {
+                let mut p = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+                p.push(".codex");
+                p.push("sessions");
+                p
+            }
+        }
+    }
+
     /// Resolved shell-hook buffer path. Defaults to
     /// `~/.local/share/pulse-agent/shell-events.jsonl` (matches what the
     /// hook script writes to).
@@ -146,6 +185,7 @@ impl Default for Config {
         Config {
             server: ServerConfig::default(),
             claude: ClaudeConfig::default(),
+            codex: CodexConfig::default(),
             repos: Vec::new(),
             shell: ShellConfig::default(),
         }

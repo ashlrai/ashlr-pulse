@@ -22,6 +22,7 @@ use serde::Deserialize;
 use tracing::{info, warn};
 
 use crate::claude::{git_info_from_dir, parse_iso8601_to_ns};
+use crate::codex;
 use crate::config::Config;
 use crate::otlp::OtlpExporter;
 use crate::span::{now_ns, SpanBuilder};
@@ -60,16 +61,29 @@ pub async fn run(since_arg: &str, cfg: &Config, exporter: Arc<OtlpExporter>) -> 
     info!(cutoff_ns, cutoff_human, "backfill starting");
 
     let projects = cfg.claude_projects_dir().join("projects");
-    if !projects.exists() {
-        bail!("no Claude projects dir at {}", projects.display());
+    let codex_sessions = cfg.codex_sessions_dir();
+    if !projects.exists() && !codex_sessions.exists() {
+        bail!(
+            "no source dirs found — neither {} nor {} exists",
+            projects.display(),
+            codex_sessions.display(),
+        );
     }
 
     let mut total_seen = 0usize;
     let mut total_emitted = 0usize;
     let mut total_skipped_old = 0usize;
     let mut total_failed = 0usize;
+    let mut total_codex_seen = 0usize;
+    let mut total_codex_emitted = 0usize;
+    let mut total_codex_skipped_old = 0usize;
+    let mut total_codex_failed = 0usize;
 
-    for path in walk_jsonl(&projects)? {
+    if !projects.exists() {
+        info!("skipping claude backfill: {} does not exist", projects.display());
+    }
+
+    for path in if projects.exists() { walk_jsonl(&projects)? } else { Vec::new() } {
         // Skip files whose mtime is before the cutoff entirely — there
         // can't be any in-window lines in them.
         if let Ok(meta) = std::fs::metadata(&path) {
@@ -97,18 +111,227 @@ pub async fn run(since_arg: &str, cfg: &Config, exporter: Arc<OtlpExporter>) -> 
         }
     }
 
+    // ── Codex rollout backfill ─────────────────────────────────────────────
+    if cfg.codex.enabled && codex_sessions.exists() {
+        let rollouts = codex::walk_rollout_files(&codex_sessions).unwrap_or_default();
+        for path in rollouts {
+            // Skip files whose mtime is before the cutoff (no in-window lines).
+            if let Ok(meta) = std::fs::metadata(&path) {
+                if let Ok(mtime) = meta.modified() {
+                    let mtime_ns = mtime
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos();
+                    if mtime_ns < cutoff_ns { continue; }
+                }
+            }
+            match process_codex_one(&path, cutoff_ns, &exporter).await {
+                Ok((seen, emitted, old)) => {
+                    total_codex_seen += seen;
+                    total_codex_emitted += emitted;
+                    total_codex_skipped_old += old;
+                }
+                Err(e) => {
+                    total_codex_failed += 1;
+                    warn!("backfill: codex {} failed: {e:#}", path.display());
+                }
+            }
+        }
+    }
+
     println!();
     println!("=== backfill complete ===");
-    println!("scanned:    {total_seen} assistant lines");
-    println!("emitted:    {total_emitted} spans (idempotent — server dedups by span_id)");
-    println!("skipped:    {total_skipped_old} (older than cutoff)");
+    println!("[claude] scanned:    {total_seen} assistant lines");
+    println!("[claude] emitted:    {total_emitted} spans (idempotent — server dedups by span_id)");
+    println!("[claude] skipped:    {total_skipped_old} (older than cutoff)");
     if total_failed > 0 {
-        println!("FAILED:     {total_failed} files (see warnings above)");
+        println!("[claude] FAILED:     {total_failed} files (see warnings above)");
+    }
+    println!("[codex]  scanned:    {total_codex_seen} token_count events");
+    println!("[codex]  emitted:    {total_codex_emitted} spans");
+    println!("[codex]  skipped:    {total_codex_skipped_old} (older than cutoff)");
+    if total_codex_failed > 0 {
+        println!("[codex]  FAILED:     {total_codex_failed} files (see warnings above)");
     }
     println!();
     println!("Note: per-file offset watermarks are unchanged — `pulse-agent run`");
     println!("      resumes from where it was, with no gaps and no double-counting.");
     Ok(())
+}
+
+// ── Codex backfill: minimal replay of a rollout file ─────────────────────
+//
+// Mirrors codex::process_file but ignores the watermark and applies a
+// timestamp cutoff. Reuses the same types via codex private state where
+// possible — duplicating the JSON shapes here avoids leaking internal
+// parsing details and keeps backfill standalone.
+
+#[derive(Debug, Deserialize)]
+struct CodexLine {
+    timestamp: Option<String>,
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    payload: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct CodexSessionMeta {
+    cli_version: Option<String>,
+    originator: Option<String>,
+    cwd: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct CodexTurnContext {
+    turn_id: Option<String>,
+    cwd: Option<String>,
+    model: Option<String>,
+    approval_policy: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CodexEventMsg {
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    info: Option<CodexTokenInfo>,
+    rate_limits: Option<CodexRateLimits>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CodexTokenInfo {
+    last_token_usage: Option<CodexTokenUsage>,
+    model_context_window: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CodexTokenUsage {
+    input_tokens: Option<i64>,
+    cached_input_tokens: Option<i64>,
+    output_tokens: Option<i64>,
+    reasoning_output_tokens: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct CodexRateLimits {
+    plan_type: Option<String>,
+}
+
+async fn process_codex_one(
+    path: &std::path::Path,
+    cutoff_ns: u128,
+    exporter: &OtlpExporter,
+) -> Result<(usize, usize, usize)> {
+    let f = OpenOptions::new()
+        .read(true)
+        .open(path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    let reader = BufReader::new(f);
+
+    let session_id = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .and_then(|stem| {
+            if stem.len() >= 36 { Some(stem[stem.len() - 36..].to_string()) } else { None }
+        });
+
+    let mut cli_version: Option<String> = None;
+    let mut originator: Option<String> = None;
+    let mut session_cwd: Option<String> = None;
+    let mut turn_id: Option<String> = None;
+    let mut turn_cwd: Option<String> = None;
+    let mut model: Option<String> = None;
+    let mut approval: Option<String> = None;
+
+    let mut seen = 0usize;
+    let mut emitted = 0usize;
+    let mut skipped_old = 0usize;
+
+    for line in reader.lines() {
+        let line = line?;
+        if line.trim().is_empty() { continue; }
+
+        let parsed: CodexLine = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let payload = match parsed.payload {
+            Some(p) => p,
+            None => continue,
+        };
+
+        match parsed.kind.as_deref().unwrap_or("") {
+            "session_meta" => {
+                if let Ok(m) = serde_json::from_value::<CodexSessionMeta>(payload) {
+                    cli_version = m.cli_version;
+                    originator = m.originator;
+                    session_cwd = m.cwd;
+                }
+            }
+            "turn_context" => {
+                if let Ok(tc) = serde_json::from_value::<CodexTurnContext>(payload) {
+                    turn_id = tc.turn_id;
+                    turn_cwd = tc.cwd;
+                    model = tc.model;
+                    approval = tc.approval_policy;
+                }
+            }
+            "event_msg" => {
+                let ev: CodexEventMsg = match serde_json::from_value(payload) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                if ev.kind.as_deref() != Some("token_count") { continue; }
+                let info = match ev.info { Some(i) => i, None => continue };
+                let usage = match info.last_token_usage { Some(u) => u, None => continue };
+                seen += 1;
+
+                let ts_ns = parsed.timestamp.as_deref()
+                    .and_then(parse_iso8601_to_ns)
+                    .unwrap_or_else(now_ns);
+                if ts_ns < cutoff_ns {
+                    skipped_old += 1;
+                    continue;
+                }
+
+                let cwd_for_git = turn_cwd.as_deref().or(session_cwd.as_deref());
+                let (repo_name, git_branch) = match cwd_for_git {
+                    Some(d) => git_info_from_dir(d),
+                    None => (None, None),
+                };
+                let plan_type = ev.rate_limits.and_then(|r| r.plan_type);
+
+                let span = SpanBuilder::new("gen_ai.request", ts_ns, ts_ns)
+                    .attr_str("ashlr.source", "codex")
+                    .attr_str("gen_ai.system", "openai")
+                    .attr_str_opt("gen_ai.request.model", model.as_deref())
+                    .attr_int_opt("gen_ai.usage.input_tokens", usage.input_tokens)
+                    .attr_int_opt("gen_ai.usage.cache_read_tokens", usage.cached_input_tokens)
+                    .attr_int_opt("gen_ai.usage.output_tokens", usage.output_tokens)
+                    .attr_int_opt("gen_ai.usage.reasoning_tokens", usage.reasoning_output_tokens)
+                    .attr_int_opt("gen_ai.openai.context_window", info.model_context_window)
+                    .attr_str_opt("ashlr.codex.cli_version", cli_version.as_deref())
+                    .attr_str_opt("ashlr.codex.originator", originator.as_deref())
+                    .attr_str_opt("ashlr.codex.plan_type", plan_type.as_deref())
+                    .attr_str_opt("ashlr.codex.approval_policy", approval.as_deref())
+                    .attr_str_opt("ashlr.codex.session_id", session_id.as_deref())
+                    .attr_str_opt("ashlr.codex.turn_id", turn_id.as_deref())
+                    .attr_str_opt("claude.repo.name", repo_name.as_deref())
+                    .attr_str_opt("claude.git.branch", git_branch.as_deref())
+                    .build();
+
+                if let Err(e) = exporter.export(&span).await {
+                    warn!("backfill: codex export failed (will retry): {e:#}");
+                    continue;
+                }
+                emitted += 1;
+                if emitted % 50 == 0 {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok((seen, emitted, skipped_old))
 }
 
 async fn process_one(

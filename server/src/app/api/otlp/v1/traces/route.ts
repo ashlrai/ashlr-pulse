@@ -17,6 +17,7 @@
 import { NextResponse } from "next/server";
 import { sql } from "@/lib/db";
 import { spanToActivityEvent } from "@/lib/otel-genai";
+import { primaryOrgForUser, maybeAutoDefaultCodexSubscription } from "@/lib/org-db";
 import { verifyPat } from "@/lib/pat";
 import { checkBucket } from "@/lib/rate-limit";
 import { log, requestId } from "@/lib/logger";
@@ -173,6 +174,16 @@ export async function POST(req: Request): Promise<Response> {
         "pricing_version",
         "dedup_key",
         "raw_otel_span",
+        "codex_plan_type",
+        "codex_originator",
+        "codex_parent_thread_id",
+        "codex_cli_version",
+        "codex_context_window",
+        "codex_rate_limit_primary_pct",
+        "codex_rate_limit_secondary_pct",
+        "codex_sandbox_policy",
+        "codex_approval_policy",
+        "codex_effort",
       ])}
       ON CONFLICT DO NOTHING
     `;
@@ -194,6 +205,27 @@ export async function POST(req: Request): Promise<Response> {
       { error: "db insert failed", detail: message },
       { status: 500, headers: { "x-request-id": rid } },
     );
+  }
+
+  // Auto-default Codex to subscription mode on first sight of a
+  // Plus/Pro/Team plan_type. Idempotent at the org level — the helper
+  // only sets the key when it's currently absent. Fire-and-forget; ingest
+  // success doesn't depend on this completing.
+  const codexRow = rows.find((r) => r.source === "codex" && r.codex_plan_type);
+  if (codexRow?.codex_plan_type) {
+    try {
+      const org = await primaryOrgForUser(userId);
+      if (org) {
+        await maybeAutoDefaultCodexSubscription(org.id, codexRow.codex_plan_type);
+      }
+    } catch (err) {
+      // Don't fail the ingest if this side-effect errors.
+      log.warn({
+        msg: "otlp: codex auto-default failed",
+        request_id: rid,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   const dedup = rows.length - inserted;

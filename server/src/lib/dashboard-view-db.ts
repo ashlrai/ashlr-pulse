@@ -33,7 +33,7 @@ export interface DashboardView {
 
 const ALLOWED_WIN = new Set(["7", "14", "30", "90"]);
 const ALLOWED_SOURCES = new Set([
-  "claude_code", "cursor", "copilot", "wakatime", "git", "shell", "ashlr_plugin",
+  "claude_code", "cursor", "copilot", "wakatime", "git", "shell", "ashlr_plugin", "codex",
 ]);
 
 /**

@@ -88,6 +88,7 @@ export const chartColors = [
  */
 export const sourceColor: Record<string, string> = {
   claude_code:  palette.green,
+  codex:        "#7DFFB3",   // OpenAI-tinted lighter green; sits next to Claude in legends without clashing
   cursor:       palette.cyan,
   copilot:      palette.purple,
   wakatime:     palette.amber,

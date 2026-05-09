@@ -11,7 +11,11 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { sql } from "@/lib/db";
 import { currentUser } from "@/lib/current-user";
-import { primaryOrgForUser, isOrgAdmin, setBillingMode } from "@/lib/org-db";
+import {
+  primaryOrgForUser, isOrgAdmin, setBillingMode,
+  setSourceSubscriptionMode, setMonthlyBudgetUsd,
+  type PerSourceMode, type SourceSubscriptionModes,
+} from "@/lib/org-db";
 import { type BillingMode, BILLING_MODE_MONTHLY_CAP_USD, isSubscriptionMode } from "@/lib/plan-gate";
 
 import { Header } from "@/components/Header";
@@ -99,6 +103,48 @@ async function updateBillingModeAction(formData: FormData): Promise<void> {
   redirect("/settings?ok=1");
 }
 
+async function updatePerSourceSubscriptionAction(formData: FormData): Promise<void> {
+  "use server";
+  const me = await currentUser();
+  if (!me) redirect("/login");
+
+  const org = await primaryOrgForUser(me.id);
+  if (!org) redirect(`/settings?error=${encodeURIComponent("no org")}`);
+  if (!(await isOrgAdmin(org.id, me.id))) {
+    redirect(`/settings?error=${encodeURIComponent("admin required")}`);
+  }
+
+  // Form encodes one entry per source: `mode_${source}` = "subscription" | "api_priced" | "default".
+  // "default" removes the per-source override (falls back to billing_mode).
+  const SOURCES = ["claude_code", "codex", "cursor", "copilot", "shell", "git", "wakatime", "ashlr_plugin"];
+  const allowedModes: PerSourceMode[] = ["subscription", "api_priced"];
+
+  for (const src of SOURCES) {
+    const raw = String(formData.get(`mode_${src}`) ?? "default");
+    if (raw === "default") {
+      try { await setSourceSubscriptionMode(org.id, src, null); } catch { /* unknown source — ignore */ }
+    } else if (allowedModes.includes(raw as PerSourceMode)) {
+      try { await setSourceSubscriptionMode(org.id, src, raw as PerSourceMode); } catch { /* ignore */ }
+    }
+  }
+
+  // Optional monthly budget (used by /forecast). Empty string = clear.
+  const budgetRaw = String(formData.get("monthly_budget_usd") ?? "").trim();
+  if (budgetRaw === "") {
+    await setMonthlyBudgetUsd(org.id, null);
+  } else {
+    const n = Number(budgetRaw);
+    if (Number.isFinite(n) && n >= 0 && n < 1_000_000) {
+      await setMonthlyBudgetUsd(org.id, n);
+    }
+  }
+
+  revalidatePath("/settings");
+  revalidatePath("/app");
+  revalidatePath("/forecast");
+  redirect("/settings?ok=1");
+}
+
 async function sendTestDigestAction(): Promise<void> {
   "use server";
   const me = await currentUser();
@@ -144,6 +190,8 @@ export default async function SettingsPage({
   ]);
   const billingMode: BillingMode = (org?.billing_mode ?? "api") as BillingMode;
   const monthlyCap = BILLING_MODE_MONTHLY_CAP_USD[billingMode];
+  const sourceModes: SourceSubscriptionModes = org?.source_subscription_modes ?? {};
+  const monthlyBudget = org?.monthly_budget_usd ?? null;
 
   return (
     <DashboardShell maxWidth={760}>
@@ -235,6 +283,63 @@ export default async function SettingsPage({
 
             <div style={{ display: "flex", gap: space.x3, alignItems: "center", marginTop: space.x4 }}>
               <Button type="submit" variant="primary">Save mode</Button>
+            </div>
+          </Card>
+        </form>
+
+        <form action={updatePerSourceSubscriptionAction}>
+          <Card>
+            <CardHeader
+              title="per-source subscription"
+              hint="exclude subscription-covered sources from headline cost totals"
+            />
+            <p style={{ color: palette.textDim, fontSize: 12, lineHeight: 1.6, margin: `0 0 ${space.x3}px` }}>
+              For each source, choose whether usage is billed via API
+              pay-as-you-go (rate-card cost = real bill) or covered by a
+              subscription (Codex via ChatGPT Pro, Copilot via the
+              GitHub plan, etc.). Subscription-flagged sources are
+              shown with <strong>$0 effective cost</strong> on stat cards
+              and trajectory charts — but the rate-card cost remains
+              visible in per-source breakdowns so the
+              "what would API cost" narrative stays intact. Codex
+              auto-defaults to subscription when the agent reports a
+              Plus/Pro plan_type.
+            </p>
+
+            {([
+              ["claude_code",  "Claude Code"],
+              ["codex",        "Codex CLI"],
+              ["cursor",       "Cursor"],
+              ["copilot",      "GitHub Copilot"],
+              ["shell",        "Shell-hook (other CLIs)"],
+              ["wakatime",     "WakaTime"],
+              ["ashlr_plugin", "ashlr plugin"],
+            ] as const).map(([src, label]) => {
+              const cur = sourceModes[src] ?? "default";
+              return (
+                <Field key={src} label={label}>
+                  <Select name={`mode_${src}`} defaultValue={cur}>
+                    <option value="default">default (use billing_mode above)</option>
+                    <option value="subscription">subscription — exclude from cost totals</option>
+                    <option value="api_priced">API-priced — include in cost totals</option>
+                  </Select>
+                </Field>
+              );
+            })}
+
+            <Field label="Monthly budget (USD, optional — used by /forecast burn-down)">
+              <Input
+                type="number"
+                step="0.01"
+                min="0"
+                name="monthly_budget_usd"
+                defaultValue={monthlyBudget ?? ""}
+                placeholder="e.g. 200"
+              />
+            </Field>
+
+            <div style={{ display: "flex", gap: space.x3, alignItems: "center", marginTop: space.x4 }}>
+              <Button type="submit" variant="primary">Save subscription map</Button>
             </div>
           </Card>
         </form>

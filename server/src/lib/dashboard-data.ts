@@ -37,11 +37,19 @@ export interface LoadOpts {
   limits?: PlanLimits;
   /**
    * Filter activity by source: 'claude_code', 'cursor', 'copilot',
-   * 'shell', 'git', 'wakatime', 'ashlr_plugin'. When omitted, all sources
-   * are included. Validated against the schema's source enum at the
-   * route layer.
+   * 'shell', 'git', 'wakatime', 'ashlr_plugin', 'codex'. When omitted, all
+   * sources are included. Validated against the schema's source enum at
+   * the route layer.
    */
   sourceFilter?: string | null;
+  /**
+   * Sources flagged "subscription" in the org's source_subscription_modes
+   * map. Events from these sources have their cost zeroed in headline
+   * cost totals (stat cards, daily aggregates, project rollups, feed,
+   * cost trajectory). Token counts are unaffected. Computed via
+   * subscriptionSourcesFor(org) at the call site.
+   */
+  subscriptionSources?: Set<string>;
 }
 
 export interface DashboardData {
@@ -297,7 +305,9 @@ export async function loadDashboard(
       COUNT(DISTINCT pr.repo_name)::int AS repos,
       COUNT(ae.*)::int    AS events,
       COALESCE(SUM(COALESCE(ae.tokens_input, 0) + COALESCE(ae.tokens_output, 0) + COALESCE(ae.tokens_reasoning, 0)), 0)::bigint AS tokens,
-      COALESCE(SUM(ae.cost_millicents), 0)::bigint AS millicents
+      COALESCE(SUM(
+        CASE WHEN ae.source = ANY($2::text[]) THEN 0 ELSE ae.cost_millicents END
+      ), 0)::bigint AS millicents
     FROM project p
     JOIN membership m  ON m.org_id    = p.org_id AND m.user_id = $1::uuid
     JOIN project_repo pr ON pr.project_id = p.id
@@ -310,7 +320,7 @@ export async function loadDashboard(
     ORDER BY tokens DESC, events DESC
     LIMIT 20
     `,
-    [userId],
+    [userId, [...(opts.subscriptionSources ?? [])]],
   ).catch(() => [] as never[]);
 
   // Convert millicents → integer cents at the boundary; NULL stays NULL
@@ -328,7 +338,7 @@ export async function loadDashboard(
     };
   });
 
-  return computeAggregates(events, commits, ghEvents, projectRollups, chartDays);
+  return computeAggregates(events, commits, ghEvents, projectRollups, chartDays, opts.subscriptionSources);
 }
 
 interface BreakdownRow {
@@ -353,6 +363,7 @@ function computeAggregates(
   ghEvents: { kind: string; ts: string }[],
   byProject: ProjectRollup[],
   chartDays: number,
+  subscriptionSources: Set<string> | undefined,
 ): DashboardData {
   const now = Date.now();
   const D_MS = 86_400_000;
@@ -388,7 +399,7 @@ function computeAggregates(
     const ts = new Date(e.ts);
     const ageMs = now - ts.getTime();
 
-    const millicents = resolveMillicents(e, ts);
+    const millicents = resolveMillicents(e, ts, subscriptionSources);
 
     // Billable tokens: what the user pays the model to *do*. Cache reads
     // & writes are billable too but they're a cost-mechanism artefact —
@@ -627,7 +638,7 @@ function computeAggregates(
   // is (was: "171 tokens / $0.41" mystery; now: "171 in/out + 65k cache").
   const feed: FeedRow[] = events.slice(0, 50).map((e) => {
     const ts = new Date(e.ts);
-    const m = resolveMillicents(e, ts);
+    const m = resolveMillicents(e, ts, subscriptionSources);
     const cacheTokens = sumCacheTokens(e);
     return {
       ts: e.ts,
@@ -732,8 +743,18 @@ function sumCacheTokens(e: RawEvent): number {
  * Cost: trust the cached millicents from migration 0015 first.
  * Falls back to live computation for legacy rows where the column
  * is still NULL (will be populated by a later backfill).
+ *
+ * If `subscriptionSources` is provided and `e.source` is in the set,
+ * the effective cost is zero (the user is on a subscription that
+ * covers this source). Token counts elsewhere are unaffected — only
+ * the dollar number changes.
  */
-function resolveMillicents(e: RawEvent, ts: Date): number | null {
+function resolveMillicents(
+  e: RawEvent,
+  ts: Date,
+  subscriptionSources?: Set<string>,
+): number | null {
+  if (subscriptionSources?.has(e.source)) return 0;
   // Coerce at the boundary: bigint from postgres-js mixed with the
   // `number` math elsewhere triggers `Cannot mix BigInt and other
   // types` at runtime, even though tsc accepts the union.
@@ -749,6 +770,313 @@ function resolveMillicents(e: RawEvent, ts: Date): number | null {
     tokens_cache_1h_write: e.tokens_cache_1h_write,
     ts,
   });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// loadCompare — side-by-side source comparison
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface CompareSide {
+  source: string;
+  totalCostCents: number | null;
+  totalTokens: number;
+  daily: Array<{ ts: string; tokens: number; costCents: number | null }>;
+  /** Token share by model (top 8). */
+  modelMix: Array<{ name: string; value: number }>;
+  /** 24 buckets, index = UTC hour, value = event count. */
+  hourOfDay: number[];
+  topRepos: Array<{ repo: string; tokens: number }>;
+  latency: { p50: number; p95: number };
+  toolCalls: Array<{ name: string; count: number }>;
+}
+
+export interface CompareData {
+  a: CompareSide;
+  b: CompareSide;
+  days: number;
+}
+
+export async function loadCompare(
+  userId: string,
+  scope: ScopeFilter,
+  sourceA: string,
+  sourceB: string,
+  days: number,
+  opts?: { subscriptionSources?: Set<string> },
+): Promise<CompareData> {
+  const window = clampDays(days);
+  const db = sql();
+  const subSources = opts?.subscriptionSources ?? new Set<string>();
+
+  // Single query pulling both sources; we split in memory.
+  const rows = await db.unsafe<RawEvent[]>(
+    `
+    SELECT
+      ts::text                AS ts,
+      source,
+      model,
+      repo_name,
+      duration_ms,
+      tokens_input,
+      tokens_output,
+      tokens_reasoning,
+      tokens_cache_read,
+      tokens_cache_write,
+      tokens_cache_5m_write,
+      tokens_cache_1h_write,
+      tool_calls_count,
+      tool_calls_types,
+      cost_millicents
+    FROM activity_event
+    WHERE user_id = $1
+      AND ts >= NOW() - INTERVAL '${window} days'
+      AND source = ANY($2::text[])
+      ${scope.repoClauseSql}
+    ORDER BY ts DESC
+    `,
+    [userId, [sourceA, sourceB], ...scope.repoParams],
+  );
+
+  return {
+    a: buildCompareSide(sourceA, rows, window, subSources),
+    b: buildCompareSide(sourceB, rows, window, subSources),
+    days: window,
+  };
+}
+
+function buildCompareSide(
+  source: string,
+  allRows: RawEvent[],
+  window: number,
+  subscriptionSources: Set<string>,
+): CompareSide {
+  const rows = allRows.filter((r) => r.source === source);
+
+  const days = lastNDays(window);
+  // Daily buckets
+  const dailyTokens = new Map<string, number>();
+  const dailyMillicents = new Map<string, number>();
+  for (const d of days) { dailyTokens.set(d, 0); dailyMillicents.set(d, 0); }
+
+  const modelTokenMap = new Map<string, number>();
+  const hourBuckets   = new Array<number>(24).fill(0);
+  const repoTokenMap  = new Map<string, number>();
+  const toolCountMap  = new Map<string, number>();
+  const latencies: number[] = [];
+  let totalTokens = 0;
+  let totalMillicents = 0;
+
+  for (const e of rows) {
+    const ts  = new Date(e.ts);
+    const day = ts.toISOString().slice(0, 10);
+    const billable =
+      (e.tokens_input    ?? 0) +
+      (e.tokens_output   ?? 0) +
+      (e.tokens_reasoning ?? 0);
+    const mc = resolveMillicents(e, ts, subscriptionSources);
+
+    totalTokens      += billable;
+    totalMillicents  += mc ?? 0;
+
+    if (dailyTokens.has(day)) {
+      dailyTokens.set(day, (dailyTokens.get(day) ?? 0) + billable);
+      dailyMillicents.set(day, (dailyMillicents.get(day) ?? 0) + (mc ?? 0));
+    }
+
+    if (e.model && billable > 0) {
+      modelTokenMap.set(e.model, (modelTokenMap.get(e.model) ?? 0) + billable);
+    }
+
+    hourBuckets[ts.getUTCHours()] += 1;
+
+    if (e.repo_name && billable > 0) {
+      repoTokenMap.set(e.repo_name, (repoTokenMap.get(e.repo_name) ?? 0) + billable);
+    }
+
+    if (e.duration_ms != null) latencies.push(e.duration_ms);
+
+    if (e.tool_calls_types) {
+      for (const t of e.tool_calls_types) {
+        toolCountMap.set(t, (toolCountMap.get(t) ?? 0) + 1);
+      }
+    } else if (e.tool_calls_count != null && e.tool_calls_count > 0) {
+      toolCountMap.set("(unspecified)", (toolCountMap.get("(unspecified)") ?? 0) + e.tool_calls_count);
+    }
+  }
+
+  latencies.sort((a, b) => a - b);
+  const p50 = latencies.length > 0 ? latencies[Math.floor(latencies.length * 0.5)] : 0;
+  const p95 = latencies.length > 0 ? latencies[Math.floor(latencies.length * 0.95)] : 0;
+
+  return {
+    source,
+    totalCostCents:  millicentsToCents(totalMillicents),
+    totalTokens,
+    daily: days.map((d) => ({
+      ts:        d,
+      tokens:    dailyTokens.get(d) ?? 0,
+      costCents: millicentsToCents(dailyMillicents.get(d) ?? 0),
+    })),
+    modelMix: [...modelTokenMap.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([name, value]) => ({ name, value })),
+    hourOfDay: hourBuckets,
+    topRepos: [...repoTokenMap.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([repo, tokens]) => ({ repo, tokens })),
+    latency: { p50, p95 },
+    toolCalls: [...toolCountMap.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([name, count]) => ({ name, count })),
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// loadForecast — cost history + burn-down inputs for /forecast
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface ForecastData {
+  /** Daily cost in cents, oldest → newest (chartDays items). */
+  history: Array<{ ts: string; value: number }>;
+  /** Per-model daily cost in cents — used for scenario sliders. */
+  byModel: Array<{ model: string; daily: Array<{ ts: string; value: number }> }>;
+  /** From org.monthly_budget_usd. NULL = not set. */
+  monthlyBudgetUsd: number | null;
+  daysElapsedInMonth: number;
+  daysInMonth: number;
+  spentThisMonthCents: number;
+  /** Top model × tool-type combos by % of spend over the window. */
+  topDrivers: Array<{ label: string; pctOfSpend: number }>;
+}
+
+export async function loadForecast(
+  userId: string,
+  scope: ScopeFilter,
+  days: number,
+  monthlyBudgetUsd: number | null,
+  opts?: { subscriptionSources?: Set<string> },
+): Promise<ForecastData> {
+  const window = clampDays(days);
+  const db = sql();
+  const subSources = opts?.subscriptionSources ?? new Set<string>();
+
+  const rows = await db.unsafe<RawEvent[]>(
+    `
+    SELECT
+      ts::text                AS ts,
+      source,
+      model,
+      repo_name,
+      duration_ms,
+      tokens_input,
+      tokens_output,
+      tokens_reasoning,
+      tokens_cache_read,
+      tokens_cache_write,
+      tokens_cache_5m_write,
+      tokens_cache_1h_write,
+      tool_calls_count,
+      tool_calls_types,
+      cost_millicents
+    FROM activity_event
+    WHERE user_id = $1
+      AND ts >= NOW() - INTERVAL '${window} days'
+      ${scope.repoClauseSql}
+    ORDER BY ts ASC
+    `,
+    [userId, ...scope.repoParams],
+  );
+
+  const allDays = lastNDays(window);
+  const dailyMillicents = new Map<string, number>();
+  for (const d of allDays) dailyMillicents.set(d, 0);
+
+  // model → day → millicents
+  const modelDayMillicents = new Map<string, Map<string, number>>();
+  // model+tool → total millicents (for top drivers)
+  const driverMillicents = new Map<string, number>();
+  let totalMillicents = 0;
+
+  // Month-to-date: sum rows where ts >= first day of current UTC month.
+  const now = new Date();
+  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  let monthMillicents = 0;
+
+  for (const e of rows) {
+    const ts = new Date(e.ts);
+    const day = ts.toISOString().slice(0, 10);
+    const mc = resolveMillicents(e, ts, subSources) ?? 0;
+
+    if (dailyMillicents.has(day)) {
+      dailyMillicents.set(day, (dailyMillicents.get(day) ?? 0) + mc);
+    }
+
+    if (ts >= monthStart) monthMillicents += mc;
+    totalMillicents += mc;
+
+    if (e.model && mc > 0) {
+      const modelMap = modelDayMillicents.get(e.model) ?? new Map<string, number>();
+      modelMap.set(day, (modelMap.get(day) ?? 0) + mc);
+      modelDayMillicents.set(e.model, modelMap);
+
+      // Driver = model + first tool type (or "direct" when no tools).
+      const tool =
+        e.tool_calls_types && e.tool_calls_types.length > 0
+          ? e.tool_calls_types[0]
+          : "direct";
+      const driverKey = `${e.model} / ${tool}`;
+      driverMillicents.set(driverKey, (driverMillicents.get(driverKey) ?? 0) + mc);
+    }
+  }
+
+  const history = allDays.map((d) => ({
+    ts:    d,
+    value: millicentsToCents(dailyMillicents.get(d) ?? 0) ?? 0,
+  }));
+
+  // Top models by total cost — include up to 6.
+  const modelOrder = [...modelDayMillicents.entries()]
+    .map(([model, dayMap]) => ({
+      model,
+      total: [...dayMap.values()].reduce((a, b) => a + b, 0),
+    }))
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 6);
+
+  const byModel = modelOrder.map(({ model }) => ({
+    model,
+    daily: allDays.map((d) => ({
+      ts:    d,
+      value: millicentsToCents(modelDayMillicents.get(model)?.get(d) ?? 0) ?? 0,
+    })),
+  }));
+
+  const topDrivers = [...driverMillicents.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 8)
+    .map(([label, mc]) => ({
+      label,
+      pctOfSpend: totalMillicents > 0 ? Math.round((mc / totalMillicents) * 1000) / 10 : 0,
+    }));
+
+  // Month-in-progress metadata.
+  const daysInMonth = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0),
+  ).getUTCDate();
+  const daysElapsedInMonth = now.getUTCDate();
+
+  return {
+    history,
+    byModel,
+    monthlyBudgetUsd,
+    daysElapsedInMonth,
+    daysInMonth,
+    spentThisMonthCents: millicentsToCents(monthMillicents) ?? 0,
+    topDrivers,
+  };
 }
 
 function clampDays(d: number): number {
