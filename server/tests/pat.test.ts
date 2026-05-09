@@ -5,7 +5,18 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { sql } from "../src/lib/db";
 import { ensureLocalUser } from "../src/lib/current-user";
-import { mintPat, listPats, revokePat, verifyPat } from "../src/lib/pat";
+import { mintPat, listPats, revokePat, verifyPat, normalizePatScopes } from "../src/lib/pat";
+
+describe("normalizePatScopes", () => {
+  test("defaults agent tokens to ingest plus heartbeat", () => {
+    expect(normalizePatScopes(undefined)).toEqual(["ingest", "heartbeat"]);
+  });
+
+  test("dedupes explicit scopes and rejects unknown scopes", () => {
+    expect(normalizePatScopes(["ingest", "ingest", "invite:create"])).toEqual(["ingest", "invite:create"]);
+    expect(() => normalizePatScopes(["admin"])).toThrow("unknown PAT scope");
+  });
+});
 
 const HAS_DB = Boolean(process.env.DATABASE_URL);
 

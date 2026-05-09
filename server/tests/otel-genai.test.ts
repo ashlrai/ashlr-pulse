@@ -40,7 +40,7 @@ describe("spanToActivityEvent", () => {
     // string in the expected year. Assert shape rather than exact value so
     // the test isn't tied to timezone-locale quirks of `Date.toISOString`.
     expect(row!.ts).toMatch(/^2024-04-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
-    expect(row!.raw_otel_span).toBeDefined();
+    expect(Object.keys(row!)).not.toContain("raw_otel_span");
   });
 
   it("returns null for a non-GenAI span", () => {

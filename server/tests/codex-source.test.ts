@@ -216,8 +216,8 @@ describe("privacy floor canary — codex span", () => {
     if (!row) return;
     // The row's known columns must NOT contain the leaked text anywhere.
     const serialised = JSON.stringify(row, (key, value) => {
-      // Skip raw_otel_span — it preserves the raw payload by design (admin-only).
-      // The privacy floor enforces that raw_otel_span is owner-only via peer-share-guard.
+      // raw_otel_span used to preserve the raw payload. It must stay absent
+      // from the mapper output so prompt-like attributes cannot be retained.
       if (key === "raw_otel_span") return undefined;
       return value;
     });
