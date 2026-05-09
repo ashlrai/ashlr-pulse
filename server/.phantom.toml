@@ -1,0 +1,90 @@
+sync = []
+
+[phantom]
+version = "1"
+project_id = "3e49e45650e78e7a"
+
+[services.anthropic]
+secret_key = "ANTHROPIC_API_KEY"
+pattern = "api.anthropic.com"
+header = "x-api-key"
+header_format = "{secret}"
+secret_type = "api_key"
+
+[services.cohere]
+secret_key = "COHERE_API_KEY"
+pattern = "api.cohere.com"
+header = "Authorization"
+header_format = "Bearer {secret}"
+secret_type = "api_key"
+
+[services.database]
+secret_key = "DATABASE_URL"
+secret_type = "connection_string"
+
+[services.database_url]
+secret_key = "DATABASE_URL"
+secret_type = "connection_string"
+
+[services.google_ai]
+secret_key = "GEMINI_API_KEY"
+pattern = "generativelanguage.googleapis.com"
+header = "x-goog-api-key"
+header_format = "{secret}"
+secret_type = "api_key"
+
+[services.huggingface]
+secret_key = "HUGGINGFACE_API_KEY"
+pattern = "api-inference.huggingface.co"
+header = "Authorization"
+header_format = "Bearer {secret}"
+secret_type = "api_key"
+
+[services.mistral]
+secret_key = "MISTRAL_API_KEY"
+pattern = "api.mistral.ai"
+header = "Authorization"
+header_format = "Bearer {secret}"
+secret_type = "api_key"
+
+[services.openai]
+secret_key = "OPENAI_API_KEY"
+pattern = "api.openai.com"
+header = "Authorization"
+header_format = "Bearer {secret}"
+secret_type = "api_key"
+
+[services.perplexity]
+secret_key = "PERPLEXITY_API_KEY"
+pattern = "api.perplexity.ai"
+header = "Authorization"
+header_format = "Bearer {secret}"
+secret_type = "api_key"
+
+[services.replicate]
+secret_key = "REPLICATE_API_TOKEN"
+pattern = "api.replicate.com"
+header = "Authorization"
+header_format = "Token {secret}"
+secret_type = "api_key"
+
+[services.stripe]
+secret_key = "STRIPE_SECRET_KEY"
+pattern = "api.stripe.com"
+header = "Authorization"
+header_format = "Bearer {secret}"
+secret_type = "api_key"
+
+[services.supabase]
+secret_key = "SUPABASE_SERVICE_ROLE_KEY"
+pattern = "supabase.co"
+header = "Authorization"
+header_format = "Bearer {secret}"
+secret_type = "api_key"
+
+[services.xai]
+secret_key = "XAI_API_KEY"
+pattern = "api.x.ai"
+header = "Authorization"
+header_format = "Bearer {secret}"
+secret_type = "api_key"
