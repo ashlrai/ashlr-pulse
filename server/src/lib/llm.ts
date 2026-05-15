@@ -17,7 +17,7 @@
  *   xAI Grok 4:
  *     OPENAI_BASE_URL=https://api.x.ai/v1
  *     OPENAI_API_KEY=xai-…
- *     OPENAI_MODEL=grok-4-1-fast-reasoning
+ *     OPENAI_MODEL=grok-4.3
  *
  *   Ollama (local, free):
  *     OPENAI_BASE_URL=http://localhost:11434/v1
