@@ -105,9 +105,9 @@ export async function TodayTab({
         />
         <StatCard
           accent="amber"
-          label="commits · 24h"
-          value={data.recentCommits.length.toString()}
-          hint="last 24h"
+          label={`commits · ${windowOpt.days}d`}
+          value={data.commitTotals.commits.toString()}
+          hint={commitStatHint(data.commitTotals)}
           sparkline={data.sparklines.commits}
         />
       </div>
@@ -188,10 +188,22 @@ export async function TodayTab({
           <Card accent={palette.purple}>
             <CardHeader
               title={`repo x agent scoreboard · last ${data.chartDays}d`}
-              hint="active span minutes, Claude Code/Codex event mix, tokens, commits, and PR throughput"
+              hint="hybrid active time, Claude Code/Codex event mix, tokens, commits, and PR throughput"
               right={isOwnView ? <a href="/share" style={{ color: palette.cyan, textDecoration: "none" }}>invite teammate →</a> : undefined}
             />
             <RepoAgentRollupTable rows={data.repoAgentRollup} />
+          </Card>
+        </div>
+      )}
+
+      {data.repoFocus.length > 0 && (
+        <div style={{ marginTop: space.x6 }}>
+          <Card accent={palette.green}>
+            <CardHeader
+              title={`repo focus · last ${data.chartDays}d`}
+              hint="active time beside merged commit and PR output"
+            />
+            <RepoFocusRows rows={data.repoFocus} />
           </Card>
         </div>
       )}
@@ -213,8 +225,8 @@ export async function TodayTab({
       {/* Recent commits + activity feed */}
       <div className="dash-grid" style={{ marginTop: space.x6 }}>
         <Card>
-          <CardHeader title={`recent commits · last ${windowOpt.days}d`} hint={`${data.recentCommits.length} commits`} />
-          <RecentCommits commits={data.recentCommits} />
+          <CardHeader title={`recent commits · last ${windowOpt.days}d`} hint={recentCommitHint(data)} />
+          <RecentCommits commits={data.recentCommits} githubState={data.githubState} agentGitCommits={data.commitTotals.agentGitCommits} isOwnView={isOwnView} />
         </Card>
         <Card>
           <CardHeader title="recent activity · last 50 events" />
@@ -295,9 +307,30 @@ function AnomalyChip({ color, msg }: { color: string; msg: string }): ReactEleme
 
 function RecentCommits({
   commits,
-}: { commits: { subject: string; repo: string; sha: string; ts: string }[] }): ReactElement {
+  githubState,
+  agentGitCommits,
+  isOwnView,
+}: {
+  commits: { subject: string; repo: string; sha: string; ts: string }[];
+  githubState: "ready" | "missing_or_stale" | "empty";
+  agentGitCommits: number;
+  isOwnView: boolean;
+}): ReactElement {
   if (commits.length === 0) {
-    return <div style={{ color: palette.textMute, fontSize: 12 }}>No recent commits.</div>;
+    if (githubState === "missing_or_stale") {
+      return (
+        <div style={{ color: palette.textMute, fontSize: 12, lineHeight: 1.6 }}>
+          No GitHub commits synced yet. Pulse saw {agentGitCommits.toLocaleString()} agent git
+          commit{agentGitCommits === 1 ? "" : "s"}, but commit subjects and PR details require GitHub sync.
+          {isOwnView && (
+            <>
+              {" "}<a href="/github" style={{ color: palette.cyan }}>Connect or sync GitHub →</a>
+            </>
+          )}
+        </div>
+      );
+    }
+    return <div style={{ color: palette.textMute, fontSize: 12 }}>No GitHub commit details in this window.</div>;
   }
   return (
     <ul style={{ listStyle: "none", padding: 0, margin: 0, fontSize: 12 }}>
@@ -320,6 +353,64 @@ function RecentCommits({
       ))}
     </ul>
   );
+}
+
+function RepoFocusRows({
+  rows,
+}: { rows: { repo: string; activeMinutes: number; commits: number; prs: number }[] }): ReactElement {
+  const maxActive = Math.max(...rows.map((r) => r.activeMinutes), 1);
+  const maxOutput = Math.max(...rows.map((r) => r.commits + r.prs), 1);
+  return (
+    <div style={{ display: "grid", gap: 10, marginTop: space.x2 }}>
+      {rows.map((r) => {
+        const activePct = Math.max(2, (r.activeMinutes / maxActive) * 100);
+        const outputPct = Math.max(2, ((r.commits + r.prs) / maxOutput) * 100);
+        return (
+          <div key={r.repo} style={{ display: "grid", gridTemplateColumns: "minmax(130px, 220px) 1fr auto", gap: 12, alignItems: "center" }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ color: palette.text, fontSize: 12, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.repo}</div>
+              <div style={{ color: palette.textMute, fontSize: 10 }}>{fmtActiveTime(r.activeMinutes)} active</div>
+            </div>
+            <div style={{ display: "grid", gap: 4 }}>
+              <div style={{ height: 7, borderRadius: 4, background: palette.bgRaised, overflow: "hidden" }}>
+                <div style={{ width: `${activePct}%`, height: "100%", background: palette.green }} />
+              </div>
+              <div style={{ height: 7, borderRadius: 4, background: palette.bgRaised, overflow: "hidden" }}>
+                <div style={{ width: `${outputPct}%`, height: "100%", background: palette.purple }} />
+              </div>
+            </div>
+            <div style={{ color: palette.textDim, fontSize: 11, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+              {r.commits} commits<br />{r.prs} PRs
+            </div>
+          </div>
+        );
+      })}
+      <div style={{ display: "flex", gap: 14, color: palette.textMute, fontSize: 10 }}>
+        <span><span style={{ color: palette.green }}>■</span> active time</span>
+        <span><span style={{ color: palette.purple }}>■</span> commits + PRs</span>
+      </div>
+    </div>
+  );
+}
+
+function commitStatHint(totals: { githubCommits: number; agentGitCommits: number }): string {
+  if (totals.githubCommits > 0 && totals.agentGitCommits > 0) {
+    return `${totals.githubCommits} GitHub · ${totals.agentGitCommits} agent git seen`;
+  }
+  if (totals.githubCommits > 0) return "from GitHub sync";
+  if (totals.agentGitCommits > 0) return "from agent git fallback";
+  return "GitHub or agent git";
+}
+
+function recentCommitHint(data: { recentCommits: unknown[]; commitTotals: { commits: number; githubCommits: number; agentGitCommits: number } }): string {
+  if (data.recentCommits.length > 0) return `${data.recentCommits.length} GitHub commit details`;
+  if (data.commitTotals.agentGitCommits > 0) return `${data.commitTotals.agentGitCommits} agent git commits · no GitHub details`;
+  return `${data.commitTotals.commits} commits`;
+}
+
+function fmtActiveTime(minutes: number): string {
+  if (minutes >= 60) return `${(minutes / 60).toLocaleString(undefined, { maximumFractionDigits: 1 })}h`;
+  return `${minutes.toLocaleString(undefined, { maximumFractionDigits: 1 })}m`;
 }
 
 interface PluginImpactShape {

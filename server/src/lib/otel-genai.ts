@@ -114,6 +114,12 @@ export interface ActivityEventInsert {
    *  (user_id, ts-second, model, tokens_in, tokens_out, repo, source). */
   dedup_key: string | null;
 
+  // ── Fleet-specific (NULL for non-fleet sources) ────────────────────────
+  /** ashlr-fleet event type: tick | proposal | merge | decline. */
+  fleet_event: string | null;
+  /** ashlr-fleet outcome: pending | applied | rejected | <tick-reason>. */
+  fleet_outcome: string | null;
+
   // ── Codex-specific (NULL for non-codex sources) ────────────────────────
   codex_plan_type: string | null;
   codex_originator: string | null;
@@ -230,14 +236,15 @@ export function spanToActivityEvent(
 ): ActivityEventInsert | null {
   const attrs = attrMap(span);
 
-  // Only map spans that carry GenAI / claude / ashlr-plugin attributes.
-  // Anything else (vanilla HTTP spans, etc.) is ignored — we're not a
-  // general OTel backend.
+  // Only map spans that carry GenAI / claude / ashlr-plugin / ashlr-fleet
+  // attributes. Anything else (vanilla HTTP spans, etc.) is ignored — we're
+  // not a general OTel backend.
   const provider = asString(attrs, "gen_ai.system");
   const keys = [...attrs.keys()];
   const hasClaude = keys.some((k) => k.startsWith("claude."));
   const hasPlugin = keys.some((k) => k.startsWith("ashlr.plugin."));
-  if (!provider && !hasClaude && !hasPlugin) return null;
+  const hasFleet  = keys.some((k) => k.startsWith("ashlr.fleet."));
+  if (!provider && !hasClaude && !hasPlugin && !hasFleet) return null;
 
   const startNs = span.startTimeUnixNano;
   const endNs = span.endTimeUnixNano;
@@ -259,6 +266,7 @@ export function spanToActivityEvent(
   // enum so arbitrary strings can't slip through to the DB.
   const ALLOWED_SOURCES = new Set([
     "claude_code", "cursor", "copilot", "wakatime", "git", "shell", "ashlr_plugin", "codex",
+    "ashlr-fleet",
   ]);
   const sourceOverride = asString(attrs, "ashlr.source");
   const source = sourceOverride && ALLOWED_SOURCES.has(sourceOverride)
@@ -314,6 +322,24 @@ export function spanToActivityEvent(
     ts: new Date(ts),
   });
 
+  // Fleet-specific attributes. ashlr.fleet.cost_usd is a string like
+  // "0.00042" — parse it and convert to millicents so the existing cost
+  // infrastructure works unchanged. When gen_ai.usage.* tokens are also
+  // present, cost_millicents is already computed above via costMillicents().
+  // The fleet bridge may set cost_usd directly when no model pricing entry
+  // exists (e.g. builtin/hermes engines), so we prefer it over the computed
+  // value when tokens are absent.
+  const fleetEvent   = asString(attrs, "ashlr.fleet.event");
+  const fleetOutcome = asString(attrs, "ashlr.fleet.outcome");
+  const fleetRepo    = asString(attrs, "ashlr.fleet.repo");
+  const fleetCostUsdStr = asString(attrs, "ashlr.fleet.cost_usd");
+  const fleetCostMillicents = fleetCostUsdStr != null
+    ? Math.round(parseFloat(fleetCostUsdStr) * 100_000)
+    : null;
+
+  // repo_name: fleet repo wins over plugin/claude attrs when present.
+  const effectiveRepoName = fleetRepo ?? repoName;
+
   const sessionId =
     asString(attrs, "ashlr.plugin.session_id") ??
     asString(attrs, "claude.session.id");
@@ -321,8 +347,12 @@ export function spanToActivityEvent(
     userId, ts, model,
     tokensInput, tokensOutput, tokensReasoning,
     tokensCacheRead, tokensCache5m, tokensCache1h, tokensCacheWrite,
-    repoName, source,
+    effectiveRepoName, source,
   );
+
+  // For fleet events: if no token-based cost was computed (unknown engine),
+  // fall back to the explicitly-supplied fleet cost_usd.
+  const effectiveMillicents = millicents ?? fleetCostMillicents;
 
   return {
     ts,
@@ -344,7 +374,7 @@ export function spanToActivityEvent(
     accepted_count: asInt(attrs, "claude.edits.accepted_count"),
     rejected_count: asInt(attrs, "claude.edits.rejected_count"),
     project_hash: asString(attrs, "claude.project.hash"),
-    repo_name: repoName,
+    repo_name: effectiveRepoName,
     git_branch: asString(attrs, "claude.git.branch"),
     language: asString(attrs, "claude.language"),
     tokens_saved: asInt(attrs, "ashlr.plugin.tokens_saved"),
@@ -353,9 +383,12 @@ export function spanToActivityEvent(
     plugin_version: asString(attrs, "ashlr.plugin.version"),
     plugin_genome_hit_rate: asFloat(attrs, "ashlr.plugin.genome_hit_rate"),
     span_id: span.spanId ?? null,
-    cost_millicents: millicents,
-    pricing_version: millicents != null ? PRICE_VERSION : null,
+    cost_millicents: effectiveMillicents,
+    pricing_version: effectiveMillicents != null ? PRICE_VERSION : null,
     dedup_key: dedupKey,
+    // Fleet-specific. null for non-fleet sources.
+    fleet_event: fleetEvent,
+    fleet_outcome: fleetOutcome,
     // Codex-specific. asInt/asString return null when the attribute is
     // absent, so non-codex sources end up with null in every codex_* field.
     codex_plan_type: asString(attrs, "ashlr.codex.plan_type"),

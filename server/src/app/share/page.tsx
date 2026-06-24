@@ -34,6 +34,8 @@ import { Button } from "@/components/ui/Button";
 import { Input, Select, Field } from "@/components/ui/Input";
 import { palette, radius, space } from "@/lib/theme";
 
+export const dynamic = "force-dynamic";
+
 const DEFAULT_FIELDS = [
   "ts",
   "source",

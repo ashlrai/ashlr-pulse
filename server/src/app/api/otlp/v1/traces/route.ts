@@ -183,6 +183,8 @@ export async function POST(req: Request): Promise<Response> {
         "codex_sandbox_policy",
         "codex_approval_policy",
         "codex_effort",
+        "fleet_event",
+        "fleet_outcome",
       ])}
       ON CONFLICT DO NOTHING
     `;

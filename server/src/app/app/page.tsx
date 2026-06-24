@@ -48,6 +48,7 @@ import { TrendsTab } from "./_tabs/trends";
 import { CompareTab } from "./_tabs/compare";
 import { CostsTab } from "./_tabs/costs";
 import { ToolsTab } from "./_tabs/tools";
+import { FleetTab } from "./_tabs/fleet";
 import { SavedViewsTabStrip } from "./_components/SavedViewsTabStrip";
 
 export const dynamic = "force-dynamic";
@@ -65,7 +66,7 @@ interface SearchParams {
   from?: string;
 }
 
-const TABS = ["today", "trends", "compare", "costs", "tools"] as const;
+const TABS = ["today", "trends", "compare", "costs", "tools", "fleet"] as const;
 type Tab = (typeof TABS)[number];
 
 function resolveTab(raw: string | undefined): Tab {
@@ -84,6 +85,7 @@ const SOURCE_OPTIONS = [
   { value: "shell",        label: "shell" },
   { value: "git",          label: "git" },
   { value: "ashlr_plugin", label: "plugin" },
+  { value: "ashlr-fleet",  label: "fleet" },
 ];
 
 function resolveSourceFilter(raw: string | undefined): string | null {
@@ -259,7 +261,7 @@ export default async function Page({
       {peerLabel && (
         <div style={{ marginBottom: space.x4 }}>
           <Banner variant="info" title={`viewing ${peerLabel}'s activity`}>
-            scope filtered by active peer-share grants ·{" "}
+            scope filtered by active peer-share grants. Reciprocal team views require each cofounder to accept an invite and share back.{" "}
             <a href="/app" style={{ color: palette.cyan }}>back to your view</a>
           </Banner>
         </div>
@@ -337,6 +339,7 @@ export default async function Page({
       {activeTab === "compare" && <CompareTab {...tabProps} />}
       {activeTab === "costs"   && <CostsTab   {...tabProps} />}
       {activeTab === "tools"   && <ToolsTab   {...tabProps} />}
+      {activeTab === "fleet"   && <FleetTab   {...tabProps} />}
     </DashboardShell>
   );
 }
@@ -349,6 +352,7 @@ const TAB_LABELS: Record<Tab, string> = {
   compare: "compare",
   costs:   "costs",
   tools:   "tools",
+  fleet:   "fleet",
 };
 
 function TabNav({

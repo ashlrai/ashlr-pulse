@@ -134,12 +134,12 @@ export function TrendsTab({
         )}
       </ChartFrame>
 
-      {/* GitHub throughput — only render when there's data */}
+      {/* Git/GitHub throughput — only render when there's data */}
       {(data.githubTotals.commits + data.githubTotals.prs_opened + data.githubTotals.prs_merged) > 0 && (
         <div className="dash-grid-full">
           <ChartFrame
-            title={`github throughput · last ${windowOpt.days}d`}
-            hint={`${data.githubTotals.commits} commits · ${data.githubTotals.prs_opened} prs opened · ${data.githubTotals.prs_merged} merged`}
+            title={`git throughput · last ${windowOpt.days}d`}
+            hint={`${data.githubTotals.commits} commits (${data.commitTotals.githubCommits} GitHub, fallback when needed) · ${data.githubTotals.prs_opened} prs opened · ${data.githubTotals.prs_merged} merged`}
             accent={palette.purple}
           >
             <LineChart

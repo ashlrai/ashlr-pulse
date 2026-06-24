@@ -22,6 +22,8 @@ import { Banner } from "@/components/ui/Banner";
 import { Button } from "@/components/ui/Button";
 import { palette, radius, space } from "@/lib/theme";
 
+export const dynamic = "force-dynamic";
+
 async function syncNowAction(): Promise<void> {
   "use server";
   const me = await currentUser();

@@ -35,7 +35,7 @@ export function RepoAgentRollupTable({ rows }: Props): ReactElement {
         <thead>
           <tr style={{ borderBottom: `1px solid ${palette.border}` }}>
             <th style={{ ...th, textAlign: "left" }}>repo</th>
-            <th style={{ ...th, textAlign: "right" }}>agent minutes</th>
+            <th style={{ ...th, textAlign: "right" }}>active time</th>
             <th style={{ ...th, textAlign: "left", minWidth: 160 }}>mix</th>
             <th style={{ ...th, textAlign: "right" }}>events</th>
             <th style={{ ...th, textAlign: "right" }}>tokens</th>
@@ -55,7 +55,7 @@ export function RepoAgentRollupTable({ rows }: Props): ReactElement {
                   <div style={{ color: palette.textMute, fontSize: 10, marginTop: 2 }}>{r.repo}</div>
                 </td>
                 <td style={{ ...td, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
-                  {r.totalMinutes.toLocaleString(undefined, { maximumFractionDigits: 1 })}
+                  {fmtActiveTime(r.totalMinutes)}
                 </td>
                 <td style={{ ...td, minWidth: 160 }}>
                   <AgentMixBar row={r} maxMinutes={maxMinutes} />
@@ -92,7 +92,7 @@ function AgentMixBar({ row, maxMinutes }: { row: RepoAgentRollup; maxMinutes: nu
   const widthPct = Math.max(3, (row.totalMinutes / maxMinutes) * 100);
   const claudePct = row.totalMinutes > 0 ? (row.claudeMinutes / row.totalMinutes) * 100 : 0;
   const codexPct = row.totalMinutes > 0 ? (row.codexMinutes / row.totalMinutes) * 100 : 0;
-  const otherPct = Math.max(0, 100 - claudePct - codexPct);
+  const otherPct = row.totalMinutes > 0 ? (row.otherMinutes / row.totalMinutes) * 100 : Math.max(0, 100 - claudePct - codexPct);
   return (
     <div style={{ width: "100%", height: 12, background: palette.bgRaised, border: `1px solid ${palette.border}`, borderRadius: 4, overflow: "hidden" }}>
       <div style={{ width: `${widthPct}%`, height: "100%", display: "flex" }}>
@@ -116,4 +116,9 @@ function LegendDot({ color, label }: { color: string; label: string }): ReactEle
 function shortRepo(repo: string): string {
   const parts = repo.split("/");
   return parts.length > 1 ? parts[parts.length - 1] : repo;
+}
+
+function fmtActiveTime(minutes: number): string {
+  if (minutes >= 60) return `${(minutes / 60).toLocaleString(undefined, { maximumFractionDigits: 1 })}h`;
+  return `${minutes.toLocaleString(undefined, { maximumFractionDigits: 1 })}m`;
 }
