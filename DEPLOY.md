@@ -326,3 +326,53 @@ STRIPE_PRICE_PRO_ANNUAL=price_…
 STRIPE_PRICE_TEAM_MONTHLY=price_…
 STRIPE_PRICE_TEAM_ANNUAL=price_…
 ```
+
+---
+
+## 8. ashlr-fleet integration (ashlr-hub autonomous fleet → Pulse)
+
+The ashlr-hub fleet emits OTLP spans (`ashlr.source = "ashlr-fleet"`) so its
+activity — ticks, proposals, auto-merges, declines — shows up in Pulse alongside
+Claude Code / Codex / git data. Surfaced in the **Fleet** tab.
+
+Migration `0025_fleet_columns.sql` (adds `fleet_event` / `fleet_outcome`, idempotent)
+is applied automatically on deploy by the entrypoint — no manual migration step.
+
+### Enable the bridge (on the ashlr-hub side)
+
+1. **Mint a PAT** for the fleet (one-time):
+   ```bash
+   cd server && bun run src/cli/mint-pat.ts <your-user-uuid> "ashlr-fleet"
+   # → copy the pulse_pat_… value (it is shown once)
+   ```
+2. **Point ashlr-hub at Pulse** (`~/.ashlr/config.json` already has the `pulse` block):
+   ```bash
+   export ASHLR_PULSE_PAT=pulse_pat_…        # or store in phantom
+   # ensure "pulse": { "enabled": true, "endpoint": "https://<your-pulse>" } is correct
+   ```
+3. **Verify + reload**:
+   ```bash
+   ashlr pulse-test     # ✓ connected (200) / ✗ 401 PAT rejected / ✗ unreachable / ⚠ not configured
+   launchctl unload ~/Library/LaunchAgents/ai.ashlr.daemon.plist && \
+   launchctl load   ~/Library/LaunchAgents/ai.ashlr.daemon.plist
+   ```
+   Backfill history anytime: `ashlr pulse-export --since <iso>` (`--dry-run` to preview).
+
+The daemon then exports incrementally each tick (watermarked; deterministic
+`span_id` makes re-exports idempotent via the `(user_id, span_id)` unique index).
+
+### OTLP span contract (emit ↔ ingest)
+
+Emitter: ashlr-hub `src/core/fleet/pulse-export.ts`. Mapper: `server/src/lib/otel-genai.ts`.
+
+| field | value |
+|---|---|
+| `span.name` | `fleet.tick` \| `fleet.proposal` \| `fleet.merge` \| `fleet.decline` |
+| `ashlr.source` | `ashlr-fleet` |
+| `gen_ai.system` | engine `codex` \| `claude` \| `builtin` \| `hermes` (→ `provider`) |
+| `gen_ai.usage.input_tokens` / `output_tokens` | int |
+| `ashlr.fleet.event` | tick \| proposal \| merge \| decline (→ `fleet_event`) |
+| `ashlr.fleet.repo` | repo name (→ `repo_name`) |
+| `ashlr.fleet.outcome` | pending \| applied \| rejected \| `<tick-reason>` (→ `fleet_outcome`) |
+| `ashlr.fleet.cost_usd` | string; subscription runs = `"0"` |
+| `ashlr.fleet.ref_id` | dedup key (deterministic `span_id` derives from it) |
