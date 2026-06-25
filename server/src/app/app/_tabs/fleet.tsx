@@ -17,6 +17,7 @@ import { HBarChart } from "@/components/charts/HBarChart";
 import { DonutChart } from "@/components/charts/DonutChart";
 import { LineChart } from "@/components/charts/LineChart";
 
+import type { FleetOwnerStat } from "@/lib/dashboard-data";
 import type { TabProps } from "./types";
 
 // ─── Main tab component ──────────────────────────────────────────────
@@ -158,6 +159,24 @@ export function FleetTab({ data, windowOpt }: TabProps): ReactElement {
           </Card>
         </div>
       )}
+
+      {/* Per-owner team breakdown (M109 fleet_owner).
+          Only rendered when at least one event carries an owner tag.
+          Peer-share scope filtering already happened upstream in
+          loadDashboard — a cofounder viewer only sees events their
+          grant covers, so byOwner is naturally scoped to what they
+          are allowed to see. */}
+      {fleet.byOwner.length > 0 && (
+        <div style={{ marginTop: space.x5 }}>
+          <Card accent={palette.cyan}>
+            <CardHeader
+              title="fleet activity by teammate"
+              hint={`${fleet.byOwner.length} owner${fleet.byOwner.length === 1 ? "" : "s"} · ${windowOpt.days}d window`}
+            />
+            <OwnerBreakdown rows={fleet.byOwner} />
+          </Card>
+        </div>
+      )}
     </>
   );
 }
@@ -236,6 +255,62 @@ function MergeFeed({
         </li>
       ))}
     </ul>
+  );
+}
+
+// ─── Owner breakdown ──────────────────────────────────────────────────
+
+function OwnerBreakdown({ rows }: { rows: FleetOwnerStat[] }): ReactElement {
+  return (
+    <ul style={{ listStyle: "none", padding: 0, margin: 0, fontSize: 12 }}>
+      {rows.map((r) => {
+        const total = r.proposals + r.merges + r.declines + r.ticks;
+        const mergeRate = r.proposals > 0
+          ? Math.round((r.merges / r.proposals) * 100)
+          : null;
+        return (
+          <li
+            key={r.owner}
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr repeat(4, 80px)",
+              alignItems: "baseline",
+              gap: space.x3,
+              padding: "10px 0",
+              borderBottom: `1px dashed ${palette.border}`,
+            }}
+          >
+            <span style={{ color: palette.cyan, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {r.owner}
+            </span>
+            <OwnerCell label="proposals" value={r.proposals} color={palette.cyan} />
+            <OwnerCell label="merges" value={r.merges} color={palette.magenta} />
+            <OwnerCell label="declines" value={r.declines} color={palette.amber} />
+            <span style={{ color: palette.textMute, fontSize: 10, textAlign: "right" }}>
+              {mergeRate != null ? `${mergeRate}% merge` : `${total} events`}
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function OwnerCell({
+  label,
+  value,
+  color,
+}: {
+  label: string;
+  value: number;
+  color: string;
+}): ReactElement {
+  return (
+    <span style={{ textAlign: "right" }}>
+      <span style={{ color, fontVariantNumeric: "tabular-nums" }}>{value.toLocaleString()}</span>
+      {" "}
+      <span style={{ color: palette.textMute, fontSize: 10 }}>{label}</span>
+    </span>
   );
 }
 

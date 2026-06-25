@@ -56,6 +56,11 @@ export const SHAREABLE_FIELDS = new Set<string>([
   "plugin_features",
   "plugin_version",
   "plugin_genome_hit_rate",
+  // 0025: fleet columns — structured metadata only, no code/prompts.
+  "fleet_event",
+  "fleet_outcome",
+  // 0026: fleet owner identifier — display name / email, not code content.
+  "fleet_owner",
 ]);
 
 export type ValidateFieldsResult =

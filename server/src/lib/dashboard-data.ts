@@ -121,6 +121,16 @@ export interface DashboardData {
 
 // ── Fleet types ─────────────────────────────────────────────────────────────
 
+/** Per-teammate fleet activity breakdown (M109 fleet_owner). */
+export interface FleetOwnerStat {
+  /** Owner identifier — value of ashlr.fleet.owner attribute. */
+  owner: string;
+  proposals: number;
+  merges: number;
+  declines: number;
+  ticks: number;
+}
+
 export interface FleetData {
   /** ISO timestamp of the last fleet.tick event, or null if no ticks. */
   lastTickTs: string | null;
@@ -142,6 +152,12 @@ export interface FleetData {
   daily: FleetDailyPoint[];
   /** Recent merge events (last 20). */
   recentMerges: FleetMergeRow[];
+  /**
+   * Per-owner breakdown: proposals / merges / declines / ticks for each
+   * teammate whose fleet_owner attribute was set (M109). Empty array when
+   * no owner-tagged events are present (pre-M109 data or solo user).
+   */
+  byOwner: FleetOwnerStat[];
 }
 
 export interface FleetDailyPoint {
@@ -280,6 +296,8 @@ interface RawEvent {
   /** Fleet-specific — null for non-fleet sources (added in 0025). */
   fleet_event: string | null;
   fleet_outcome: string | null;
+  /** Fleet owner — null for non-fleet sources (added in 0026). */
+  fleet_owner: string | null;
 }
 
 export interface ActiveTimeEvent {
@@ -358,7 +376,8 @@ export async function loadDashboard(
       tool_calls_types,
       cost_millicents,
       fleet_event,
-      fleet_outcome
+      fleet_outcome,
+      fleet_owner
     FROM activity_event
     WHERE user_id = $1
       AND ts >= NOW() - INTERVAL '${sqlWindowDays} days'
@@ -854,6 +873,8 @@ function computeAggregates(
     const fleetDailyTokens = new Map<string, number>();
     const fleetDailyMillicents = new Map<string, number>();
     const recentMergeRows: FleetMergeRow[] = [];
+    // Per-owner accumulator (M109 fleet_owner attribute).
+    const ownerMap = new Map<string, FleetOwnerStat>();
 
     // Pre-fill daily buckets so empty days render.
     for (const d of daysBack) {
@@ -892,6 +913,23 @@ function computeAggregates(
 
       engineMap.set(engine, (engineMap.get(engine) ?? 0) + 1);
 
+      // Per-owner accumulation (M109). Only when the attribute is present.
+      if (e.fleet_owner) {
+        const ownerKey = e.fleet_owner;
+        const ownerStat = ownerMap.get(ownerKey) ?? {
+          owner: ownerKey,
+          proposals: 0,
+          merges: 0,
+          declines: 0,
+          ticks: 0,
+        };
+        if (ev === "proposal") ownerStat.proposals += 1;
+        else if (ev === "merge") ownerStat.merges += 1;
+        else if (ev === "decline") ownerStat.declines += 1;
+        else if (ev === "tick") ownerStat.ticks += 1;
+        ownerMap.set(ownerKey, ownerStat);
+      }
+
       if (fleetDailyTokens.has(day)) {
         fleetDailyTokens.set(day, (fleetDailyTokens.get(day) ?? 0) + tokens);
         fleetDailyMillicents.set(day, (fleetDailyMillicents.get(day) ?? 0) + mc);
@@ -921,6 +959,10 @@ function computeAggregates(
         .map(([label, value]) => ({ label, value })),
       daily: fleetDaily,
       recentMerges: recentMergeRows,
+      byOwner: [...ownerMap.values()].sort((a, b) =>
+        (b.proposals + b.merges + b.declines + b.ticks) -
+        (a.proposals + a.merges + a.declines + a.ticks)
+      ),
     };
   })();
 

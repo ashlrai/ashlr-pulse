@@ -119,6 +119,8 @@ export interface ActivityEventInsert {
   fleet_event: string | null;
   /** ashlr-fleet outcome: pending | applied | rejected | <tick-reason>. */
   fleet_outcome: string | null;
+  /** ashlr-fleet owner: the teammate who owns the goal/proposal. */
+  fleet_owner: string | null;
 
   // ── Codex-specific (NULL for non-codex sources) ────────────────────────
   codex_plan_type: string | null;
@@ -331,6 +333,7 @@ export function spanToActivityEvent(
   // value when tokens are absent.
   const fleetEvent   = asString(attrs, "ashlr.fleet.event");
   const fleetOutcome = asString(attrs, "ashlr.fleet.outcome");
+  const fleetOwner   = asString(attrs, "ashlr.fleet.owner");
   const fleetRepo    = asString(attrs, "ashlr.fleet.repo");
   const fleetCostUsdStr = asString(attrs, "ashlr.fleet.cost_usd");
   const fleetCostMillicents = fleetCostUsdStr != null
@@ -389,6 +392,7 @@ export function spanToActivityEvent(
     // Fleet-specific. null for non-fleet sources.
     fleet_event: fleetEvent,
     fleet_outcome: fleetOutcome,
+    fleet_owner: fleetOwner,
     // Codex-specific. asInt/asString return null when the attribute is
     // absent, so non-codex sources end up with null in every codex_* field.
     codex_plan_type: asString(attrs, "ashlr.codex.plan_type"),

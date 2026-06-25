@@ -185,6 +185,7 @@ export async function POST(req: Request): Promise<Response> {
         "codex_effort",
         "fleet_event",
         "fleet_outcome",
+        "fleet_owner",
       ])}
       ON CONFLICT DO NOTHING
     `;
