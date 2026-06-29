@@ -42,6 +42,17 @@ import { admin } from "./supabase-server";
 import { log } from "./logger";
 import type { ActivityEventInsert } from "./otel-genai";
 
+// Lazy import of notifySSESubscribers — the registry module is a plain lib
+// file with no Next.js route constraints. Lazy to guard test envs that stub it.
+async function notifySSE(userId: string, events: FleetRealtimeEvent[]): Promise<void> {
+  try {
+    const { notifySSESubscribers } = await import("./dashboard-sse-registry");
+    notifySSESubscribers(userId, events);
+  } catch {
+    // Registry unavailable (test stub / cold env) — ignore, never block ingest.
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Fleet event shape for broadcast (privacy-safe subset of ActivityEventInsert)
 // ---------------------------------------------------------------------------
@@ -119,7 +130,7 @@ export function redactForBroadcast(row: ActivityEventInsert): FleetRealtimeEvent
   // FleetRealtimeEvent doesn't silently bypass the guard.
   for (const key of Object.keys(safe) as (keyof FleetRealtimeEvent)[]) {
     if (NEVER_BROADCAST.has(key as string)) {
-      delete (safe as Record<string, unknown>)[key as string];
+      delete (safe as unknown as Record<string, unknown>)[key as string];
     }
   }
 
@@ -154,6 +165,9 @@ export async function pushFleetEvents(
 
   const channel = `fleet-events:${userId}`;
 
+  // Collect privacy-safe payloads for SSE fan-out after the Supabase loop.
+  const ssePayloads: FleetRealtimeEvent[] = [];
+
   for (const row of fleetRows) {
     let payload: FleetRealtimeEvent;
     try {
@@ -171,12 +185,13 @@ export async function pushFleetEvents(
       throw err;
     }
 
+    // 1. Supabase Realtime broadcast (existing path).
     try {
       const sb = admin();
       // Supabase Realtime broadcast: server-side push via the admin client.
       // Uses the REST broadcast endpoint (no persistent WS connection needed
       // server-side — the client subscribes and the server just pushes).
-      const { error } = await sb
+      const status = await sb
         .channel(channel)
         .send({
           type: "broadcast",
@@ -184,12 +199,12 @@ export async function pushFleetEvents(
           payload,
         });
 
-      if (error) {
+      if (status !== "ok") {
         log.warn({
           msg: "fleet-realtime: broadcast error",
           channel,
           fleet_event: row.fleet_event,
-          error: String(error),
+          error: String(status),
         });
       }
     } catch (err) {
@@ -201,5 +216,14 @@ export async function pushFleetEvents(
         error: err instanceof Error ? err.message : String(err),
       });
     }
+
+    // Accumulate for SSE fan-out (same redacted payload — no re-redaction needed).
+    ssePayloads.push(payload);
+  }
+
+  // 2. SSE fan-out: push all valid payloads to any open /api/dashboard/subscribe
+  //    connections in one batch. Fire-and-forget — never blocks ingest.
+  if (ssePayloads.length > 0) {
+    void notifySSE(userId, ssePayloads);
   }
 }

@@ -49,7 +49,9 @@ import { CompareTab } from "./_tabs/compare";
 import { CostsTab } from "./_tabs/costs";
 import { ToolsTab } from "./_tabs/tools";
 import { FleetTab } from "./_tabs/fleet";
+import { ManagementTab } from "./_tabs/management";
 import { SavedViewsTabStrip } from "./_components/SavedViewsTabStrip";
+import { DashboardSSE } from "./_components/DashboardSSE";
 
 export const dynamic = "force-dynamic";
 
@@ -66,7 +68,7 @@ interface SearchParams {
   from?: string;
 }
 
-const TABS = ["today", "trends", "compare", "costs", "tools", "fleet"] as const;
+const TABS = ["today", "trends", "compare", "costs", "tools", "fleet", "management"] as const;
 type Tab = (typeof TABS)[number];
 
 function resolveTab(raw: string | undefined): Tab {
@@ -250,6 +252,10 @@ export default async function Page({
 
   return (
     <DashboardShell>
+      {/* SSE subscriber: pushes realtime fleet events to this page,
+          triggering router.refresh() on material changes (>5% delta).
+          Renders nothing — pure side-effect client component. */}
+      <DashboardSSE asUserId={!isOwnView ? targetUserId : undefined} />
       <Header
         me={me}
         active="dashboard"
@@ -339,7 +345,8 @@ export default async function Page({
       {activeTab === "compare" && <CompareTab {...tabProps} />}
       {activeTab === "costs"   && <CostsTab   {...tabProps} />}
       {activeTab === "tools"   && <ToolsTab   {...tabProps} />}
-      {activeTab === "fleet"   && <FleetTab   {...tabProps} />}
+      {activeTab === "fleet"      && <FleetTab      {...tabProps} />}
+      {activeTab === "management" && <ManagementTab  {...tabProps} />}
     </DashboardShell>
   );
 }
@@ -347,12 +354,13 @@ export default async function Page({
 // ─── TabNav ───────────────────────────────────────────────────────────
 
 const TAB_LABELS: Record<Tab, string> = {
-  today:   "today",
-  trends:  "trends",
-  compare: "compare",
-  costs:   "costs",
-  tools:   "tools",
-  fleet:   "fleet",
+  today:      "today",
+  trends:     "trends",
+  compare:    "compare",
+  costs:      "costs",
+  tools:      "tools",
+  fleet:      "fleet",
+  management: "management",
 };
 
 function TabNav({
