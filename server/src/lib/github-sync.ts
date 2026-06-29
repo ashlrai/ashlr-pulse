@@ -7,10 +7,10 @@
  *
  * Privacy: never store commit body, PR description, review comment text,
  * or issue body. Only metadata (counts, state enums, refs, first line of
- * commit message).
+ * commit message / issue title).
  */
 
-import { GitHubAuthError, GitHubClient, type GitHubRepo } from "./github-client";
+import { GitHubAuthError, GitHubClient } from "./github-client";
 import {
   getAccessTokenForAccount,
   insertEvent,
@@ -18,10 +18,12 @@ import {
   recordSyncError,
   recordSyncSuccess,
   setCommitsWatermark,
+  setIssuesWatermark,
   setPRsWatermark,
   upsertRepo,
   type GitHubAccountRow,
 } from "./github-account-db";
+import { sql } from "./db";
 
 export interface SyncResult {
   account_id: string;
@@ -29,6 +31,7 @@ export interface SyncResult {
   reposScanned: number;
   commitsAdded: number;
   prsAdded: number;
+  issuesAdded: number;
   errors: string[];
 }
 
@@ -41,6 +44,7 @@ export async function syncAccount(account: GitHubAccountRow): Promise<SyncResult
     reposScanned: 0,
     commitsAdded: 0,
     prsAdded: 0,
+    issuesAdded: 0,
     errors: [],
   };
 
@@ -90,6 +94,15 @@ export async function syncAccount(account: GitHubAccountRow): Promise<SyncResult
       await setPRsWatermark(repo.id, new Date().toISOString());
     } catch (err) {
       result.errors.push(`prs[${repo.full_name}]: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    try {
+      const issuesSince = repo.issues_synced_until ?? lookback;
+      const issuesAdded = await syncIssues(gh, account.id, repo.id, repo.full_name, issuesSince);
+      result.issuesAdded += issuesAdded;
+      await setIssuesWatermark(repo.id, new Date().toISOString());
+    } catch (err) {
+      result.errors.push(`issues[${repo.full_name}]: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -184,4 +197,119 @@ async function syncPRs(
     }
   }
   return added;
+}
+
+// ---------------------------------------------------------------------------
+// Issues
+// ---------------------------------------------------------------------------
+// Uses GitHubClient.listIssuesSince(), which paginates the /issues endpoint.
+// That endpoint returns PRs too (they carry a `pull_request` key) — we skip
+// those so PRs aren't double-counted as issues.
+
+/**
+ * Sync issues for one repo. Emits `issue_opened` at created_at and, when the
+ * issue is closed, `issue_closed` at closed_at. Idempotent via the unique
+ * (repo_id, kind, external_id). actor_login is the issue author (the
+ * contributor) — captured so the graph can draw contributes_to edges.
+ */
+async function syncIssues(
+  gh: GitHubClient,
+  accountId: string,
+  repoId: string,
+  fullName: string,
+  since: string,
+): Promise<number> {
+  let added = 0;
+  for await (const issue of gh.listIssuesSince(fullName, since)) {
+    // Skip PRs surfaced by the /issues endpoint — they're handled by syncPRs.
+    if (issue.pull_request) continue;
+
+    const actor = issue.user?.login ?? "unknown";
+    const baseAttrs = {
+      account_id: accountId,
+      repo_id: repoId,
+      actor_login: actor,
+      external_id: String(issue.number),
+      pr_number: issue.number, // reuse the numeric ref column for the issue number
+      pr_state: issue.state,
+      message_first_line: issue.title.slice(0, 200), // title only, never the body
+    };
+
+    if (await insertEvent({ ...baseAttrs, kind: "issue_opened", ts: issue.created_at })) {
+      added++;
+    }
+    if (issue.closed_at) {
+      if (await insertEvent({ ...baseAttrs, kind: "issue_closed", ts: issue.closed_at })) {
+        added++;
+      }
+    }
+  }
+  return added;
+}
+
+// ---------------------------------------------------------------------------
+// Proposal-linked commit lookup (fleet proposal drill-down)
+// ---------------------------------------------------------------------------
+
+export interface ProposalCommit {
+  sha: string;
+  messageFirstLine: string | null;
+  actorLogin: string | null;
+  ts: string;
+  changedFiles: number | null;
+}
+
+/**
+ * Fetch up to `limit` commits for a repo that fall within a proposal window
+ * [windowStart, windowEnd]. Org-scoped via membership JOIN on github_account.
+ *
+ * PRIVACY FLOOR: only structured metadata columns are returned (sha,
+ * message_first_line ≤200 chars, actor_login, ts, changed_files). No diff,
+ * no commit body, no file contents.
+ */
+export async function getCommitsForProposalWindow(
+  orgId: string,
+  repoFullName: string,
+  windowStart: string,
+  windowEnd: string,
+  limit = 3,
+): Promise<ProposalCommit[]> {
+  const safeLimit = Math.min(20, Math.max(1, limit));
+  const db = sql();
+
+  interface Row {
+    external_id: string;
+    message_first_line: string | null;
+    actor_login: string | null;
+    ts: string;
+    changed_files: number | null;
+  }
+
+  const rows = await db<Row[]>`
+    SELECT
+      ge.external_id,
+      ge.message_first_line,
+      ge.actor_login,
+      ge.ts::text AS ts,
+      ge.changed_files
+    FROM github_event ge
+    JOIN github_repo gr   ON gr.id  = ge.repo_id
+    JOIN github_account ga ON ga.id = gr.account_id
+    JOIN membership m      ON m.user_id = ga.user_id
+      AND m.org_id = ${orgId}::uuid
+    WHERE ge.kind      = 'commit'
+      AND gr.full_name = ${repoFullName}
+      AND ge.ts >= ${windowStart}::timestamptz
+      AND ge.ts <= ${windowEnd}::timestamptz
+    ORDER BY ge.ts DESC
+    LIMIT ${safeLimit}
+  `;
+
+  return rows.map((r) => ({
+    sha: r.external_id,
+    messageFirstLine: r.message_first_line?.slice(0, 200) ?? null,
+    actorLogin: r.actor_login,
+    ts: r.ts,
+    changedFiles: r.changed_files,
+  }));
 }
