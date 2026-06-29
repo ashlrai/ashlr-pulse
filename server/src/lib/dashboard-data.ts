@@ -50,6 +50,13 @@ export interface LoadOpts {
    * subscriptionSourcesFor(org) at the call site.
    */
   subscriptionSources?: Set<string>;
+  /**
+   * When set, restricts all queries to events belonging to a single
+   * claude.session.id / ashlr.plugin.session_id value. Used by the
+   * /sessions/[id] detail page to isolate one profiling session.
+   * NULL means all sessions are included.
+   */
+  sessionFilter?: string | null;
 }
 
 export interface DashboardData {
@@ -389,6 +396,14 @@ export async function loadDashboard(
     [userId, retParam, sourceParam, ...scope.repoParams],
   );
 
+  // Session filter: isolate a single claude.session.id / ashlr.plugin.session_id.
+  // Applied in-memory so we don't disturb the fixed-slot SQL bind layout
+  // (scope params already occupy $4+). Sessions are a small fraction of
+  // the total event window so this is safe.
+  const filteredEvents = opts.sessionFilter
+    ? events.filter((e) => (e as unknown as { session_id?: string | null }).session_id === opts.sessionFilter)
+    : events;
+
   const githubRepoClauseSql = scope.repoClauseSql.replaceAll("repo_name", "gr.full_name");
   const projectRepoClauseSql = rebaseScopePlaceholders(
     scope.repoClauseSql.replaceAll("repo_name", "ae.repo_name"),
@@ -497,7 +512,7 @@ export async function loadDashboard(
     };
   });
 
-  return computeAggregates(events, commits, ghEvents, projectRollups, chartDays, opts.subscriptionSources, retCutoff);
+  return computeAggregates(filteredEvents, commits, ghEvents, projectRollups, chartDays, opts.subscriptionSources, retCutoff);
 }
 
 interface BreakdownRow {

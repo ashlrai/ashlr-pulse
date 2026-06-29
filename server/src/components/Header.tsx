@@ -18,9 +18,10 @@ import { palette, space } from "@/lib/theme";
 interface Props {
   me: CurrentUser;
   active:
-    | "dashboard" | "ask" | "github" | "share" | "projects"
+    | "dashboard" | "ask" | "map" | "fleet" | "oversight" | "github" | "share" | "projects"
     | "tokens" | "settings" | "billing"
-    | "compare" | "forecast";  // top-level comparison + cost-projection pages
+    | "compare" | "forecast"  // top-level comparison + cost-projection pages
+    | "sessions";             // session replay + flamegraph
   /** Optional live agent status — renders the green pulse + label when alive. */
   agentAlive?: boolean;
   agentSeenSecondsAgo?: number | null;
@@ -60,6 +61,9 @@ export function Header({ me, active, agentAlive, agentSeenSecondsAgo }: Props): 
         <nav style={{ display: "flex", gap: space.x4, fontSize: 12 }}>
           <NavLink href="/app"             active={active === "dashboard"}>dashboard</NavLink>
           <NavLink href="/ask"             active={active === "ask"}>ask</NavLink>
+          <NavLink href="/map"             active={active === "map"}>map</NavLink>
+          <NavLink href="/fleet"           active={active === "fleet"}>fleet</NavLink>
+          <NavLink href="/oversight"       active={active === "oversight"}>oversight</NavLink>
           <NavLink href="/projects"        active={active === "projects"}>projects</NavLink>
           <NavLink href="/share"           active={active === "share"}>sharing</NavLink>
           <NavLink href="/github"          active={active === "github"}>github</NavLink>
