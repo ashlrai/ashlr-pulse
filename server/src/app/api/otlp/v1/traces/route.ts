@@ -17,6 +17,7 @@
 import { NextResponse } from "next/server";
 import { sql } from "@/lib/db";
 import { spanToActivityEvent } from "@/lib/otel-genai";
+import { pushFleetEvents } from "@/lib/fleet-realtime";
 import { primaryOrgForUser, maybeAutoDefaultCodexSubscription } from "@/lib/org-db";
 import { verifyPat } from "@/lib/pat";
 import { checkBucket } from "@/lib/rate-limit";
@@ -207,6 +208,20 @@ export async function POST(req: Request): Promise<Response> {
       { error: "db insert failed", detail: message },
       { status: 500, headers: { "x-request-id": rid } },
     );
+  }
+
+  // Realtime push — fire-and-forget after DB insert. Fleet events are
+  // broadcast to subscribed dashboard clients so the UI updates push-style.
+  // Polling remains the fallback; a missed push just means the next poll
+  // catches up. Only runs when PULSE_REALTIME_PUSH=true (off by default).
+  if (inserted > 0) {
+    pushFleetEvents(userId, rows).catch((err) => {
+      log.warn({
+        msg: "otlp: realtime push error (non-fatal)",
+        request_id: rid,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    });
   }
 
   // Auto-default Codex to subscription mode on first sight of a
