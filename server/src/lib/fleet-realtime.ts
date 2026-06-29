@@ -97,6 +97,49 @@ const NEVER_BROADCAST = new Set<string>([
 ]);
 
 // ---------------------------------------------------------------------------
+// toFleetEventJSON — type-safe discriminated-union narrowing helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert a `FleetRealtimeEvent` to a plain `Record<string, any>` for
+ * property-access patterns that need an index signature (e.g. test assertions
+ * that check for the *absence* of fields by key name).
+ *
+ * **Why this helper exists**
+ *
+ * `FleetRealtimeEvent` is a closed interface: every property is explicitly
+ * named, so TypeScript refuses a direct cast `event as Record<string, unknown>`
+ * because the two types don't structurally overlap enough for TS to consider
+ * the cast safe.
+ *
+ * The canonical fix is a two-hop cast through `unknown`:
+ *   `(event as unknown) as Record<string, any>`
+ * but that pattern scatters the type-unsafe widening across call-sites and
+ * makes the intent opaque. This helper centralises the widening, documents
+ * *why* it is safe (the result is a read-only snapshot of the already-redacted
+ * broadcast payload — no new data escapes), and gives callers a properly-typed
+ * return value without suppressing errors at every use-site.
+ *
+ * **Safety guarantee**
+ *
+ * The input must already have passed through `redactForBroadcast()`, which
+ * enforces the NEVER_BROADCAST allowlist and the assertMetadataOnly floor.
+ * `toFleetEventJSON` does not perform additional redaction — it only widens
+ * the type for structural inspection.
+ *
+ * @param event - A `FleetRealtimeEvent` returned by `redactForBroadcast`.
+ * @returns     A plain object with an index signature, suitable for dynamic
+ *              key access. The returned object is a shallow copy; mutating it
+ *              does not affect the original event.
+ */
+export function toFleetEventJSON(event: FleetRealtimeEvent): Record<string, any> {
+  // Spread into a fresh object so callers get a stable plain object rather
+  // than a reference to the original. The double-cast through `unknown` is
+  // intentional — see JSDoc above.
+  return { ...(event as unknown as Record<string, any>) };
+}
+
+// ---------------------------------------------------------------------------
 // redactForBroadcast
 // ---------------------------------------------------------------------------
 

@@ -21,6 +21,7 @@
 import { describe, it, expect } from "bun:test";
 import {
   redactForBroadcast,
+  toFleetEventJSON,
   type FleetRealtimeEvent,
 } from "../src/lib/fleet-realtime";
 import {
@@ -141,43 +142,43 @@ describe("fleet-realtime — privacy floor strips forbidden fields", () => {
   });
 
   it("does not expose session_id in the broadcast payload", () => {
-    const payload = redactForBroadcast(makeFleetRow({ session_id: "secret-session" }));
-    expect((payload as Record<string, unknown>).session_id).toBeUndefined();
+    const payload = toFleetEventJSON(redactForBroadcast(makeFleetRow({ session_id: "secret-session" })));
+    expect(payload.session_id).toBeUndefined();
   });
 
   it("does not expose project_hash in the broadcast payload", () => {
-    const payload = redactForBroadcast(makeFleetRow({ project_hash: "hash-abc" }));
-    expect((payload as Record<string, unknown>).project_hash).toBeUndefined();
+    const payload = toFleetEventJSON(redactForBroadcast(makeFleetRow({ project_hash: "hash-abc" })));
+    expect(payload.project_hash).toBeUndefined();
   });
 
   it("does not expose git_branch in the broadcast payload", () => {
-    const payload = redactForBroadcast(makeFleetRow({ git_branch: "feat/secret" }));
-    expect((payload as Record<string, unknown>).git_branch).toBeUndefined();
+    const payload = toFleetEventJSON(redactForBroadcast(makeFleetRow({ git_branch: "feat/secret" })));
+    expect(payload.git_branch).toBeUndefined();
   });
 
   it("does not expose dedup_key in the broadcast payload", () => {
-    const payload = redactForBroadcast(makeFleetRow({ dedup_key: "abc123" }));
-    expect((payload as Record<string, unknown>).dedup_key).toBeUndefined();
+    const payload = toFleetEventJSON(redactForBroadcast(makeFleetRow({ dedup_key: "abc123" })));
+    expect(payload.dedup_key).toBeUndefined();
   });
 
   it("does not expose span_id in the broadcast payload", () => {
-    const payload = redactForBroadcast(makeFleetRow({ span_id: "deadbeef" }));
-    expect((payload as Record<string, unknown>).span_id).toBeUndefined();
+    const payload = toFleetEventJSON(redactForBroadcast(makeFleetRow({ span_id: "deadbeef" })));
+    expect(payload.span_id).toBeUndefined();
   });
 
   it("does not expose tokens_saved_breakdown in the broadcast payload", () => {
-    const payload = redactForBroadcast(makeFleetRow({ tokens_saved_breakdown: { genome: 100 } }));
-    expect((payload as Record<string, unknown>).tokens_saved_breakdown).toBeUndefined();
+    const payload = toFleetEventJSON(redactForBroadcast(makeFleetRow({ tokens_saved_breakdown: { genome: 100 } })));
+    expect(payload.tokens_saved_breakdown).toBeUndefined();
   });
 
   it("does not expose plugin_features in the broadcast payload", () => {
-    const payload = redactForBroadcast(makeFleetRow({ plugin_features: ["genome"] }));
-    expect((payload as Record<string, unknown>).plugin_features).toBeUndefined();
+    const payload = toFleetEventJSON(redactForBroadcast(makeFleetRow({ plugin_features: ["genome"] })));
+    expect(payload.plugin_features).toBeUndefined();
   });
 
   it("does not expose language in the broadcast payload", () => {
-    const payload = redactForBroadcast(makeFleetRow({ language: "Rust" }));
-    expect((payload as Record<string, unknown>).language).toBeUndefined();
+    const payload = toFleetEventJSON(redactForBroadcast(makeFleetRow({ language: "Rust" })));
+    expect(payload.language).toBeUndefined();
   });
 });
 

@@ -21,7 +21,7 @@
  * To run:
  *   createdb pulse_test
  *   DATABASE_URL=postgres://localhost/pulse_test bun run migrate
- *   DATABASE_URL=postgres://localhost/pulse_test bun test src/__tests__/e2e-materialized-aggregate-refresh.test.ts
+ *   DATABASE_URL=postgres://localhost/pulse_test bun test tests/e2e-materialized-aggregate-refresh.test.ts
  *   dropdb pulse_test
  */
 
@@ -170,11 +170,11 @@ describe.skipIf(!HAS_DB)("e2e fleet_daily_aggregate refresh — 3-day ingest + r
   const TOTAL_MILLICENTS = COST_PER_DAY.reduce((a, b) => a + b, 0); // 800
 
   beforeAll(async () => {
-    const { sql } = await import("../../lib/db");
-    const mod = await import("../../lib/fleet-aggregate-refresh");
+    const { sql } = await import("../src/lib/db");
+    const mod = await import("../src/lib/fleet-aggregate-refresh");
     refreshFleetAggregates = mod.refreshFleetAggregates;
     pruneFleetAggregates = mod.pruneFleetAggregates;
-    const { ensureLocalUser, ensureDefaultOrg } = await import("../../lib/current-user");
+    const { ensureLocalUser, ensureDefaultOrg } = await import("../src/lib/current-user");
 
     db = sql();
     const me = await ensureLocalUser(email, null);
