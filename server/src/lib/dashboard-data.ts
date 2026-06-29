@@ -43,6 +43,27 @@ export interface LoadOpts {
    */
   sourceFilter?: string | null;
   /**
+   * Filter activity to a single repository in "org/repo" format.
+   * Validated against ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ at the route
+   * layer. NULL means all repos are included.
+   */
+  repoFilter?: string | null;
+  /**
+   * Filter activity to events using a specific model (e.g.
+   * "claude-opus-4-7"). NULL means all models are included.
+   */
+  modelFilter?: string | null;
+  /**
+   * Lower bound for event timestamps (ISO-8601). NULL means no lower
+   * bound beyond the chart window. Must be < untilISO when both are set.
+   */
+  sinceISO?: string | null;
+  /**
+   * Upper bound for event timestamps (ISO-8601, exclusive). NULL means
+   * no explicit upper bound (today).
+   */
+  untilISO?: string | null;
+  /**
    * Sources flagged "subscription" in the org's source_subscription_modes
    * map. Events from these sources have their cost zeroed in headline
    * cost totals (stat cards, daily aggregates, project rollups, feed,
@@ -358,11 +379,25 @@ export async function loadDashboard(
   //   $1 = user_id
   //   $2 = retCutoff (nullable; NULL → no retention clamp)
   //   $3 = sourceFilter (nullable; NULL → all sources)
-  //   $4+ = scope params from buildScopeFilter (peer-share)
+  //   $4 = repoFilter (nullable; NULL → all repos)
+  //   $5 = modelFilter (nullable; NULL → all models)
+  //   $6 = sinceISO (nullable; NULL → no lower bound override)
+  //   $7 = untilISO (nullable; NULL → no upper bound)
+  //   $8+ = scope params from buildScopeFilter (peer-share)
   // The OR-NULL fragments turn each fixed slot into a no-op when the
   // bind is NULL — keeps the SQL string static so postgres can plan it.
   const retParam: string | null = retCutoff ? retCutoff.toISOString() : null;
   const sourceParam: string | null = opts.sourceFilter ?? null;
+  const repoParam: string | null = opts.repoFilter ?? null;
+  const modelParam: string | null = opts.modelFilter ?? null;
+  const sinceParam: string | null = opts.sinceISO ?? null;
+  const untilParam: string | null = opts.untilISO ?? null;
+
+  // Rebase scope placeholders: peer-share clause uses $4+ by default
+  // (built by buildScopeFilter), but we've added 4 new fixed slots
+  // ($4–$7), so we bump them to $8+.
+  const rebasedScopeClauseSql = rebaseScopePlaceholders(scope.repoClauseSql, 8);
+
   const events = await db.unsafe<RawEvent[]>(
     `
     SELECT
@@ -390,10 +425,14 @@ export async function loadDashboard(
       AND ts >= NOW() - INTERVAL '${sqlWindowDays} days'
       AND ($2::timestamptz IS NULL OR ts >= $2::timestamptz)
       AND ($3::text IS NULL OR source = $3::text)
-      ${scope.repoClauseSql}
+      AND ($4::text IS NULL OR repo_name = $4::text)
+      AND ($5::text IS NULL OR model = $5::text)
+      AND ($6::timestamptz IS NULL OR ts >= $6::timestamptz)
+      AND ($7::timestamptz IS NULL OR ts < $7::timestamptz)
+      ${rebasedScopeClauseSql}
     ORDER BY ts DESC
     `,
-    [userId, retParam, sourceParam, ...scope.repoParams],
+    [userId, retParam, sourceParam, repoParam, modelParam, sinceParam, untilParam, ...scope.repoParams],
   );
 
   // Session filter: isolate a single claude.session.id / ashlr.plugin.session_id.
@@ -404,7 +443,16 @@ export async function loadDashboard(
     ? events.filter((e) => (e as unknown as { session_id?: string | null }).session_id === opts.sessionFilter)
     : events;
 
-  const githubRepoClauseSql = scope.repoClauseSql.replaceAll("repo_name", "gr.full_name");
+  // GitHub queries use a separate fixed-slot layout:
+  //   $1 = user_id
+  //   $2 = retCutoff (nullable)
+  //   $3 = sinceISO (nullable) — applied to ge.ts
+  //   $4 = untilISO (nullable) — applied to ge.ts
+  //   $5 = repoFilter (nullable; matched against gr.full_name)
+  //   $6+ = scope params from buildScopeFilter (peer-share)
+  // We rebase the scope clause to start at $6 for github queries.
+  const githubRepoClauseSqlRaw = scope.repoClauseSql.replaceAll("repo_name", "gr.full_name");
+  const githubRepoClauseSql = rebaseScopePlaceholders(githubRepoClauseSqlRaw, 6);
   const projectRepoClauseSql = rebaseScopePlaceholders(
     scope.repoClauseSql.replaceAll("repo_name", "ae.repo_name"),
     3,
@@ -412,9 +460,6 @@ export async function loadDashboard(
 
   // Pull last chartDays of github commits (subjects only — public info).
   // github_event ⨝ github_account (account_id) ⨝ github_repo (repo_id).
-  // Retention cutoff at $2 (nullable) — see events query above. $3 is
-  // reserved as a dummy slot so peer-share repo params retain their $4+
-  // placeholder numbering from buildScopeFilter().
   const commits = await db.unsafe<{ subject: string; repo: string; sha: string; ts: string }[]>(
     `
     SELECT
@@ -429,12 +474,14 @@ export async function loadDashboard(
       AND ge.kind    = 'commit'
       AND ge.ts >= NOW() - INTERVAL '${chartDays} days'
       AND ($2::timestamptz IS NULL OR ge.ts >= $2::timestamptz)
-      AND ($3::text IS NULL OR $3::text IS NULL)
+      AND ($3::timestamptz IS NULL OR ge.ts >= $3::timestamptz)
+      AND ($4::timestamptz IS NULL OR ge.ts < $4::timestamptz)
+      AND ($5::text IS NULL OR gr.full_name = $5::text)
       ${githubRepoClauseSql}
     ORDER BY ge.ts DESC
     LIMIT 50
     `,
-    [userId, retParam, sourceParam, ...scope.repoParams],
+    [userId, retParam, sinceParam, untilParam, repoParam, ...scope.repoParams],
   ).catch(() => [] as { subject: string; repo: string; sha: string; ts: string }[]);
 
   // Pull GitHub events for daily PR throughput aggregation.
@@ -447,10 +494,12 @@ export async function loadDashboard(
     WHERE ga.user_id = $1::uuid
       AND ge.ts >= NOW() - INTERVAL '${chartDays} days'
       AND ($2::timestamptz IS NULL OR ge.ts >= $2::timestamptz)
-      AND ($3::text IS NULL OR $3::text IS NULL)
+      AND ($3::timestamptz IS NULL OR ge.ts >= $3::timestamptz)
+      AND ($4::timestamptz IS NULL OR ge.ts < $4::timestamptz)
+      AND ($5::text IS NULL OR gr.full_name = $5::text)
       ${githubRepoClauseSql}
     `,
-    [userId, retParam, sourceParam, ...scope.repoParams],
+    [userId, retParam, sinceParam, untilParam, repoParam, ...scope.repoParams],
   ).catch(() => [] as { kind: string; repo: string; ts: string }[]);
 
   // Load project rollups in parallel — small query, joins activity_event

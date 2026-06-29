@@ -35,6 +35,11 @@ import {
   type BillingMode,
 } from "@/lib/plan-gate";
 import { type LinePoint } from "@/components/charts/LineChart";
+import {
+  resolveRepoFilter,
+  resolveModelFilter,
+  resolveDateRange,
+} from "@/lib/dashboard-filter-params";
 
 import { Header } from "@/components/Header";
 import { Banner } from "@/components/ui/Banner";
@@ -52,6 +57,7 @@ import { FleetTab } from "./_tabs/fleet";
 import { ManagementTab } from "./_tabs/management";
 import { SavedViewsTabStrip } from "./_components/SavedViewsTabStrip";
 import { DashboardSSE } from "./_components/DashboardSSE";
+import { DashboardFilterBar } from "./_components/DashboardFilterBar";
 
 export const dynamic = "force-dynamic";
 
@@ -66,6 +72,14 @@ interface SearchParams {
   project?: string;
   accepted?: string;
   from?: string;
+  /** Repo filter: "org/repo" format, e.g. "acme/api". */
+  repo?: string;
+  /** Model filter: model id, e.g. "claude-opus-4-7". */
+  model?: string;
+  /** ISO-8601 date lower bound, e.g. "2026-06-01". */
+  since?: string;
+  /** ISO-8601 date upper bound (exclusive), e.g. "2026-06-30". */
+  until?: string;
 }
 
 const TABS = ["today", "trends", "compare", "costs", "tools", "fleet", "management"] as const;
@@ -107,6 +121,9 @@ function resolveWindow(raw: string | undefined): { value: string; days: number }
   return opt ?? { value: "14", days: 14 };
 }
 
+// ─── Multi-dimension filter helpers ──────────────────────────────────
+// (imported from @/lib/dashboard-filter-params — see that module for docs)
+
 // ─── Page ─────────────────────────────────────────────────────────────
 
 export default async function Page({
@@ -115,9 +132,14 @@ export default async function Page({
   const me = await currentUser();
   if (!me) redirect("/login");
 
-  const { as, win, src, tab: tabParam, accepted, from } = await searchParams;
+  const { as, win, src, tab: tabParam, accepted, from, repo, model, since, until } = await searchParams;
   const activeTab = resolveTab(tabParam);
   const windowOpt = resolveWindow(win);
+
+  // Multi-dimension filters — validated and URL-persistent.
+  const repoFilter = resolveRepoFilter(repo);
+  const modelFilter = resolveModelFilter(model);
+  const [sinceISO, untilISO] = resolveDateRange(since, until);
 
   let targetUserId = me.id;
   let scope: ScopeFilter = { repoClauseSql: "", repoParams: [] };
@@ -157,6 +179,10 @@ export default async function Page({
       chartDays: windowOpt.days,
       limits,
       sourceFilter: resolveSourceFilter(src),
+      repoFilter,
+      modelFilter,
+      sinceISO,
+      untilISO,
       subscriptionSources,
     }),
     isOwnView ? getAgentStatus(me.id, nowUtc) : Promise.resolve(null),
@@ -230,7 +256,7 @@ export default async function Page({
   const tabProps = {
     data,
     windowOpt,
-    queryParams: { as, win, src, tab: tabParam },
+    queryParams: { as, win, src, tab: tabParam, repo: repoFilter ?? undefined, model: modelFilter ?? undefined, since: sinceISO ?? undefined, until: untilISO ?? undefined },
     billingMode,
     isSubMode,
     monthlyCapUsd,
@@ -310,7 +336,7 @@ export default async function Page({
         <ChipGroup
           current={windowOpt.value}
           options={WIN_OPTIONS.map((o) => ({ label: o.label, value: o.value }))}
-          hrefFor={(v) => buildHref({ as, win: v, src, tab: tabParam })}
+          hrefFor={(v) => buildHref({ as, win: v, src, tab: tabParam, repo: repoFilter ?? undefined, model: modelFilter ?? undefined, since: sinceISO ?? undefined, until: untilISO ?? undefined })}
         />
       </div>
 
@@ -320,12 +346,23 @@ export default async function Page({
         <ChipGroup
           current={src ?? ""}
           options={SOURCE_OPTIONS.map((o) => ({ label: o.label, value: o.value }))}
-          hrefFor={(v) => buildHref({ as, win, src: v || undefined, tab: tabParam })}
+          hrefFor={(v) => buildHref({ as, win, src: v || undefined, tab: tabParam, repo: repoFilter ?? undefined, model: modelFilter ?? undefined, since: sinceISO ?? undefined, until: untilISO ?? undefined })}
         />
       </div>
 
+      {/* Multi-dimension filter bar: repo, model, date-range */}
+      <DashboardFilterBar
+        topRepos={data.topRepos}
+        models={data.models}
+        currentRepo={repoFilter ?? ""}
+        currentModel={modelFilter ?? ""}
+        currentSince={sinceISO ?? ""}
+        currentUntil={untilISO ?? ""}
+        baseHref={buildHref({ as, win, src, tab: tabParam })}
+      />
+
       {/* Tab navigation */}
-      <TabNav active={activeTab} queryParams={{ as, win, src }} />
+      <TabNav active={activeTab} queryParams={{ as, win, src, repo: repoFilter ?? undefined, model: modelFilter ?? undefined, since: sinceISO ?? undefined, until: untilISO ?? undefined }} />
 
       {/* Tab content */}
       {activeTab === "today" && (
@@ -370,7 +407,7 @@ function TabNav({
   queryParams,
 }: {
   active: Tab;
-  queryParams: { as?: string; win?: string; src?: string };
+  queryParams: { as?: string; win?: string; src?: string; repo?: string; model?: string; since?: string; until?: string };
 }): ReactElement {
   return (
     <nav style={{
