@@ -47,7 +47,7 @@ export function startBackgroundCron(): void {
     return;
   }
 
-  log.info({ msg: "cron: registering ticks", github_sync: "hourly", digest: "15m", oversight: "daily", fleet_daily: "daily", peer_share_refresh: "daily", fleet_scorecard_webhook: "daily" });
+  log.info({ msg: "cron: registering ticks", github_sync: "hourly", digest: "15m", oversight: "daily", fleet_daily: "daily", peer_share_refresh: "daily", peer_share_hourly: "hourly", fleet_scorecard_webhook: "daily" });
 
   // Initial ticks staggered so we don't slam the DB at boot.
   setTimeout(() => tick("github-sync"),                  2 * 60 * 1000);
@@ -55,6 +55,8 @@ export function startBackgroundCron(): void {
   setTimeout(() => tick("oversight"),                    8 * 60 * 1000);
   setTimeout(() => tick("fleet-daily"),                 11 * 60 * 1000);
   setTimeout(() => tick("peer-share-refresh"),          14 * 60 * 1000);
+  // peer-share-hourly: first tick at 20 min, then every hour.
+  setTimeout(() => tick("peer-share-hourly"),           20 * 60 * 1000);
   // fleet-scorecard-webhook runs after fleet-daily aggregates are ready.
   setTimeout(() => tick("fleet-scorecard-webhook"),     17 * 60 * 1000);
 
@@ -63,10 +65,11 @@ export function startBackgroundCron(): void {
   setInterval(() => tick("oversight"),                    ONE_DAY_MS);
   setInterval(() => tick("fleet-daily"),                  ONE_DAY_MS);
   setInterval(() => tick("peer-share-refresh"),           ONE_DAY_MS);
+  setInterval(() => tick("peer-share-hourly"),            ONE_HOUR_MS);
   setInterval(() => tick("fleet-scorecard-webhook"),      ONE_DAY_MS);
 }
 
-async function tick(endpoint: "github-sync" | "digest" | "oversight" | "fleet-daily" | "peer-share-refresh" | "fleet-scorecard-webhook"): Promise<void> {
+async function tick(endpoint: "github-sync" | "digest" | "oversight" | "fleet-daily" | "peer-share-refresh" | "peer-share-hourly" | "fleet-scorecard-webhook"): Promise<void> {
   const port = process.env.PORT ?? "3000";
   const url = `http://127.0.0.1:${port}/api/cron/${endpoint}`;
   const startedAt = Date.now();
