@@ -21,6 +21,126 @@ export const FORBIDDEN_FIELDS = new Set<string>([
   "raw_otel_span",
 ]);
 
+// ---------------------------------------------------------------------------
+// Metadata privacy floor (used by the audit feed and realtime broadcast path)
+// ---------------------------------------------------------------------------
+
+/**
+ * Keys that must NEVER appear in any free-form metadata bag surfaced through
+ * the audit feed, realtime broadcast, or any peer-share payload. The check is
+ * always performed case-insensitively (compare via .toLowerCase()).
+ *
+ * Matches the privacy floor defined in COMPETITIVE.md:49-50 and
+ * ARCHITECTURE.md:91: no code, prompts, completions, diffs, or file bodies
+ * may be carried in structured metadata.
+ */
+export const FORBIDDEN_META_KEYS = new Set<string>([
+  // LLM content
+  "prompt",
+  "prompts",
+  "completion",
+  "completions",
+  "message",
+  "messages",
+  // Code / patch content
+  "code",
+  "source_code",
+  "diff",
+  "patch",
+  "body",
+  "content",
+  "file",
+  "files",
+  "file_content",
+  "file_contents",
+  // Process output
+  "stdout",
+  "stderr",
+  // Raw telemetry
+  "raw_otel_span",
+  "span",
+  "trace",
+]);
+
+/** Maximum allowed character-length of a metadata string value. */
+const MAX_META_STRING_LEN = 2048;
+
+/**
+ * Thrown by assertMetadataOnly() when a metadata bag contains a forbidden key
+ * or an over-long string value. The event/payload carrying this bag must be
+ * dropped rather than forwarded to clients.
+ */
+export class MetadataFloorError extends Error {
+  constructor(
+    message: string,
+    public readonly context?: string,
+  ) {
+    super(message);
+    this.name = "MetadataFloorError";
+  }
+}
+
+/**
+ * Assert that a metadata bag contains only safe, bounded values — no forbidden
+ * content keys and no string values exceeding MAX_META_STRING_LEN characters.
+ *
+ * This is the THROWING counterpart to sanitizeDetail() (fleet-audit.ts). Use
+ * on ingest/broadcast paths where a violation must abort the operation rather
+ * than silently drop a field.
+ *
+ * Returns the input unchanged on success (allows call-site chaining).
+ * Is a no-op (does not throw) for null / primitive / non-object inputs.
+ *
+ * @param meta    - The metadata bag to validate (any unknown value).
+ * @param context - Optional label for the call site (improves error messages).
+ * @returns The input value unchanged.
+ * @throws {MetadataFloorError} if a forbidden key or over-long value is found.
+ */
+export function assertMetadataOnly(meta: unknown, context?: string): unknown {
+  if (meta == null || (typeof meta !== "object" && !Array.isArray(meta))) {
+    return meta;
+  }
+
+  if (Array.isArray(meta)) {
+    for (const item of meta) {
+      // Check string items directly for length — they are not objects so the
+      // recursive call below would no-op on them.
+      if (typeof item === "string" && item.length > MAX_META_STRING_LEN) {
+        throw new MetadataFloorError(
+          `Array element exceeds max length (${item.length} > ${MAX_META_STRING_LEN})${context ? ` in ${context}` : ""}`,
+          context,
+        );
+      }
+      if (item !== null && typeof item === "object") {
+        assertMetadataOnly(item, context);
+      }
+    }
+    return meta;
+  }
+
+  const bag = meta as Record<string, unknown>;
+  for (const [k, v] of Object.entries(bag)) {
+    if (FORBIDDEN_META_KEYS.has(k.toLowerCase())) {
+      throw new MetadataFloorError(
+        `Forbidden metadata key "${k}"${context ? ` in ${context}` : ""}`,
+        context,
+      );
+    }
+    if (typeof v === "string" && v.length > MAX_META_STRING_LEN) {
+      throw new MetadataFloorError(
+        `Metadata key "${k}" exceeds max length (${v.length} > ${MAX_META_STRING_LEN})${context ? ` in ${context}` : ""}`,
+        context,
+      );
+    }
+    // Recurse into nested objects and arrays.
+    if (v !== null && typeof v === "object") {
+      assertMetadataOnly(v, context);
+    }
+  }
+
+  return meta;
+}
+
 /**
  * activity_event columns the API may include in a share grant. Curated:
  * anything not on this list is rejected even if it's in the schema, so
