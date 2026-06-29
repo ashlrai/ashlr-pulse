@@ -42,6 +42,18 @@ describe("limitsFor", () => {
     expect(limitsFor(org)).toEqual(TEAM_LIMITS);
   });
 
+  test("map_enabled (fleet control plane) is Pro+ gated", () => {
+    // Free orgs (incl. lapsed paid plans) can never enqueue fleet commands.
+    expect(FREE_LIMITS.map_enabled).toBe(false);
+    expect(limitsFor({ plan: "free", subscription_status: null }).map_enabled).toBe(false);
+    expect(limitsFor({ plan: "pro", subscription_status: "past_due" }).map_enabled).toBe(false);
+    // Pro/Team (active or trialing) get the fleet inbox + map + audit export.
+    expect(PRO_LIMITS.map_enabled).toBe(true);
+    expect(TEAM_LIMITS.map_enabled).toBe(true);
+    expect(limitsFor({ plan: "pro", subscription_status: "trialing" }).map_enabled).toBe(true);
+    expect(limitsFor({ plan: "team", subscription_status: "active" }).map_enabled).toBe(true);
+  });
+
   test("pro plan past_due → FREE_LIMITS (non-payment reverts)", () => {
     const org: OrgPlanRef = { plan: "pro", subscription_status: "past_due" };
     expect(limitsFor(org)).toEqual(FREE_LIMITS);

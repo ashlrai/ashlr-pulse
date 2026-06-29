@@ -105,6 +105,7 @@ export interface GitHubRepoRow {
   enabled: boolean;
   commits_synced_until: string | null;
   prs_synced_until: string | null;
+  issues_synced_until: string | null;
 }
 
 export async function upsertRepo(input: {
@@ -134,7 +135,7 @@ export async function upsertRepo(input: {
       id::text AS id, account_id::text AS account_id,
       github_repo_id, full_name, default_branch,
       is_private, is_fork, enabled,
-      commits_synced_until, prs_synced_until
+      commits_synced_until, prs_synced_until, issues_synced_until
   `;
   return row;
 }
@@ -146,7 +147,7 @@ export async function listEnabledRepos(accountId: string): Promise<GitHubRepoRow
       id::text AS id, account_id::text AS account_id,
       github_repo_id, full_name, default_branch,
       is_private, is_fork, enabled,
-      commits_synced_until, prs_synced_until
+      commits_synced_until, prs_synced_until, issues_synced_until
     FROM github_repo
     WHERE account_id = ${accountId} AND enabled = TRUE
     ORDER BY full_name
@@ -170,6 +171,11 @@ export async function setCommitsWatermark(repoId: string, ts: string): Promise<v
 export async function setPRsWatermark(repoId: string, ts: string): Promise<void> {
   const db = sql();
   await db`UPDATE github_repo SET prs_synced_until = ${ts}, updated_at = NOW() WHERE id = ${repoId}`;
+}
+
+export async function setIssuesWatermark(repoId: string, ts: string): Promise<void> {
+  const db = sql();
+  await db`UPDATE github_repo SET issues_synced_until = ${ts}, updated_at = NOW() WHERE id = ${repoId}`;
 }
 
 // ---------------------------------------------------------------------------

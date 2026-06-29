@@ -64,6 +64,23 @@ export interface GitHubPR {
   changed_files?: number;
 }
 
+export interface GitHubIssue {
+  id: number;
+  number: number;
+  state: "open" | "closed";
+  title: string;
+  user: { login: string } | null;
+  created_at: string;
+  updated_at: string;
+  closed_at: string | null;
+  /**
+   * Present (a non-null object) when this "issue" is actually a pull request.
+   * GitHub's /issues endpoint returns PRs too; we skip those so PRs aren't
+   * double-counted as issues — syncPRs() owns them.
+   */
+  pull_request?: { url: string } | null;
+}
+
 export class GitHubClient {
   constructor(private readonly token: string) {}
 
@@ -163,6 +180,24 @@ export class GitHubClient {
       `/repos/${fullName}/pulls?state=all&sort=updated&direction=desc`,
       100,
       (pr) => pr.updated_at >= since,
+    );
+  }
+
+  /**
+   * Issues updated since `since` (ISO). GitHub's /issues endpoint filters by
+   * `updated_at` via the `since` query param and also returns pull requests
+   * (each carries a `pull_request` key) — callers must skip those. We sort
+   * descending by update time and early-stop once we walk past the watermark,
+   * mirroring listPullsSince().
+   */
+  async *listIssuesSince(
+    fullName: string,
+    since: string,
+  ): AsyncGenerator<GitHubIssue> {
+    yield* this.paginate<GitHubIssue>(
+      `/repos/${fullName}/issues?state=all&sort=updated&direction=desc&since=${encodeURIComponent(since)}`,
+      100,
+      (issue) => issue.updated_at >= since,
     );
   }
 }
