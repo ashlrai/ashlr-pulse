@@ -1,9 +1,10 @@
 /**
  * cron.ts — in-process scheduler.
  *
- * Registered once at Next.js boot via instrumentation.ts. Two ticks:
+ * Registered once at Next.js boot via instrumentation.ts. Three ticks:
  *   - github-sync, hourly: POST /api/cron/github-sync
  *   - digest, every 15 min: POST /api/cron/digest
+ *   - oversight, daily: POST /api/cron/oversight (manager-agent scorecards)
  *
  * Both pass PULSE_CRON_SECRET. Hitting the HTTP endpoint (rather than
  * importing the handler directly) keeps the auth surface uniform —
@@ -26,6 +27,7 @@ import { incrCounter, recordTickResult } from "./metrics";
 
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const FIFTEEN_MIN_MS = 15 * 60 * 1000;
+const ONE_DAY_MS = 24 * ONE_HOUR_MS;
 
 let started = false;
 
@@ -45,17 +47,21 @@ export function startBackgroundCron(): void {
     return;
   }
 
-  log.info({ msg: "cron: registering ticks", github_sync: "hourly", digest: "15m" });
+  log.info({ msg: "cron: registering ticks", github_sync: "hourly", digest: "15m", oversight: "daily", fleet_daily: "daily" });
 
   // Initial ticks staggered so we don't slam the DB at boot.
-  setTimeout(() => tick("github-sync"), 2 * 60 * 1000);
-  setTimeout(() => tick("digest"),     5 * 60 * 1000);
+  setTimeout(() => tick("github-sync"),  2 * 60 * 1000);
+  setTimeout(() => tick("digest"),       5 * 60 * 1000);
+  setTimeout(() => tick("oversight"),    8 * 60 * 1000);
+  setTimeout(() => tick("fleet-daily"), 11 * 60 * 1000);
 
-  setInterval(() => tick("github-sync"), ONE_HOUR_MS);
-  setInterval(() => tick("digest"),     FIFTEEN_MIN_MS);
+  setInterval(() => tick("github-sync"),  ONE_HOUR_MS);
+  setInterval(() => tick("digest"),       FIFTEEN_MIN_MS);
+  setInterval(() => tick("oversight"),    ONE_DAY_MS);
+  setInterval(() => tick("fleet-daily"), ONE_DAY_MS);
 }
 
-async function tick(endpoint: "github-sync" | "digest"): Promise<void> {
+async function tick(endpoint: "github-sync" | "digest" | "oversight" | "fleet-daily"): Promise<void> {
   const port = process.env.PORT ?? "3000";
   const url = `http://127.0.0.1:${port}/api/cron/${endpoint}`;
   const startedAt = Date.now();
