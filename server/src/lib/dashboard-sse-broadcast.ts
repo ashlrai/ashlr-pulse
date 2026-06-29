@@ -25,6 +25,8 @@
 
 import type { FleetRealtimeEvent } from "./fleet-realtime";
 import type { RealtimeAnomaly } from "./realtime-anomaly";
+import type { AnomalyPreferenceMap } from "./anomaly-preference-db";
+import { filterAnomaliesByPreferences } from "./anomaly-preference-db";
 
 // ---------------------------------------------------------------------------
 // Public event types broadcast over the /api/app/live SSE stream
@@ -335,6 +337,33 @@ export function toActivityEvent(e: FleetRealtimeEvent): LiveActivityEvent {
     provider: e.provider ?? null,
     duration_ms: e.duration_ms ?? null,
   };
+}
+
+// ---------------------------------------------------------------------------
+// broadcastAnomalyBatchFiltered — preference-aware anomaly broadcast
+// ---------------------------------------------------------------------------
+
+/**
+ * Broadcast anomalies to org subscribers, filtering each anomaly against the
+ * requesting user's anomaly preferences before sending.
+ *
+ * This is the preferred call site when the user's preference map has been
+ * pre-loaded (e.g. from getEffectivePreferences()). Anomaly kinds the user
+ * has disabled are silently dropped; severities may be adjusted by threshold
+ * multipliers.
+ *
+ * @param orgId       The org to broadcast to.
+ * @param anomalies   Anomaly objects from deriveAnomalies().
+ * @param preferences The user's loaded AnomalyPreferenceMap (from anomaly-preference-db).
+ * @returns           Total controller deliveries after dedup + preference filter.
+ */
+export function broadcastAnomalyBatchFiltered(
+  orgId: string,
+  anomalies: RealtimeAnomaly[],
+  preferences: AnomalyPreferenceMap,
+): number {
+  const filtered = filterAnomaliesByPreferences(anomalies, preferences);
+  return broadcastAnomalyBatch(orgId, filtered);
 }
 
 // ---------------------------------------------------------------------------
