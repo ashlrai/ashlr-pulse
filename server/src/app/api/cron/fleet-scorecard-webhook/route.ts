@@ -36,7 +36,7 @@ import {
   deliverWebhook,
   type WebhookPayload,
 } from "@/lib/fleet-scorecard-webhook";
-import { listOrgsWithWebhook } from "@/lib/webhook-db";
+import { listOrgsWithWebhook, getOrgWebhookSecret } from "@/lib/webhook-db";
 import { log } from "@/lib/logger";
 import { safeEqual } from "@/lib/timing-safe";
 
@@ -76,7 +76,7 @@ export async function POST(req: Request): Promise<Response> {
   let totalDeliveriesOk = 0;
   let totalDeliveriesFail = 0;
 
-  for (const { org_id, webhook_url, webhook_secret, webhook_events } of orgs) {
+  for (const { org_id, webhook_url, webhook_events } of orgs) {
     const orgResult: OrgResult = {
       org_id,
       events_fired: 0,
@@ -98,6 +98,11 @@ export async function POST(req: Request): Promise<Response> {
         results.push(orgResult);
         continue;
       }
+
+      // Fetch the signing secret on-demand, only now that we know a delivery
+      // will happen. Keeps the secret out of the bulk org list and minimizes
+      // its lifetime in memory to the window around HMAC signing.
+      const webhook_secret = await getOrgWebhookSecret(org_id);
 
       // Deliver one POST per fired event.
       for (const { event, threshold, actual } of fired) {

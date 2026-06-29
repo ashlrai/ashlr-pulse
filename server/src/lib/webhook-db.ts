@@ -104,22 +104,25 @@ export async function setOrgWebhookConfig(
 /**
  * Return all orgs that have a webhook_url configured (non-null).
  * Used by the cron sweep to find orgs to notify.
+ *
+ * Security: this list deliberately omits webhook_secret. Holding every org's
+ * signing secret in memory for the duration of the sweep is an unnecessary
+ * credential-exposure surface. Callers fetch the secret on-demand per-org via
+ * getOrgWebhookSecret() right before HMAC signing.
  */
 export async function listOrgsWithWebhook(): Promise<
-  Array<{ org_id: string; webhook_url: string; webhook_secret: string | null; webhook_events: WebhookEventSlug[] }>
+  Array<{ org_id: string; webhook_url: string; webhook_events: WebhookEventSlug[] }>
 > {
   const db = sql();
   const rows = await db<
     {
       org_id: string;
       webhook_url: string;
-      webhook_secret: string | null;
       webhook_events: string[] | null;
     }[]
   >`
     SELECT id::text AS org_id,
            webhook_url,
-           webhook_secret,
            COALESCE(webhook_events, ARRAY['fleet_quality_alert', 'budget_exceeded']::text[]) AS webhook_events
     FROM org
     WHERE webhook_url IS NOT NULL
@@ -127,7 +130,21 @@ export async function listOrgsWithWebhook(): Promise<
   return rows.map((r) => ({
     org_id: r.org_id,
     webhook_url: r.webhook_url,
-    webhook_secret: r.webhook_secret ?? null,
     webhook_events: (r.webhook_events ?? []) as WebhookEventSlug[],
   }));
+}
+
+/**
+ * Fetch a single org's webhook signing secret on-demand. Returns null when the
+ * org has no secret configured. Kept narrow so the secret only lives in memory
+ * for the brief window around HMAC signing of a delivery.
+ */
+export async function getOrgWebhookSecret(
+  orgId: string,
+): Promise<string | null> {
+  const db = sql();
+  const [row] = await db<{ webhook_secret: string | null }[]>`
+    SELECT webhook_secret FROM org WHERE id = ${orgId}::uuid
+  `;
+  return row?.webhook_secret ?? null;
 }

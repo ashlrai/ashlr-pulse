@@ -305,14 +305,24 @@ export async function computeFleetMetrics(orgId: string, days = 7): Promise<Flee
     try {
       const agg = await readFleetAggregates(orgId, windowDays);
       if (agg.length > 0) {
+        // NOTE: activeAgents/reposTouched are intentionally NOT derived from the
+        // daily aggregate rows here. Each row stores a per-day COUNT(DISTINCT ...);
+        // an agent or repo active across multiple days appears in several rows.
+        //   - Math.max() would yield the single peak day (window UNDER-count).
+        //   - SUM() would double-count anything active on >1 day (OVER-count).
+        // Neither reproduces the live query's window-wide COUNT(DISTINCT ...).
+        // We therefore source these two fields from the live `prod[0]` query
+        // (active_agents / repos_touched), which is a true distinct over the
+        // full [start, end) window. proposals/applied/rejected/cost are pure
+        // additive counts, so SUM over the daily rows is correct for those.
         aggregateProductivity = agg.reduce(
           (acc, row) => ({
             proposals: acc.proposals + row.proposals,
             applied: acc.applied + row.applied,
             rejected: acc.rejected + row.rejected,
             costUsd: acc.costUsd + row.costUsd,
-            activeAgents: Math.max(acc.activeAgents, row.activeAgents),
-            reposTouched: Math.max(acc.reposTouched, row.reposTouched),
+            activeAgents: 0,
+            reposTouched: 0,
           }),
           { proposals: 0, applied: 0, rejected: 0, costUsd: 0, activeAgents: 0, reposTouched: 0 },
         );
@@ -526,8 +536,12 @@ export async function computeFleetMetrics(orgId: string, days = 7): Promise<Flee
   const costUsd = aggregateProductivity
     ? aggregateProductivity.costUsd
     : round2(Number(p.cost_millicents ?? 0) / MILLICENTS_PER_USD);
-  const activeAgents = aggregateProductivity ? aggregateProductivity.activeAgents : p.active_agents;
-  const reposTouched = aggregateProductivity ? aggregateProductivity.reposTouched : p.repos_touched;
+  // Always sourced from the live query: these are window-wide COUNT(DISTINCT ...)
+  // totals that cannot be reconstructed from per-day aggregate rows (see the
+  // reduce note above). Using prod[0] here keeps the fast path's agent/repo
+  // counts identical to the live-query semantics.
+  const activeAgents = p.active_agents;
+  const reposTouched = p.repos_touched;
 
   // Applied changes = proposals whose outcome is 'applied', corroborated by
   // explicit 'merge' events (whichever signal is larger best reflects reality).
