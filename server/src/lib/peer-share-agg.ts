@@ -34,6 +34,10 @@
 import { createHmac } from "crypto";
 import { sql } from "@/lib/db";
 import { log } from "@/lib/logger";
+import {
+  broadcastPeerShareAgg,
+  type PeerShareAggEvent,
+} from "@/lib/dashboard-sse-broadcast";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -496,4 +500,92 @@ export async function runPeerShareHourlyAgg(
     webhooksSent,
     webhooksFailed,
   };
+}
+
+// ---------------------------------------------------------------------------
+// notifyPeerShareSubscribers — SSE push after aggregate upsert
+// ---------------------------------------------------------------------------
+
+/**
+ * Fan out a peer-share aggregate update to all live SSE connections for the
+ * viewer identified by viewerId.
+ *
+ * Called immediately after upsertHourlyAggregate (or the daily/weekly
+ * equivalents) so dashboard clients subscribed via GET /api/peer-share-subscribe
+ * receive a push instead of having to poll.
+ *
+ * Privacy floor (enforced by PeerShareAggEvent type in dashboard-sse-broadcast):
+ *   • by_model / by_source / by_language gated by grantFields.
+ *   • No prompts, completions, raw spans, email addresses, or code.
+ *   • All values are numeric aggregates or grant-permitted metadata.
+ *
+ * @param viewerId       The viewer whose SSE connections should receive the event.
+ * @param ownerId        The owner whose data was aggregated.
+ * @param aggregateType  "hourly" | "daily" | "weekly" — identifies the cron that ran.
+ * @param bucketStart    ISO-8601 start of the time bucket.
+ * @param totals         Aggregate totals (cost, tokens, event_count).
+ * @param grantFields    The grant's SHAREABLE_FIELDS whitelist — gates optional breakdowns.
+ * @param breakdowns     Optional per-model/source/language breakdowns.
+ * @returns              Number of SSE controllers that received the event.
+ */
+export function notifyPeerShareSubscribers(
+  viewerId: string,
+  ownerId: string,
+  aggregateType: "hourly" | "daily" | "weekly",
+  bucketStart: string,
+  totals: {
+    cost_millicents: number;
+    tokens_input: number;
+    tokens_output: number;
+    event_count: number;
+    duration_ms?: number;
+  },
+  grantFields: string[],
+  breakdowns: {
+    by_model?: Record<string, { cost_millicents: number; tokens_input: number; tokens_output: number }>;
+    by_source?: Record<string, { cost_millicents: number; tokens_input: number; tokens_output: number }>;
+    by_language?: Record<string, { cost_millicents: number; event_count: number }>;
+  } = {},
+): number {
+  const event: PeerShareAggEvent = {
+    type: "peer_share_agg",
+    ts: new Date().toISOString(),
+    aggregate_type: aggregateType,
+    owner_id: ownerId,
+    viewer_id: viewerId,
+    bucket_start: bucketStart,
+    cost_millicents: totals.cost_millicents,
+    tokens_input: totals.tokens_input,
+    tokens_output: totals.tokens_output,
+    event_count: totals.event_count,
+  };
+
+  // Conditionally include optional fields gated by grant permissions.
+  if (totals.duration_ms !== undefined && grantFields.includes("duration_ms")) {
+    event.duration_ms = totals.duration_ms;
+  }
+  if (breakdowns.by_model && grantFields.includes("model")) {
+    event.by_model = breakdowns.by_model;
+  }
+  if (breakdowns.by_source && grantFields.includes("source")) {
+    event.by_source = breakdowns.by_source;
+  }
+  if (breakdowns.by_language && grantFields.includes("language")) {
+    event.by_language = breakdowns.by_language;
+  }
+
+  const delivered = broadcastPeerShareAgg(viewerId, event);
+
+  if (delivered > 0) {
+    log.info({
+      msg: "peer-share-agg: SSE notify delivered",
+      viewer_id: viewerId,
+      owner_id: ownerId,
+      aggregate_type: aggregateType,
+      bucket_start: bucketStart,
+      controllers: delivered,
+    });
+  }
+
+  return delivered;
 }

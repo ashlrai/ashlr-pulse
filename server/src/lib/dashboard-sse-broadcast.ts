@@ -384,3 +384,218 @@ export function clearOrgRegistry(): void {
 export function orgAnomalyDedupSize(orgId: string): number {
   return orgRegistry.get(orgId)?.anomalyDedup.size ?? 0;
 }
+
+// ---------------------------------------------------------------------------
+// Peer-share aggregate SSE multiplexing
+// ---------------------------------------------------------------------------
+//
+// Each viewer who opens the GET /api/peer-share-subscribe SSE endpoint gets a
+// PeerShareAggController registered under their viewerId.  When a cron job
+// calls notifyPeerShareSubscribers() after upserting an aggregate, it fans out
+// to all live connections for that viewer.
+//
+// Privacy floor:
+//   • Only SHAREABLE_FIELDS values travel through this path — the payload is
+//     built by buildAggregateDelta() in peer-share-realtime.ts which gates each
+//     optional breakdown on the grant's field whitelist.
+//   • Forbidden fields (prompts, completions, raw_otel_span) are structurally
+//     absent from PeerShareAggEvent — the type system enforces this.
+//   • Cross-viewer leakage is impossible: the registry is keyed by viewerId and
+//     each connection authenticates before registering.
+//
+// Backpressure:
+//   • Reuses the same LAG_THRESHOLD = 50 constant as the org broadcast layer.
+//   • Lagging/closed controllers are pruned on each broadcast call.
+//   • Clients reconnect via EventSource auto-reconnect (browser spec); lag is
+//     cleared on the next registration (new controller).
+// ---------------------------------------------------------------------------
+
+/**
+ * A peer-share aggregate event broadcast to viewer SSE connections.
+ *
+ * Privacy invariants:
+ *   • by_model / by_source / by_language only present when the grant permits.
+ *   • No prompts, completions, code, diffs, or email addresses.
+ *   • All numeric aggregate fields — no raw string content.
+ */
+export interface PeerShareAggEvent {
+  /** SSE event type discriminator. */
+  type: "peer_share_agg";
+  /** ISO-8601 timestamp when this aggregate was computed. */
+  ts: string;
+  /** "hourly" | "daily" | "weekly" — matches the cron that produced it. */
+  aggregate_type: "hourly" | "daily" | "weekly";
+  /** Owner whose activity was aggregated. */
+  owner_id: string;
+  /** Viewer receiving this update (same as the subscribing connection). */
+  viewer_id: string;
+  /** ISO-8601 start of the bucket. */
+  bucket_start: string;
+  /** Total cost in millicents. */
+  cost_millicents: number;
+  /** Total input tokens. */
+  tokens_input: number;
+  /** Total output tokens. */
+  tokens_output: number;
+  /** Total activity event count. */
+  event_count: number;
+  /** Duration in ms — only when "duration_ms" is in grant fields. */
+  duration_ms?: number;
+  /** Cost/token breakdown by model — only when "model" is in grant fields. */
+  by_model?: Record<string, { cost_millicents: number; tokens_input: number; tokens_output: number }>;
+  /** Cost/token breakdown by source — only when "source" is in grant fields. */
+  by_source?: Record<string, { cost_millicents: number; tokens_input: number; tokens_output: number }>;
+  /** Cost/event breakdown by language — only when "language" is in grant fields. */
+  by_language?: Record<string, { cost_millicents: number; event_count: number }>;
+}
+
+/** Controller interface for a peer-share aggregate SSE connection. */
+export interface PeerShareAggController {
+  readonly connectionId: string;
+  /** Send a peer-share aggregate event. Returns false when closed or lagging. */
+  send(event: PeerShareAggEvent): boolean;
+  /** Send a heartbeat ping. */
+  sendHeartbeat(ts: string): boolean;
+  /** Close the stream server-side. */
+  close(): void;
+  readonly isClosed: boolean;
+  readonly isLagging: boolean;
+  /** Reset lag counter on reconnect. */
+  resetLag(): void;
+}
+
+// In-process registry: viewerId → Set<PeerShareAggController>
+const peerShareRegistry = new Map<string, Set<PeerShareAggController>>();
+
+// Reuse same lag threshold as the org broadcast layer.
+const PEER_SHARE_LAG_THRESHOLD = 50;
+
+/**
+ * Register a PeerShareAggController for a viewer.
+ * Returns an unregister callback — call it on stream close / cancel.
+ */
+export function registerPeerShareController(
+  viewerId: string,
+  ctrl: PeerShareAggController,
+): () => void {
+  let set = peerShareRegistry.get(viewerId);
+  if (!set) {
+    set = new Set();
+    peerShareRegistry.set(viewerId, set);
+  }
+  set.add(ctrl);
+
+  return () => {
+    set!.delete(ctrl);
+    if (set!.size === 0) peerShareRegistry.delete(viewerId);
+  };
+}
+
+/**
+ * Broadcast a PeerShareAggEvent to all active SSE connections for viewerId.
+ *
+ * Dead or lagging controllers are pruned. Returns the number of controllers
+ * that received the event.
+ *
+ * Called by notifyPeerShareSubscribers() in peer-share-agg.ts after each
+ * aggregate upsert.
+ */
+export function broadcastPeerShareAgg(
+  viewerId: string,
+  event: PeerShareAggEvent,
+): number {
+  const set = peerShareRegistry.get(viewerId);
+  if (!set || set.size === 0) return 0;
+
+  let sent = 0;
+  const dead: PeerShareAggController[] = [];
+
+  for (const ctrl of set) {
+    if (ctrl.isClosed) {
+      dead.push(ctrl);
+      continue;
+    }
+    if (ctrl.isLagging) {
+      dead.push(ctrl);
+      continue;
+    }
+    const ok = ctrl.send(event);
+    if (!ok) {
+      dead.push(ctrl);
+    } else {
+      sent++;
+    }
+  }
+
+  for (const ctrl of dead) {
+    set.delete(ctrl);
+  }
+  if (set.size === 0) peerShareRegistry.delete(viewerId);
+
+  return sent;
+}
+
+/**
+ * Build a PeerShareAggController backed by a ReadableStream underlying controller.
+ * Enforces the PEER_SHARE_LAG_THRESHOLD for backpressure / lag eviction.
+ */
+export function makePeerShareAggController(
+  underlyingCtrl: ReadableStreamDefaultController<Uint8Array>,
+  encoder: TextEncoder,
+  connectionId: string,
+): PeerShareAggController {
+  let closed = false;
+  let lagCount = 0;
+
+  function enqueue(line: string): boolean {
+    if (closed) return false;
+    if (lagCount > PEER_SHARE_LAG_THRESHOLD) return false;
+    try {
+      underlyingCtrl.enqueue(encoder.encode(line));
+      lagCount++;
+      return true;
+    } catch {
+      closed = true;
+      return false;
+    }
+  }
+
+  return {
+    connectionId,
+
+    get isClosed() { return closed; },
+    get isLagging() { return lagCount > PEER_SHARE_LAG_THRESHOLD; },
+
+    resetLag() { lagCount = 0; },
+
+    send(event: PeerShareAggEvent): boolean {
+      const line = `event: peer_share_agg\ndata: ${JSON.stringify(event)}\n\n`;
+      return enqueue(line);
+    },
+
+    sendHeartbeat(ts: string): boolean {
+      const line = `event: heartbeat\ndata: ${JSON.stringify({ ts })}\n\n`;
+      return enqueue(line);
+    },
+
+    close() {
+      if (closed) return;
+      closed = true;
+      try { underlyingCtrl.close(); } catch { /* already closed */ }
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Helpers for tests / metrics
+// ---------------------------------------------------------------------------
+
+/** Number of active peer-share SSE controllers for a viewer. */
+export function peerShareControllerCount(viewerId: string): number {
+  return peerShareRegistry.get(viewerId)?.size ?? 0;
+}
+
+/** Clear the peer-share SSE registry — for tests only. */
+export function clearPeerShareRegistry(): void {
+  peerShareRegistry.clear();
+}
