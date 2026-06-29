@@ -58,6 +58,7 @@ import { ManagementTab } from "./_tabs/management";
 import { TimelineTab } from "./_tabs/timeline";
 import { AlertsTab, type PersistedAnomaly } from "./_tabs/alerts";
 import { TeamMetricsTab } from "./_tabs/team-metrics";
+import { HeatmapTab } from "./_tabs/heatmap";
 import { loadTimeline } from "@/lib/timeline-data";
 import { SavedViewsTabStrip } from "./_components/SavedViewsTabStrip";
 import { DashboardSSE } from "./_components/DashboardSSE";
@@ -96,7 +97,7 @@ interface SearchParams {
   tl_group?: string;
 }
 
-const TABS = ["today", "trends", "compare", "costs", "tools", "fleet", "management", "timeline", "alerts", "team"] as const;
+const TABS = ["today", "trends", "compare", "costs", "tools", "fleet", "management", "timeline", "alerts", "team", "heatmap"] as const;
 type Tab = (typeof TABS)[number];
 
 function resolveTab(raw: string | undefined): Tab {
@@ -460,6 +461,15 @@ export default async function Page({
           Team metrics require an org. Join or create one to get started.
         </div>
       )}
+      {activeTab === "heatmap" && (
+        <HeatmapTab
+          userId={targetUserId}
+          initialFilters={{
+            model: modelFilter ?? undefined,
+            repo:  repoFilter  ?? undefined,
+          }}
+        />
+      )}
     </DashboardShell>
   );
 }
@@ -477,6 +487,7 @@ const TAB_LABELS: Record<Tab, string> = {
   timeline:   "timeline",
   alerts:     "alerts",
   team:       "team metrics",
+  heatmap:    "heatmap",
 };
 
 function TabNav({
