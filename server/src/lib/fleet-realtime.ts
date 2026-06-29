@@ -86,6 +86,13 @@ export interface FleetRealtimeEvent {
   team_avg_millicents?: number;
   peer_divergence_ratio?: number;
   peer_divergence_severity?: "low" | "medium" | "high";
+  // Realtime cost-delta fields — for peer-share SSE cost-impact widget.
+  // cost_delta_millicents: signed diff (user_cost − team_avg) in millicents.
+  // cost_vs_baseline: user cost expressed as a fraction of the baseline (1.0 = at average).
+  // variance_pct: (cost_delta / team_avg) × 100, clamped to ±9999.
+  cost_delta_millicents?: number;
+  cost_vs_baseline?: number;
+  variance_pct?: number;
 }
 
 /**
@@ -187,6 +194,14 @@ export function redactForBroadcast(
     safe.team_avg_millicents     = costImpact.team_avg_millicents;
     safe.peer_divergence_ratio   = costImpact.peer_divergence_ratio;
     safe.peer_divergence_severity = costImpact.peer_divergence_severity;
+
+    // Realtime cost-delta fields for the SSE cost-impact widget.
+    const delta = costImpact.user_cost_millicents - costImpact.team_avg_millicents;
+    safe.cost_delta_millicents = delta;
+    safe.cost_vs_baseline      = costImpact.peer_divergence_ratio; // alias for clarity in widget
+    safe.variance_pct          = costImpact.team_avg_millicents > 0
+      ? Number(Math.max(-9999, Math.min(9999, (delta / costImpact.team_avg_millicents) * 100)).toFixed(2))
+      : (delta > 0 ? 9999 : delta < 0 ? -9999 : 0);
   }
 
   // Verify no NEVER_BROADCAST key leaked into the constructed object.
