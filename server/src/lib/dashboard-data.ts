@@ -78,6 +78,13 @@ export interface LoadOpts {
    * NULL means all sessions are included.
    */
   sessionFilter?: string | null;
+  /**
+   * When true, the timeline aggregation layer should group events by
+   * their session ID (claude.session.id / ashlr.plugin.session_id).
+   * Has no effect on the main dashboard queries — it is a pass-through
+   * hint consumed by loadTimeline() in timeline-data.ts.
+   */
+  groupBySession?: boolean;
 }
 
 export interface DashboardData {

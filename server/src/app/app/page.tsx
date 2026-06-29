@@ -55,6 +55,8 @@ import { CostsTab } from "./_tabs/costs";
 import { ToolsTab } from "./_tabs/tools";
 import { FleetTab } from "./_tabs/fleet";
 import { ManagementTab } from "./_tabs/management";
+import { TimelineTab } from "./_tabs/timeline";
+import { loadTimeline } from "@/lib/timeline-data";
 import { SavedViewsTabStrip } from "./_components/SavedViewsTabStrip";
 import { DashboardSSE } from "./_components/DashboardSSE";
 import { DashboardFilterBar } from "./_components/DashboardFilterBar";
@@ -80,9 +82,19 @@ interface SearchParams {
   since?: string;
   /** ISO-8601 date upper bound (exclusive), e.g. "2026-06-30". */
   until?: string;
+  /** Timeline tab: repo filter (separate from global repo filter). */
+  tl_repo?: string;
+  /** Timeline tab: model filter. */
+  tl_model?: string;
+  /** Timeline tab: tool filter (substring match). */
+  tl_tool?: string;
+  /** Timeline tab: session filter (exact session_id). */
+  tl_session?: string;
+  /** Timeline tab: group events by session when "1". */
+  tl_group?: string;
 }
 
-const TABS = ["today", "trends", "compare", "costs", "tools", "fleet", "management"] as const;
+const TABS = ["today", "trends", "compare", "costs", "tools", "fleet", "management", "timeline"] as const;
 type Tab = (typeof TABS)[number];
 
 function resolveTab(raw: string | undefined): Tab {
@@ -132,7 +144,8 @@ export default async function Page({
   const me = await currentUser();
   if (!me) redirect("/login");
 
-  const { as, win, src, tab: tabParam, accepted, from, repo, model, since, until } = await searchParams;
+  const { as, win, src, tab: tabParam, accepted, from, repo, model, since, until,
+          tl_repo, tl_model, tl_tool, tl_session, tl_group } = await searchParams;
   const activeTab = resolveTab(tabParam);
   const windowOpt = resolveWindow(win);
 
@@ -173,8 +186,20 @@ export default async function Page({
   // Subscription-mode set: zero cost for sources flagged "subscription".
   const subscriptionSources = isOwnView ? subscriptionSourcesFor(org) : new Set<string>();
 
+  // Timeline-specific filters (tab-scoped, separate from global filters).
+  const tlGroupBySession = tl_group === "1";
+  const tlFilters = {
+    repo:           tl_repo ?? "",
+    model:          tl_model ?? "",
+    tool:           tl_tool ?? "",
+    since:          sinceISO ?? "",
+    until:          untilISO ?? "",
+    session:        tl_session ?? "",
+    groupBySession: tlGroupBySession,
+  };
+
   // Run all heavy lifts in parallel.
-  const [data, agentStatus, missedRepos, pluginImpact, savedViews, teamSyncLabel] = await Promise.all([
+  const [data, agentStatus, missedRepos, pluginImpact, savedViews, teamSyncLabel, timelineData] = await Promise.all([
     loadDashboard(targetUserId, scope, {
       chartDays: windowOpt.days,
       limits,
@@ -190,6 +215,23 @@ export default async function Page({
     isOwnView ? loadPluginImpact(targetUserId) : Promise.resolve(null),
     isOwnView ? listViews(me.id).catch(() => [] as DashboardView[]) : Promise.resolve([] as DashboardView[]),
     isOwnView && org ? loadTeamSyncLabel(me.id, org.id) : Promise.resolve(null),
+    // Only load timeline data when that tab is active (avoids the extra DB
+    // query on every other tab render).
+    activeTab === "timeline"
+      ? loadTimeline(targetUserId, scope, {
+          limits,
+          sourceFilter: resolveSourceFilter(src),
+          repoFilter:   tl_repo || repoFilter,
+          modelFilter:  tl_model || modelFilter,
+          toolFilter:   tl_tool || null,
+          sinceISO,
+          untilISO,
+          groupBySession: tlGroupBySession,
+          sessionFilter:  tl_session || null,
+          subscriptionSources,
+          days: windowOpt.days,
+        }).catch(() => null)
+      : Promise.resolve(null),
   ]);
 
   // Compute prior-week medians for baselines + deltas.
@@ -386,6 +428,18 @@ export default async function Page({
       {activeTab === "tools"   && <ToolsTab   {...tabProps} />}
       {activeTab === "fleet"      && <FleetTab      {...tabProps} />}
       {activeTab === "management" && <ManagementTab  {...tabProps} />}
+      {activeTab === "timeline" && timelineData && (
+        <TimelineTab
+          tl={timelineData}
+          filters={tlFilters}
+          baseHref={buildHref({ as, win, src, tab: "timeline", repo: repoFilter ?? undefined, model: modelFilter ?? undefined, since: sinceISO ?? undefined, until: untilISO ?? undefined })}
+        />
+      )}
+      {activeTab === "timeline" && !timelineData && (
+        <div style={{ marginTop: 32, padding: 24, textAlign: "center", color: "#6f6f6f", fontSize: 13, border: "1px dashed #1f1f22", borderRadius: 8 }}>
+          No timeline data available for the selected window.
+        </div>
+      )}
     </DashboardShell>
   );
 }
@@ -400,6 +454,7 @@ const TAB_LABELS: Record<Tab, string> = {
   tools:      "tools",
   fleet:      "fleet",
   management: "management",
+  timeline:   "timeline",
 };
 
 function TabNav({
