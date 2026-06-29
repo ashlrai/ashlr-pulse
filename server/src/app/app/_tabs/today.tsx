@@ -58,6 +58,7 @@ export async function TodayTab({
   baselineEvents,
   baselineTokens,
   baselineCost,
+  teamSyncLabel,
 }: TabProps & {
   briefingInputs: BriefingInputs;
   userId: string;
@@ -68,6 +69,8 @@ export async function TodayTab({
   baselineEvents: number;
   baselineTokens: number;
   baselineCost: number;
+  /** Team Sync stat: shown when org has >1 member. */
+  teamSyncLabel?: string | null;
 }): Promise<ReactElement> {
   return (
     <>
@@ -110,6 +113,16 @@ export async function TodayTab({
           hint={commitStatHint(data.commitTotals)}
           sparkline={data.sparklines.commits}
         />
+        {teamSyncLabel != null && (
+          <a href="/settings/team-sync" style={{ textDecoration: "none" }}>
+            <StatCard
+              accent="purple"
+              label="team sync"
+              value={teamSyncLabel}
+              hint="click to set preferred pairing hours"
+            />
+          </a>
+        )}
       </div>
 
       {/* AI briefing */}

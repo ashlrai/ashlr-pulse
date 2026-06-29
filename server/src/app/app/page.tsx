@@ -152,7 +152,7 @@ export default async function Page({
   const subscriptionSources = isOwnView ? subscriptionSourcesFor(org) : new Set<string>();
 
   // Run all heavy lifts in parallel.
-  const [data, agentStatus, missedRepos, pluginImpact, savedViews] = await Promise.all([
+  const [data, agentStatus, missedRepos, pluginImpact, savedViews, teamSyncLabel] = await Promise.all([
     loadDashboard(targetUserId, scope, {
       chartDays: windowOpt.days,
       limits,
@@ -163,6 +163,7 @@ export default async function Page({
     isOwnView ? loadMissedRepos(me.id, since24hUtc, nowUtc.toISOString()) : Promise.resolve([]),
     isOwnView ? loadPluginImpact(targetUserId) : Promise.resolve(null),
     isOwnView ? listViews(me.id).catch(() => [] as DashboardView[]) : Promise.resolve([] as DashboardView[]),
+    isOwnView && org ? loadTeamSyncLabel(me.id, org.id) : Promise.resolve(null),
   ]);
 
   // Compute prior-week medians for baselines + deltas.
@@ -339,6 +340,7 @@ export default async function Page({
           baselineEvents={baselineEvents}
           baselineTokens={baselineTokens}
           baselineCost={baselineCost}
+          teamSyncLabel={teamSyncLabel}
         />
       )}
       {activeTab === "trends"  && <TrendsTab  {...tabProps} />}
@@ -554,6 +556,85 @@ async function loadPluginImpact(userId: string): Promise<PluginImpact | null> {
       estUsdSavedCents,
       daysCovered: 14,
     };
+  } catch {
+    return null;
+  }
+}
+
+// ─── Team Sync label loader ───────────────────────────────────────────
+
+/**
+ * Returns a short label for the Team Sync stat card (e.g. "10:00–15:00 UTC")
+ * when the org has >1 member with activity data, null otherwise.
+ * Runs as a lightweight parallel load — failures are silenced.
+ */
+async function loadTeamSyncLabel(userId: string, orgId: string): Promise<string | null> {
+  try {
+    const db = sql();
+
+    // Check member count first — skip solo orgs.
+    const [{ count }] = await db<{ count: number }[]>`
+      SELECT COUNT(*)::int AS count FROM membership WHERE org_id = ${orgId}::uuid
+    `.catch(() => [{ count: 1 }]);
+    if (Number(count) < 2) return null;
+
+    const members = await db<{ user_id: string }[]>`
+      SELECT user_id::text FROM membership WHERE org_id = ${orgId}::uuid
+    `.catch(() => [] as { user_id: string }[]);
+    const memberIds = members.map((m) => m.user_id);
+
+    const WINDOW_DAYS = 30;
+    const cutoff = new Date(Date.now() - WINDOW_DAYS * 86_400_000).toISOString().slice(0, 10);
+
+    const rows = await db<{
+      owner_id: string; date: string;
+      cost_millicents: string | number; event_count: string | number;
+    }[]>`
+      SELECT owner_id::text AS owner_id, date::text AS date,
+        SUM(cost_millicents)::bigint AS cost_millicents,
+        SUM(event_count)::int        AS event_count
+      FROM peer_share_daily_aggregate
+      WHERE owner_id = ANY(${memberIds}::uuid[])
+        AND date >= ${cutoff}::date
+      GROUP BY owner_id, date
+    `.catch(() => [] as { owner_id: string; date: string; cost_millicents: string | number; event_count: string | number }[]);
+
+    if (rows.length === 0) return null;
+
+    // Build heatmap weights for the current user from their own activity.
+    const heatRows = await db<{ hour: number; value: number }[]>`
+      SELECT EXTRACT(HOUR FROM ts)::int AS hour, COUNT(*)::int AS value
+      FROM activity_event
+      WHERE user_id = ${userId}::uuid AND ts >= NOW() - INTERVAL '30 days'
+      GROUP BY hour
+    `.catch(() => [] as { hour: number; value: number }[]);
+
+    const heatWeights = Array(24).fill(0);
+    for (const r of heatRows) heatWeights[r.hour] += r.value;
+
+    const { profileTeamVelocity } = await import("@/lib/team-velocity-profiler");
+    const result = profileTeamVelocity(
+      rows.map((r) => ({
+        ownerId: r.owner_id,
+        date: r.date,
+        costMillicents: Number(r.cost_millicents ?? 0),
+        eventCount: Number(r.event_count ?? 0),
+      })),
+      WINDOW_DAYS,
+      new Map([[userId, heatWeights]]),
+    );
+
+    if (result.overlaps.length === 0) return null;
+
+    // Build a compact window label from the top overlap hours.
+    const topHours = result.overlaps
+      .slice(0, 5)
+      .map((o) => o.hour)
+      .sort((a, b) => a - b);
+    const start = topHours[0];
+    const end = topHours[topHours.length - 1] + 1;
+    const overlapCount = topHours.length;
+    return `${String(start).padStart(2, "0")}:00–${String(end).padStart(2, "0")}:00 UTC (${overlapCount}h overlap)`;
   } catch {
     return null;
   }
