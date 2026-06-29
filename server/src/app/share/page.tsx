@@ -25,6 +25,7 @@ import { validateFields, SHAREABLE_FIELDS } from "@/lib/peer-share-guard";
 import { createInvite, listInvitesByOwner } from "@/lib/invite-db";
 import { primaryOrgForUser } from "@/lib/org-db";
 import { limitsFor, PlanGateError } from "@/lib/plan-gate";
+import { readPeerShareSummaries, type PeerShareAggregateSummary } from "@/lib/peer-share-aggregate-refresh";
 
 import { Header } from "@/components/Header";
 import { DashboardShell } from "@/components/ui/DashboardShell";
@@ -147,20 +148,37 @@ async function createInviteAction(formData: FormData): Promise<void> {
   redirect(`/share?invite=${invite.token}`);
 }
 
+/** Clamp a date string to YYYY-MM-DD; returns fallback on invalid input. */
+function clampDate(raw: string | undefined, fallback: string): string {
+  if (!raw) return fallback;
+  const m = /^\d{4}-\d{2}-\d{2}$/.exec(raw);
+  return m ? raw : fallback;
+}
+
 export default async function SharePage({
   searchParams,
 }: {
-  searchParams: Promise<{ ok?: string; error?: string; invite?: string }>;
+  searchParams: Promise<{ ok?: string; error?: string; invite?: string; from?: string; to?: string }>;
 }): Promise<ReactElement> {
   const me = await currentUser();
   if (!me) redirect("/login");
 
-  const [owned, granted, invites] = await Promise.all([
+  // Date-range defaults: last 30 days up to yesterday.
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setUTCDate(thirtyDaysAgo.getUTCDate() - 30);
+  const thirtyDaysAgoStr = thirtyDaysAgo.toISOString().slice(0, 10);
+
+  const { ok, error, invite: justCreatedToken, from: fromRaw, to: toRaw } = await searchParams;
+  const dateFrom = clampDate(fromRaw, thirtyDaysAgoStr);
+  const dateTo   = clampDate(toRaw,   todayStr);
+
+  const [owned, granted, invites, peerSummaries] = await Promise.all([
     listGrantsOwnedBy(me.id),
     listGrantsForViewer(me.id),
     listInvitesByOwner(me.id),
+    readPeerShareSummaries(me.id).catch(() => [] as PeerShareAggregateSummary[]),
   ]);
-  const { ok, error, invite: justCreatedToken } = await searchParams;
   const justCreated = justCreatedToken ? invites.find((i) => i.token === justCreatedToken) : undefined;
   const origin = process.env.NEXT_PUBLIC_APP_URL ?? "";
   const outstanding = invites.filter((i) => !i.accepted_at && new Date(i.expires_at).getTime() > Date.now());
@@ -303,6 +321,46 @@ export default async function SharePage({
           <GrantTable rows={owned} side="owned" />
         </Card>
 
+        {/* Peer-share cost breakdown — loaded from materialized aggregate table */}
+        {peerSummaries.length > 0 && (
+          <Card>
+            <CardHeader
+              title="peer-share activity summary"
+              hint="pre-computed nightly · last 30 days"
+            />
+            {/* Date-range picker — submits via GET so it's bookmarkable */}
+            <form
+              method="GET"
+              action="/share"
+              style={{ display: "flex", gap: space.x3, alignItems: "flex-end", marginBottom: space.x4 }}
+            >
+              <div>
+                <label style={dateLabel}>from</label>
+                <Input
+                  name="from"
+                  type="date"
+                  defaultValue={dateFrom}
+                  max={dateTo}
+                  style={{ width: 140 }}
+                />
+              </div>
+              <div>
+                <label style={dateLabel}>to</label>
+                <Input
+                  name="to"
+                  type="date"
+                  defaultValue={dateTo}
+                  min={dateFrom}
+                  max={todayStr}
+                  style={{ width: 140 }}
+                />
+              </div>
+              <Button type="submit" variant="primary" size="sm">apply</Button>
+            </form>
+            <PeerShareSummaryTable rows={peerSummaries} />
+          </Card>
+        )}
+
         <Card>
           <CardHeader title={`grants you've been given · ${granted.length}`} />
           <GrantTable rows={granted} side="granted" />
@@ -408,6 +466,43 @@ function GrantTable({ rows, side }: { rows: PeerShareRow[]; side: "owned" | "gra
   );
 }
 
+function PeerShareSummaryTable({ rows }: { rows: PeerShareAggregateSummary[] }): ReactElement {
+  if (rows.length === 0) {
+    return (
+      <p style={{ color: palette.textMute, fontSize: 12, margin: 0 }}>
+        no aggregate data yet — the nightly cron hasn&apos;t run.
+      </p>
+    );
+  }
+  return (
+    <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
+      <thead>
+        <tr style={{ textAlign: "left", borderBottom: `1px solid ${palette.border}` }}>
+          <th style={th}>viewer</th>
+          <th style={th}>events</th>
+          <th style={th}>cost (millicents)</th>
+          <th style={th}>date range</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((r) => (
+          <tr key={r.viewerId} style={{ borderBottom: `1px dashed ${palette.border}` }}>
+            <td style={td}>{r.viewerEmail}</td>
+            <td style={{ ...td, color: palette.amber }}>{r.totalEvents.toLocaleString()}</td>
+            <td style={{ ...td, color: palette.green }}>
+              {r.totalCostMillicents.toLocaleString()}
+              <span style={{ color: palette.textMute, fontSize: 10 }}> mc</span>
+            </td>
+            <td style={{ ...td, color: palette.textDim, fontSize: 11 }}>
+              {r.dateFrom} → {r.dateTo}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
 const pageTitle: React.CSSProperties = {
   fontSize: 22, fontWeight: 600, margin: `${space.x2}px 0 ${space.x05}px`,
   color: palette.text, letterSpacing: "-0.5px",
@@ -432,3 +527,7 @@ const th: React.CSSProperties = {
   textTransform: "uppercase",
 };
 const td: React.CSSProperties = { padding: "8px 6px", color: palette.text };
+const dateLabel: React.CSSProperties = {
+  display: "block", fontSize: 11, color: palette.textDim,
+  textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 4,
+};
