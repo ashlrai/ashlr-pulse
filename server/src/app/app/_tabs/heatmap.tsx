@@ -8,18 +8,22 @@
  *   - Cell intensity: cost_millicents burned in that hour by that peer
  *
  * Features:
- *   - Interactive filter by model and repo
+ *   - Interactive filter by model, repo, source, and language
+ *   - Dimension drill-down via /api/dashboard/peer-share-dimensions
+ *     (reads materialised peer_share_daily_agg_by_* tables — no raw event scan)
  *   - Peer relationship status toggle: active grants vs active work
  *   - Hover tooltip with breakdown (cost, events, tokens, top source)
  *   - Export to CSV (privacy-safe: masked emails, numeric only)
- *   - URL-persistent filters via ?hm_model=, ?hm_repo=, ?hm_status=
+ *   - URL-persistent filters via ?hm_model=, ?hm_repo=, ?hm_status=,
+ *     ?hm_source=, ?hm_language=
  *
  * Privacy floor: no prompts, no code — numeric aggregates only.
  * Peer emails are masked (e.g. "m***@acme.com") server-side.
  *
  * This is a client component for interactivity (hover state, CSV download).
  * Data is fetched from /api/dashboard/collaboration-matrix on mount and on
- * filter changes.
+ * filter changes. Dimension options are fetched lazily from
+ * /api/dashboard/peer-share-dimensions when a shareId is available.
  */
 
 import { useState, useEffect, useCallback, useRef } from "react";
@@ -35,6 +39,24 @@ interface HeatmapFilters {
   /** "active_grants" | "active_work" | "all" */
   status: string;
   windowDays: number;
+  /** Dimension drill-down filters — applied via peer-share-dimensions endpoint. */
+  source: string;
+  language: string;
+}
+
+/** One row returned by /api/dashboard/peer-share-dimensions. */
+interface DimensionRow {
+  dimension_value: string;
+  cost_millicents: number;
+  event_count: number;
+  trend: number | null;
+}
+
+/** Cached dimension options fetched for a specific shareId. */
+interface DimensionOptions {
+  models: string[];
+  sources: string[];
+  languages: string[];
 }
 
 interface TooltipState {
@@ -50,6 +72,13 @@ interface Props {
   userId: string;
   /** Pre-populated model list for the filter dropdown (from dashboard data). */
   availableModels?: string[];
+  /**
+   * The peer_share.id to use for dimension drill-down queries.
+   * When provided, the heatmap fetches available model/source/language
+   * values from /api/dashboard/peer-share-dimensions without re-querying
+   * raw events. Optional — dimension dropdowns are hidden when absent.
+   */
+  shareId?: string;
   /** URL params for filter initialisation (e.g. from searchParams). */
   initialFilters?: Partial<HeatmapFilters>;
 }
@@ -72,11 +101,13 @@ const DEFAULT_FILTERS: HeatmapFilters = {
   repo:       "",
   status:     "active_grants",
   windowDays: 7,
+  source:     "",
+  language:   "",
 };
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
-export function HeatmapTab({ userId, availableModels = [], initialFilters = {} }: Props): ReactElement {
+export function HeatmapTab({ userId, availableModels = [], shareId, initialFilters = {} }: Props): ReactElement {
   const [filters, setFilters] = useState<HeatmapFilters>({
     ...DEFAULT_FILTERS,
     ...initialFilters,
@@ -86,6 +117,8 @@ export function HeatmapTab({ userId, availableModels = [], initialFilters = {} }
   const [error, setError] = useState<string | null>(null);
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [dimensionOptions, setDimensionOptions] = useState<DimensionOptions | null>(null);
+  const [dimensionsLoading, setDimensionsLoading] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
   // ── Data loading ────────────────────────────────────────────────────────
@@ -94,8 +127,10 @@ export function HeatmapTab({ userId, availableModels = [], initialFilters = {} }
     setError(null);
     try {
       const params = new URLSearchParams({ userId, windowDays: String(f.windowDays), status: f.status });
-      if (f.model) params.set("model", f.model);
-      if (f.repo)  params.set("repo", f.repo);
+      if (f.model)    params.set("model", f.model);
+      if (f.repo)     params.set("repo", f.repo);
+      if (f.source)   params.set("source", f.source);
+      if (f.language) params.set("language", f.language);
       const res = await fetch(`/api/dashboard/collaboration-matrix?${params}`);
       if (!res.ok) {
         const body = await res.json().catch(() => ({})) as { error?: string };
@@ -112,12 +147,52 @@ export function HeatmapTab({ userId, availableModels = [], initialFilters = {} }
 
   useEffect(() => { void load(filters); }, [load, filters]);
 
+  // ── Dimension options loading ────────────────────────────────────────────
+  // Fetches available model/source/language values from the materialised
+  // peer_share_daily_agg_by_* tables via the new dimensions endpoint.
+  // Only runs when a shareId is provided. Does NOT re-query raw events.
+  const loadDimensions = useCallback(async (sid: string, windowDays: number) => {
+    setDimensionsLoading(true);
+    const since = new Date(Date.now() - windowDays * 86_400_000)
+      .toISOString().slice(0, 10);
+    const until = new Date().toISOString().slice(0, 10);
+    try {
+      const [modelRes, sourceRes, langRes] = await Promise.all([
+        fetch(`/api/dashboard/peer-share-dimensions?shareId=${sid}&dimension=model&since=${since}&until=${until}`),
+        fetch(`/api/dashboard/peer-share-dimensions?shareId=${sid}&dimension=source&since=${since}&until=${until}`),
+        fetch(`/api/dashboard/peer-share-dimensions?shareId=${sid}&dimension=language&since=${since}&until=${until}`),
+      ]);
+
+      const [modelData, sourceData, langData] = await Promise.all([
+        modelRes.ok  ? (modelRes.json()  as Promise<{ rows: DimensionRow[] }>) : Promise.resolve({ rows: [] }),
+        sourceRes.ok ? (sourceRes.json() as Promise<{ rows: DimensionRow[] }>) : Promise.resolve({ rows: [] }),
+        langRes.ok   ? (langRes.json()   as Promise<{ rows: DimensionRow[] }>) : Promise.resolve({ rows: [] }),
+      ]);
+
+      setDimensionOptions({
+        models:    modelData.rows.map((r) => r.dimension_value).filter(Boolean),
+        sources:   sourceData.rows.map((r) => r.dimension_value).filter(Boolean),
+        languages: langData.rows.map((r) => r.dimension_value).filter(Boolean),
+      });
+    } catch {
+      // Non-fatal — dimension dropdowns remain hidden.
+    } finally {
+      setDimensionsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (shareId) void loadDimensions(shareId, filters.windowDays);
+  }, [shareId, filters.windowDays, loadDimensions]);
+
   // Persist filters to URL without full navigation.
   useEffect(() => {
     if (typeof window === "undefined") return;
     const url = new URL(window.location.href);
-    if (filters.model)  url.searchParams.set("hm_model",  filters.model);  else url.searchParams.delete("hm_model");
-    if (filters.repo)   url.searchParams.set("hm_repo",   filters.repo);   else url.searchParams.delete("hm_repo");
+    if (filters.model)    url.searchParams.set("hm_model",    filters.model);    else url.searchParams.delete("hm_model");
+    if (filters.repo)     url.searchParams.set("hm_repo",     filters.repo);     else url.searchParams.delete("hm_repo");
+    if (filters.source)   url.searchParams.set("hm_source",   filters.source);   else url.searchParams.delete("hm_source");
+    if (filters.language) url.searchParams.set("hm_language", filters.language); else url.searchParams.delete("hm_language");
     if (filters.status !== DEFAULT_FILTERS.status)
       url.searchParams.set("hm_status", filters.status);
     else url.searchParams.delete("hm_status");
@@ -179,6 +254,7 @@ export function HeatmapTab({ userId, availableModels = [], initialFilters = {} }
           </span>
           <span style={{ fontSize: 11, color: palette.textDim, marginLeft: 8 }}>
             cost_millicents per hour · {matrix?.peers.length ?? 0} peers · {filters.windowDays}d window
+            {dimensionsLoading && <span style={{ marginLeft: 8, color: palette.textMute }}>(loading dimensions…)</span>}
           </span>
         </div>
         <button
@@ -204,6 +280,7 @@ export function HeatmapTab({ userId, availableModels = [], initialFilters = {} }
       <FilterBar
         filters={filters}
         availableModels={availableModels}
+        dimensionOptions={dimensionOptions}
         onChange={setFilters}
       />
 
@@ -237,10 +314,12 @@ export function HeatmapTab({ userId, availableModels = [], initialFilters = {} }
 function FilterBar({
   filters,
   availableModels,
+  dimensionOptions,
   onChange,
 }: {
   filters: HeatmapFilters;
   availableModels: string[];
+  dimensionOptions: DimensionOptions | null;
   onChange: (f: HeatmapFilters) => void;
 }): ReactElement {
   const update = (patch: Partial<HeatmapFilters>) => onChange({ ...filters, ...patch });
@@ -254,6 +333,17 @@ function FilterBar({
     color: palette.text,
     cursor: "pointer",
   };
+
+  // Merge model list: prefer dimensionOptions (from materialised tables) if
+  // available; fall back to the prop-supplied availableModels.
+  const modelList = dimensionOptions?.models.length
+    ? dimensionOptions.models
+    : availableModels;
+
+  const hasNonDefaultFilter =
+    !!(filters.model || filters.repo || filters.source || filters.language) ||
+    filters.status !== DEFAULT_FILTERS.status ||
+    filters.windowDays !== DEFAULT_FILTERS.windowDays;
 
   return (
     <div style={{ display: "flex", gap: space.x2, flexWrap: "wrap", alignItems: "center", marginBottom: space.x3 }}>
@@ -283,8 +373,8 @@ function FilterBar({
         ))}
       </FilterGroup>
 
-      {/* Model filter */}
-      {availableModels.length > 0 && (
+      {/* Model filter — from materialised dimension table when shareId present */}
+      {modelList.length > 0 && (
         <FilterGroup label="model">
           <select
             value={filters.model}
@@ -292,8 +382,40 @@ function FilterBar({
             style={selectStyle}
           >
             <option value="">all models</option>
-            {availableModels.map((m) => (
+            {modelList.map((m) => (
               <option key={m} value={m}>{m}</option>
+            ))}
+          </select>
+        </FilterGroup>
+      )}
+
+      {/* Source filter — populated from peer_share_daily_agg_by_source */}
+      {dimensionOptions && dimensionOptions.sources.length > 0 && (
+        <FilterGroup label="source">
+          <select
+            value={filters.source}
+            onChange={(e) => update({ source: e.target.value })}
+            style={selectStyle}
+          >
+            <option value="">all sources</option>
+            {dimensionOptions.sources.map((s) => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </select>
+        </FilterGroup>
+      )}
+
+      {/* Language filter — populated from peer_share_daily_agg_by_language */}
+      {dimensionOptions && dimensionOptions.languages.length > 0 && (
+        <FilterGroup label="language">
+          <select
+            value={filters.language}
+            onChange={(e) => update({ language: e.target.value })}
+            style={selectStyle}
+          >
+            <option value="">all languages</option>
+            {dimensionOptions.languages.map((l) => (
+              <option key={l} value={l}>{l}</option>
             ))}
           </select>
         </FilterGroup>
@@ -315,7 +437,7 @@ function FilterBar({
       </FilterGroup>
 
       {/* Clear all */}
-      {(filters.model || filters.repo || filters.status !== DEFAULT_FILTERS.status || filters.windowDays !== DEFAULT_FILTERS.windowDays) && (
+      {hasNonDefaultFilter && (
         <button
           onClick={() => onChange(DEFAULT_FILTERS)}
           style={{
