@@ -146,6 +146,10 @@ export function computeTrendFlag(
   const reg = linearRegression(series);
   if (!reg) return null;
 
+  // No baseline cost (zero-mean history) → threshold collapses to 0 and any
+  // non-zero slope would be flagged as trending. Treat as stable instead.
+  if (mean === 0) return "stable";
+
   // Stable threshold: |slope| < TREND_THRESHOLD_PCT × mean
   const threshold = Math.abs(mean) * TREND_THRESHOLD_PCT;
   if (Math.abs(reg.slope) <= threshold) return "stable";
