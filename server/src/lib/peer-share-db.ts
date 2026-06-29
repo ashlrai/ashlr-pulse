@@ -133,3 +133,75 @@ export async function findUserByEmail(email: string): Promise<{ id: string } | n
   `;
   return row ?? null;
 }
+
+// ---------------------------------------------------------------------------
+// Weekly aggregate helpers (for the WoW compare tab)
+// ---------------------------------------------------------------------------
+
+export interface WeeklyAggRow {
+  ownerId: string;
+  ownerEmail: string;
+  weekStartIso: string;
+  field: string;
+  value: number;
+}
+
+/**
+ * Read peer_share_weekly_aggregate rows visible to a viewer across all active
+ * grants they hold, for the two most recent ISO weeks relative to `asOf`.
+ *
+ * Returns rows filtered to each grant's allowed fields[] — the privacy floor
+ * is enforced here so the WoW dashboard only surfaces permitted metrics.
+ */
+export async function listWeeklyAggregatesForViewer(
+  viewerId: string,
+  asOf: Date = new Date(),
+): Promise<WeeklyAggRow[]> {
+  const db = sql();
+
+  // Derive this-week and last-week ISO strings (Monday UTC).
+  const dayOffset = (asOf.getUTCDay() + 6) % 7;
+  const thisMonday = new Date(asOf);
+  thisMonday.setUTCDate(thisMonday.getUTCDate() - dayOffset);
+  thisMonday.setUTCHours(0, 0, 0, 0);
+  const thisWeekIso = thisMonday.toISOString().slice(0, 10);
+
+  const lastMonday = new Date(thisMonday.getTime() - 7 * 24 * 3_600_000);
+  const lastWeekIso = lastMonday.toISOString().slice(0, 10);
+
+  // Join to peer_share to apply per-grant field filtering.
+  // Only fields present in the grant's fields[] array are returned.
+  const rows = await db<{
+    owner_id: string;
+    owner_email: string;
+    week_start_iso: string;
+    field: string;
+    value: string | number;
+  }[]>`
+    SELECT
+      wa.owner_id::text        AS owner_id,
+      u.email                  AS owner_email,
+      wa.week_start_iso,
+      wa.field,
+      wa.value
+    FROM peer_share_weekly_aggregate wa
+    JOIN peer_share ps
+      ON  ps.owner_id  = wa.owner_id
+      AND ps.viewer_id = wa.viewer_id
+      AND ps.revoked_at IS NULL
+    JOIN "user" u ON u.id = wa.owner_id
+    WHERE wa.viewer_id      = ${viewerId}::uuid
+      AND wa.week_start_iso IN (${thisWeekIso}, ${lastWeekIso})
+      -- Privacy floor: only return fields the grant explicitly allows.
+      AND wa.field = ANY(ps.fields)
+    ORDER BY wa.owner_id, wa.week_start_iso DESC, wa.field
+  `;
+
+  return rows.map((r) => ({
+    ownerId:      r.owner_id,
+    ownerEmail:   r.owner_email,
+    weekStartIso: r.week_start_iso,
+    field:        r.field,
+    value:        Number(r.value ?? 0),
+  }));
+}
