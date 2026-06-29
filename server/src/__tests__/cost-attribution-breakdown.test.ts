@@ -37,7 +37,6 @@ interface SyntheticEvent {
 function makeEvent(overrides: Partial<SyntheticEvent> & { source: string }): SyntheticEvent {
   return {
     ts: "2026-06-01T10:00:00Z",
-    source: overrides.source,
     model: overrides.model ?? "claude-sonnet-4-6",
     tokens_input: overrides.tokens_input ?? 1000,
     tokens_output: overrides.tokens_output ?? 200,

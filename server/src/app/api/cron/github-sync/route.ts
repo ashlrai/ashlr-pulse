@@ -84,6 +84,7 @@ export async function POST(req: Request): Promise<Response> {
         reposScanned: 0,
         commitsAdded: 0,
         prsAdded: 0,
+        issuesAdded: 0,
         errors: [message],
       });
     }

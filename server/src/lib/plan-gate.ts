@@ -23,6 +23,12 @@ export interface PlanLimits {
   peer_share_enabled: boolean;
   ai_features: boolean;
   digest_enabled: boolean;
+  /**
+   * Fleet control plane (Map / Radar / proposal inbox / audit export /
+   * health rollup). A Pro+ surface — Free orgs see read-only fleet activity
+   * in the dashboard but cannot enqueue commands or export the audit log.
+   */
+  map_enabled: boolean;
 }
 
 export interface OrgPlanRef {
@@ -72,6 +78,7 @@ export const FREE_LIMITS: PlanLimits = {
   peer_share_enabled: false,
   ai_features: false,
   digest_enabled: true,
+  map_enabled: false,
 };
 
 export const PRO_LIMITS: PlanLimits = {
@@ -81,6 +88,7 @@ export const PRO_LIMITS: PlanLimits = {
   peer_share_enabled: true,
   ai_features: true,
   digest_enabled: true,
+  map_enabled: true,
 };
 
 export const TEAM_LIMITS: PlanLimits = {

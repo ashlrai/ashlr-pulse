@@ -415,7 +415,8 @@ describe("detectPeerDivergence", () => {
     // Simply use alice=200, bob=200, carol=2000 → avg=800; ratio=2.5 → low
     const high = detectPeerDivergence([], { alice: 100, bob: 100, carol: 100, dave: 100, eve: 10000 });
     // avg = (100+100+100+100+10000)/5 = 2100; ratio=10000/2100≈4.76 → medium
-    expect(["medium","high"]).toContain(high?.severity);
+    expect(high).not.toBeNull();
+    expect(["medium", "high"]).toContain(high!.severity);
   });
 });
 

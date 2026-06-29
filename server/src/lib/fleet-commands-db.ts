@@ -317,3 +317,84 @@ export async function listProposals(
   `;
   return rows.map(mapRow);
 }
+
+// ---------------------------------------------------------------------------
+// Inbox views (human operator) — newest-first listing + status counts.
+// Backs /fleet (the Fleet inbox page) via the fleet-inbox-db re-export.
+// ---------------------------------------------------------------------------
+
+/**
+ * All commands for an org, newest first — the operator inbox. Unlike
+ * listPending (the daemon's oldest-first poll), this surfaces every lifecycle
+ * state so a human can watch the queue drain. Limit clamped to [1, 500].
+ */
+export async function listForOrg(
+  orgId: string,
+  limit = 100,
+): Promise<FleetCommand[]> {
+  const safeLimit = Math.min(500, Math.max(1, limit));
+  const db = sql();
+  const rows = await db<FleetCommandRow[]>`
+    SELECT ${rowColumns(db)}
+    FROM fleet_command
+    WHERE org_id = ${orgId}::uuid
+    ORDER BY created_at DESC
+    LIMIT ${safeLimit}
+  `;
+  return rows.map(mapRow);
+}
+
+/**
+ * Cancel a still-PENDING command before the daemon claims it. Transitions
+ * pending → failed with error="cancelled by operator". The `status = 'pending'`
+ * guard makes this race-safe against claimNext(): if a daemon claims the row
+ * first, this no-ops and returns null, and the operator sees it move to
+ * "claimed" on the next poll. Returns the updated command, or null if it was
+ * not found in this org / no longer pending.
+ */
+export async function cancelPending(
+  orgId: string,
+  id: string,
+): Promise<FleetCommand | null> {
+  const db = sql();
+  const [row] = await db<FleetCommandRow[]>`
+    UPDATE fleet_command
+    SET status = 'failed',
+        error = 'cancelled by operator',
+        completed_at = NOW()
+    WHERE id = ${id}::uuid
+      AND org_id = ${orgId}::uuid
+      AND status = 'pending'
+    RETURNING ${rowColumns(db)}
+  `;
+  return row ? mapRow(row) : null;
+}
+
+/** Per-status row counts for an org — the inbox header badges. */
+export interface StatusCounts {
+  pending: number;
+  claimed: number;
+  done: number;
+  failed: number;
+}
+
+/**
+ * Count commands grouped by lifecycle status for an org. Missing statuses
+ * come back as 0 so the inbox header always renders a complete set of badges.
+ */
+export async function countsByStatus(orgId: string): Promise<StatusCounts> {
+  const db = sql();
+  const rows = await db<{ status: string; n: string }[]>`
+    SELECT status, COUNT(*)::text AS n
+    FROM fleet_command
+    WHERE org_id = ${orgId}::uuid
+    GROUP BY status
+  `;
+  const counts: StatusCounts = { pending: 0, claimed: 0, done: 0, failed: 0 };
+  for (const r of rows) {
+    if (r.status in counts) {
+      counts[r.status as keyof StatusCounts] = Number(r.n) || 0;
+    }
+  }
+  return counts;
+}
