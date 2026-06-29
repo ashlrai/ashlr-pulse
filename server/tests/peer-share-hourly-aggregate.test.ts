@@ -37,6 +37,16 @@ import {
   HOURLY_RETENTION_HRS,
   type PeerShareHourlyAggregate,
 } from "../src/lib/peer-share-hourly-aggregate";
+import {
+  sanitisePayload,
+  signWebhookPayload,
+  deliverPeerShareWebhook,
+  aggregatePastHour,
+  upsertHourlyAggregate,
+  runPeerShareHourlyAgg,
+  MAX_RETRIES,
+  type ActiveGrant,
+} from "../src/lib/peer-share-agg";
 
 const HAS_DB = Boolean(process.env.DATABASE_URL);
 
@@ -444,5 +454,447 @@ describe("computeDeltas (unit)", () => {
     const curr = [makeRow({ costMillicents: 0, tokensInput: 0, tokensOutput: 0 })];
     const deltas = computeDeltas("owner-1", prev, curr);
     expect(deltas).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sanitisePayload — privacy floor unit tests (no DB required)
+// ---------------------------------------------------------------------------
+
+describe("sanitisePayload (unit)", () => {
+  const baseGrant: ActiveGrant = {
+    share_id: "share-abc",
+    owner_id: "owner-1",
+    viewer_id: "viewer-1",
+    fields: ["ts", "source", "tokens_input", "tokens_output", "cost_millicents"],
+    org_id: "org-1",
+    peer_share_webhook_url: "https://hooks.example.com/peer",
+  };
+
+  const bucket = "2026-06-29T14:00:00.000Z";
+  const triggeredAt = "2026-06-29T15:05:00.000Z";
+
+  test("always includes base aggregate fields", () => {
+    const payload = sanitisePayload(
+      baseGrant,
+      bucket,
+      { tokens_input: 100, tokens_output: 200, cost_millicents: 500, event_count: 3 },
+      triggeredAt,
+    );
+    expect(payload.event).toBe("peer_share_activity");
+    expect(payload.share_id).toBe("share-abc");
+    expect(payload.owner_id).toBe("owner-1");
+    expect(payload.viewer_id).toBe("viewer-1");
+    expect(payload.hour_bucket).toBe(bucket);
+    expect(payload.tokens_input).toBe(100);
+    expect(payload.tokens_output).toBe(200);
+    expect(payload.cost_millicents).toBe(500);
+    expect(payload.event_count).toBe(3);
+    expect(payload.triggered_at).toBe(triggeredAt);
+  });
+
+  test("PRIVACY: model is omitted when not in grant.fields", () => {
+    const payload = sanitisePayload(
+      baseGrant, // fields does not include "model"
+      bucket,
+      { tokens_input: 100, tokens_output: 200, cost_millicents: 500, event_count: 3, model: "claude-sonnet-4-5" },
+      triggeredAt,
+    );
+    expect(payload.model).toBeUndefined();
+  });
+
+  test("model is included when grant.fields contains 'model'", () => {
+    const grantWithModel: ActiveGrant = { ...baseGrant, fields: [...baseGrant.fields, "model"] };
+    const payload = sanitisePayload(
+      grantWithModel,
+      bucket,
+      { tokens_input: 100, tokens_output: 200, cost_millicents: 500, event_count: 3, model: "claude-sonnet-4-5" },
+      triggeredAt,
+    );
+    expect(payload.model).toBe("claude-sonnet-4-5");
+  });
+
+  test("PRIVACY: repo_name is omitted when not in grant.fields", () => {
+    const payload = sanitisePayload(
+      baseGrant, // fields does not include "repo_name"
+      bucket,
+      { tokens_input: 100, tokens_output: 200, cost_millicents: 500, event_count: 3, repo_name: "secret-repo" },
+      triggeredAt,
+    );
+    expect(payload.repo_name).toBeUndefined();
+  });
+
+  test("repo_name is included when grant.fields contains 'repo_name'", () => {
+    const grantWithRepo: ActiveGrant = { ...baseGrant, fields: [...baseGrant.fields, "repo_name"] };
+    const payload = sanitisePayload(
+      grantWithRepo,
+      bucket,
+      { tokens_input: 100, tokens_output: 200, cost_millicents: 500, event_count: 3, repo_name: "my-repo" },
+      triggeredAt,
+    );
+    expect(payload.repo_name).toBe("my-repo");
+  });
+
+  test("PRIVACY: model undefined in agg does not appear in payload even with field permission", () => {
+    const grantWithModel: ActiveGrant = { ...baseGrant, fields: [...baseGrant.fields, "model"] };
+    const payload = sanitisePayload(
+      grantWithModel,
+      bucket,
+      { tokens_input: 10, tokens_output: 10, cost_millicents: 100, event_count: 1 },
+      triggeredAt,
+    );
+    expect(payload.model).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// signWebhookPayload — HMAC signing unit tests (no DB required)
+// ---------------------------------------------------------------------------
+
+describe("signWebhookPayload (unit)", () => {
+  test("returns a sha256=<hex> string", () => {
+    const sig = signWebhookPayload("supersecret", '{"event":"peer_share_activity"}');
+    expect(sig).toMatch(/^sha256=[0-9a-f]{64}$/);
+  });
+
+  test("same secret + body → same signature (deterministic)", () => {
+    const body = JSON.stringify({ a: 1 });
+    const sig1 = signWebhookPayload("s3cr3t", body);
+    const sig2 = signWebhookPayload("s3cr3t", body);
+    expect(sig1).toBe(sig2);
+  });
+
+  test("different secrets → different signatures", () => {
+    const body = '{"event":"test"}';
+    expect(signWebhookPayload("secret-a", body)).not.toBe(signWebhookPayload("secret-b", body));
+  });
+
+  test("different bodies → different signatures", () => {
+    const secret = "fixed-secret";
+    expect(signWebhookPayload(secret, '{"a":1}')).not.toBe(signWebhookPayload(secret, '{"a":2}'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// deliverPeerShareWebhook — retry / backoff unit tests (no DB required)
+// ---------------------------------------------------------------------------
+
+describe("deliverPeerShareWebhook (unit)", () => {
+  const makePayload = (): Parameters<typeof deliverPeerShareWebhook>[1] => ({
+    event: "peer_share_activity",
+    share_id: "s1",
+    owner_id: "o1",
+    viewer_id: "v1",
+    hour_bucket: "2026-06-29T14:00:00.000Z",
+    tokens_input: 100,
+    tokens_output: 200,
+    cost_millicents: 500,
+    event_count: 2,
+    triggered_at: new Date().toISOString(),
+  });
+
+  /** Helper: patch globalThis.fetch with a compatible mock, preserving extra props. */
+  function patchFetch(impl: (url: URL | RequestInfo, init?: RequestInit) => Promise<Response>) {
+    const original = globalThis.fetch;
+    // Cast avoids the Bun-specific `preconnect` property requirement in tests.
+    (globalThis as Record<string, unknown>).fetch = Object.assign(impl, original);
+    return () => { globalThis.fetch = original; };
+  }
+
+  test("returns ok:true on 200 response", async () => {
+    let callCount = 0;
+    const restore = patchFetch(async () => {
+      callCount++;
+      return new Response("{}", { status: 200 });
+    });
+    try {
+      const result = await deliverPeerShareWebhook("https://hooks.example.com", makePayload(), null);
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.status).toBe(200);
+        expect(result.attempt).toBe(1);
+      }
+      expect(callCount).toBe(1);
+    } finally {
+      restore();
+    }
+  });
+
+  test("does not retry on 4xx response", async () => {
+    let callCount = 0;
+    const restore = patchFetch(async () => {
+      callCount++;
+      return new Response("Not Found", { status: 404 });
+    });
+    try {
+      const result = await deliverPeerShareWebhook("https://hooks.example.com", makePayload(), null);
+      expect(result.ok).toBe(false);
+      expect(callCount).toBe(1); // no retry on 4xx
+      if (!result.ok) {
+        expect(result.error).toContain("4xx");
+      }
+    } finally {
+      restore();
+    }
+  });
+
+  test(`retries on 5xx up to MAX_RETRIES (${MAX_RETRIES}) times`, async () => {
+    let callCount = 0;
+    const restore = patchFetch(async () => {
+      callCount++;
+      return new Response("Server Error", { status: 500 });
+    });
+    try {
+      const result = await deliverPeerShareWebhook("https://hooks.example.com", makePayload(), null);
+      expect(result.ok).toBe(false);
+      expect(callCount).toBe(MAX_RETRIES);
+    } finally {
+      restore();
+    }
+  });
+
+  test("succeeds on second attempt after initial 5xx", async () => {
+    let callCount = 0;
+    const restore = patchFetch(async () => {
+      callCount++;
+      if (callCount === 1) return new Response("Error", { status: 503 });
+      return new Response("{}", { status: 200 });
+    });
+    try {
+      const result = await deliverPeerShareWebhook("https://hooks.example.com", makePayload(), null);
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.attempt).toBe(2);
+      }
+    } finally {
+      restore();
+    }
+  });
+
+  test("includes x-pulse-signature header when secret is provided", async () => {
+    let capturedHeaders: Record<string, string> = {};
+    const restore = patchFetch(async (_url, init) => {
+      const h = init?.headers as Record<string, string> | undefined;
+      if (h) capturedHeaders = h;
+      return new Response("{}", { status: 200 });
+    });
+    try {
+      await deliverPeerShareWebhook("https://hooks.example.com", makePayload(), "my-secret");
+      expect(capturedHeaders["x-pulse-signature"]).toMatch(/^sha256=[0-9a-f]{64}$/);
+    } finally {
+      restore();
+    }
+  });
+
+  test("omits x-pulse-signature header when secret is null", async () => {
+    let capturedHeaders: Record<string, string> = {};
+    const restore = patchFetch(async (_url, init) => {
+      const h = init?.headers as Record<string, string> | undefined;
+      if (h) capturedHeaders = h;
+      return new Response("{}", { status: 200 });
+    });
+    try {
+      await deliverPeerShareWebhook("https://hooks.example.com", makePayload(), null);
+      expect(capturedHeaders["x-pulse-signature"]).toBeUndefined();
+    } finally {
+      restore();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DB-gated tests for peer-share-agg aggregation + runPeerShareHourlyAgg
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!HAS_DB)("peer-share-agg DB integration", () => {
+  const tag = `agg-${Date.now()}`;
+  const ownerEmail  = `pulse-agg-owner-${tag}@local`;
+  const viewerEmail = `pulse-agg-viewer-${tag}@local`;
+
+  let ownerId  = "";
+  let viewerId = "";
+  let shareId  = "";
+
+  const nowMs = Date.now();
+  const prevHourMs = (nowMs - (nowMs % 3_600_000)) - 3_600_000;
+  const bucketStart = new Date(prevHourMs);
+
+  const COST_X = 1500;
+  const COST_Y = 2500;
+  const TOTAL  = COST_X + COST_Y;
+
+  let db: ReturnType<typeof sql>;
+
+  beforeAll(async () => {
+    db = sql();
+
+    const [ownerRow] = await db<{ id: string }[]>`
+      INSERT INTO "user" (email, github_login, github_node_id, avatar_url)
+      VALUES (${ownerEmail}, ${"agg-owner-" + tag}, ${"agg-owner-node-" + tag}, '')
+      RETURNING id::text AS id
+    `;
+    ownerId = ownerRow.id;
+
+    const [viewerRow] = await db<{ id: string }[]>`
+      INSERT INTO "user" (email, github_login, github_node_id, avatar_url)
+      VALUES (${viewerEmail}, ${"agg-viewer-" + tag}, ${"agg-viewer-node-" + tag}, '')
+      RETURNING id::text AS id
+    `;
+    viewerId = viewerRow.id;
+
+    const [shareRow] = await db<{ id: string }[]>`
+      INSERT INTO peer_share (owner_id, viewer_id, scope_type, scope_value, granularity, fields)
+      VALUES (
+        ${ownerId}::uuid, ${viewerId}::uuid,
+        'all', NULL, 'realtime',
+        ARRAY['ts','source','model','tokens_input','tokens_output','cost_millicents']
+      )
+      RETURNING id::text AS id
+    `;
+    shareId = shareRow.id;
+
+    // Seed events inside the previous full-hour bucket.
+    const eventTs = new Date(prevHourMs + 60_000).toISOString();
+    await db`
+      INSERT INTO activity_event
+        (user_id, source, model, tokens_input, tokens_output, cost_millicents, ts)
+      VALUES
+        (${ownerId}::uuid, 'ashlr', 'claude-sonnet-4-5', 80, 160, ${COST_X}, ${eventTs}::timestamptz),
+        (${ownerId}::uuid, 'ashlr', 'claude-haiku-4-5',  40,  80, ${COST_Y}, ${eventTs}::timestamptz)
+    `;
+  });
+
+  afterAll(async () => {
+    await db`DELETE FROM peer_share_hourly_aggregate WHERE owner_id = ${ownerId}::uuid`;
+    await db`DELETE FROM activity_event WHERE user_id = ${ownerId}::uuid`;
+    await db`DELETE FROM peer_share WHERE id = ${shareId}`;
+    await db`DELETE FROM "user" WHERE id IN (${ownerId}::uuid, ${viewerId}::uuid)`;
+  });
+
+  test("aggregatePastHour returns correct totals for active grant", async () => {
+    const rows = await aggregatePastHour(ownerId, viewerId, bucketStart);
+    const totalCost = rows.reduce((s, r) => s + r.cost_millicents, 0);
+    const totalEvents = rows.reduce((s, r) => s + r.event_count, 0);
+    expect(totalCost).toBe(TOTAL);
+    expect(totalEvents).toBe(2);
+  });
+
+  test("aggregatePastHour returns empty for revoked grant", async () => {
+    await db`UPDATE peer_share SET revoked_at = NOW() WHERE id = ${shareId}`;
+    const rows = await aggregatePastHour(ownerId, viewerId, bucketStart);
+    expect(rows).toHaveLength(0);
+    await db`UPDATE peer_share SET revoked_at = NULL WHERE id = ${shareId}`;
+  });
+
+  test("upsertHourlyAggregate writes rows and is idempotent", async () => {
+    const aggRows = await aggregatePastHour(ownerId, viewerId, bucketStart);
+    const n1 = await upsertHourlyAggregate(shareId, ownerId, viewerId, bucketStart, aggRows);
+    expect(n1).toBeGreaterThan(0);
+
+    // Second upsert — idempotent
+    const n2 = await upsertHourlyAggregate(shareId, ownerId, viewerId, bucketStart, aggRows);
+    expect(n2).toBeGreaterThan(0);
+
+    const rows = await db<{ total_cost: number; total_events: number }[]>`
+      SELECT
+        SUM(cost_millicents)::bigint AS total_cost,
+        SUM(event_count)::int        AS total_events
+      FROM peer_share_hourly_aggregate
+      WHERE owner_id   = ${ownerId}::uuid
+        AND viewer_id  = ${viewerId}::uuid
+        AND hour_bucket = ${bucketStart.toISOString()}::timestamptz
+    `;
+    // Must not double-count after two upserts.
+    expect(Math.abs(Number(rows[0]?.total_cost ?? 0) - TOTAL)).toBeLessThanOrEqual(1);
+    expect(Number(rows[0]?.total_events ?? 0)).toBe(2);
+  });
+
+  test("runPeerShareHourlyAgg processes the active pair and skips revoked", async () => {
+    // Clean up previous upserts so counts are deterministic.
+    await db`DELETE FROM peer_share_hourly_aggregate WHERE owner_id = ${ownerId}::uuid`;
+
+    const result = await runPeerShareHourlyAgg("test-secret");
+    expect(result.pairs).toBeGreaterThanOrEqual(1);
+    // Rows should have been written for the active pair.
+    expect(result.rowsUpserted).toBeGreaterThan(0);
+    // No webhook URL configured → webhooks_sent should be 0.
+    expect(result.webhooksSent).toBe(0);
+
+    // Revoke and re-run — revoked pair should not produce aggregate rows.
+    await db`UPDATE peer_share SET revoked_at = NOW() WHERE id = ${shareId}`;
+    await db`DELETE FROM peer_share_hourly_aggregate WHERE owner_id = ${ownerId}::uuid`;
+
+    const result2 = await runPeerShareHourlyAgg("test-secret");
+    const check = await db<{ n: number }[]>`
+      SELECT COUNT(*)::int AS n
+      FROM peer_share_hourly_aggregate
+      WHERE owner_id  = ${ownerId}::uuid
+        AND viewer_id = ${viewerId}::uuid
+        AND (cost_millicents > 0 OR event_count > 0)
+    `;
+    expect(Number(check[0]?.n ?? 0)).toBe(0);
+
+    // Restore for afterAll cleanup.
+    await db`UPDATE peer_share SET revoked_at = NULL WHERE id = ${shareId}`;
+  });
+
+  test("runPeerShareHourlyAgg webhook fires when cost > 0 and URL configured", async () => {
+    // Patch org with a webhook URL via org table.
+    // First ensure owner has an org (or create one).
+    let orgId: string | null = null;
+    const orgRows = await db<{ org_id: string }[]>`
+      SELECT org_id::text FROM membership WHERE user_id = ${ownerId}::uuid LIMIT 1
+    `;
+    if (orgRows.length > 0) {
+      orgId = orgRows[0].org_id;
+    } else {
+      const [newOrg] = await db<{ id: string }[]>`
+        INSERT INTO org (name, slug, plan)
+        VALUES (${"test-org-" + tag}, ${"test-org-slug-" + tag}, 'pro')
+        RETURNING id::text AS id
+      `;
+      orgId = newOrg.id;
+      await db`
+        INSERT INTO membership (org_id, user_id, role)
+        VALUES (${orgId}::uuid, ${ownerId}::uuid, 'owner')
+      `;
+    }
+
+    // Set the webhook URL.
+    await db`
+      UPDATE org SET peer_share_webhook_url = ${"https://hooks.test.example.com/ps"}
+      WHERE id = ${orgId}::uuid
+    `;
+
+    // Mock fetch to capture webhook call (cast avoids Bun preconnect type requirement).
+    let webhookCalled = false;
+    let capturedBody: unknown = null;
+    const origFetch = globalThis.fetch;
+    const mockImpl = async (_url: URL | RequestInfo, init?: RequestInit) => {
+      webhookCalled = true;
+      capturedBody = JSON.parse((init?.body as string) ?? "{}");
+      return new Response("{}", { status: 200 });
+    };
+    (globalThis as Record<string, unknown>).fetch = Object.assign(mockImpl, origFetch);
+
+    await db`DELETE FROM peer_share_hourly_aggregate WHERE owner_id = ${ownerId}::uuid`;
+
+    try {
+      const result = await runPeerShareHourlyAgg("test-secret");
+      // The pair has cost > 0 and a webhook URL — webhook should have fired.
+      expect(result.webhooksSent).toBeGreaterThanOrEqual(1);
+      expect(webhookCalled).toBe(true);
+
+      if (capturedBody && typeof capturedBody === "object") {
+        const body = capturedBody as Record<string, unknown>;
+        expect(body.event).toBe("peer_share_activity");
+        // PRIVACY: repo_name must not appear (not in grant.fields).
+        expect(body.repo_name).toBeUndefined();
+      }
+    } finally {
+      globalThis.fetch = origFetch;
+      // Clean up webhook URL.
+      await db`UPDATE org SET peer_share_webhook_url = NULL WHERE id = ${orgId}::uuid`;
+    }
   });
 });

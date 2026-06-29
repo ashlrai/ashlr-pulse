@@ -26,6 +26,7 @@ import { createInvite, listInvitesByOwner } from "@/lib/invite-db";
 import { primaryOrgForUser } from "@/lib/org-db";
 import { limitsFor, PlanGateError } from "@/lib/plan-gate";
 import { readPeerShareSummaries, type PeerShareAggregateSummary } from "@/lib/peer-share-aggregate-refresh";
+import { readHourlyRows, type PeerShareHourlyAggregate } from "@/lib/peer-share-hourly-aggregate";
 
 import { Header } from "@/components/Header";
 import { DashboardShell } from "@/components/ui/DashboardShell";
@@ -173,12 +174,35 @@ export default async function SharePage({
   const dateFrom = clampDate(fromRaw, thirtyDaysAgoStr);
   const dateTo   = clampDate(toRaw,   todayStr);
 
+  // Load hourly activity feed: last 6 hours of incoming peer activity for
+  // all grants where me is the viewer (SSE polling fallback — server-rendered
+  // snapshot; the client refreshes via /api/peer-share/subscribe SSE).
+  const nowMs = Date.now();
+  const sixHoursAgo = new Date(nowMs - 6 * 3_600_000);
+  const nowDate = new Date(nowMs);
+
   const [owned, granted, invites, peerSummaries] = await Promise.all([
     listGrantsOwnedBy(me.id),
     listGrantsForViewer(me.id),
     listInvitesByOwner(me.id),
     readPeerShareSummaries(me.id).catch(() => [] as PeerShareAggregateSummary[]),
   ]);
+
+  // For each grant where me is the viewer, fetch recent hourly rows.
+  const activityFeedRows: (PeerShareHourlyAggregate & { ownerEmail: string })[] = [];
+  for (const g of granted) {
+    try {
+      const rows = await readHourlyRows(g.owner_id, me.id, sixHoursAgo, nowDate);
+      const nonZero = rows.filter((r) => r.costMillicents > 0 || r.eventCount > 0);
+      for (const r of nonZero) {
+        activityFeedRows.push({ ...r, ownerEmail: g.owner_email });
+      }
+    } catch {
+      // Best-effort — skip failed owners.
+    }
+  }
+  // Sort by bucket DESC so newest appears first.
+  activityFeedRows.sort((a, b) => b.hourBucket.localeCompare(a.hourBucket));
   const justCreated = justCreatedToken ? invites.find((i) => i.token === justCreatedToken) : undefined;
   const origin = process.env.NEXT_PUBLIC_APP_URL ?? "";
   const outstanding = invites.filter((i) => !i.accepted_at && new Date(i.expires_at).getTime() > Date.now());
@@ -361,6 +385,17 @@ export default async function SharePage({
           </Card>
         )}
 
+        {/* Activity Feed — incoming peer activity for last 6 h */}
+        {activityFeedRows.length > 0 && (
+          <Card>
+            <CardHeader
+              title="incoming peer activity"
+              hint="last 6 h · hourly buckets · refreshes on page load (SSE when realtime grant active)"
+            />
+            <ActivityFeed rows={activityFeedRows} />
+          </Card>
+        )}
+
         <Card>
           <CardHeader title={`grants you've been given · ${granted.length}`} />
           <GrantTable rows={granted} side="granted" />
@@ -495,6 +530,58 @@ function PeerShareSummaryTable({ rows }: { rows: PeerShareAggregateSummary[] }):
             </td>
             <td style={{ ...td, color: palette.textDim, fontSize: 11 }}>
               {r.dateFrom} → {r.dateTo}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function ActivityFeed({
+  rows,
+}: {
+  rows: (PeerShareHourlyAggregate & { ownerEmail: string })[];
+}): ReactElement {
+  if (rows.length === 0) {
+    return (
+      <p style={{ color: palette.textMute, fontSize: 12, margin: 0 }}>
+        no peer activity in the last 6 hours.
+      </p>
+    );
+  }
+  return (
+    <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
+      <thead>
+        <tr style={{ textAlign: "left", borderBottom: `1px solid ${palette.border}` }}>
+          <th style={th}>peer</th>
+          <th style={th}>hour (UTC)</th>
+          <th style={th}>source</th>
+          <th style={th}>events</th>
+          <th style={th}>tokens in</th>
+          <th style={th}>tokens out</th>
+          <th style={th}>cost (mc)</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((r, i) => (
+          <tr
+            key={`${r.ownerId}-${r.hourBucket}-${r.source}-${r.model}-${i}`}
+            style={{ borderBottom: `1px dashed ${palette.border}` }}
+          >
+            <td style={td}>{r.ownerEmail}</td>
+            <td style={{ ...td, color: palette.textDim, fontSize: 11 }}>
+              {r.hourBucket.slice(0, 16).replace("T", " ")}
+            </td>
+            <td style={td}>
+              <code style={{ color: palette.cyan, fontSize: 11 }}>{r.source || "—"}</code>
+            </td>
+            <td style={{ ...td, color: palette.amber }}>{r.eventCount.toLocaleString()}</td>
+            <td style={{ ...td, color: palette.textDim }}>{r.tokensInput.toLocaleString()}</td>
+            <td style={{ ...td, color: palette.textDim }}>{r.tokensOutput.toLocaleString()}</td>
+            <td style={{ ...td, color: palette.green }}>
+              {r.costMillicents.toLocaleString()}
+              <span style={{ color: palette.textMute, fontSize: 10 }}> mc</span>
             </td>
           </tr>
         ))}
