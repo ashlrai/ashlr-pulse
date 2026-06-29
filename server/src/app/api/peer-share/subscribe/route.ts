@@ -47,6 +47,12 @@ import {
   computeDeltas,
   type PeerShareHourlyAggregate,
 } from "@/lib/peer-share-hourly-aggregate";
+import {
+  readMonthlyRows,
+  buildMonthlyEvents,
+  subtractMonths,
+  truncateToMonthUTC,
+} from "@/lib/peer-share-monthly-aggregate";
 import { log } from "@/lib/logger";
 
 export const runtime = "nodejs";
@@ -111,6 +117,11 @@ export async function GET(req: NextRequest): Promise<Response> {
 
   // Snapshot from the previous poll tick — used by computeDeltas().
   let prevSnapshot: PeerShareHourlyAggregate[] = [];
+  // Track whether monthly buckets have been emitted for this connection.
+  // Reset to false at the start of each new calendar month so clients receive
+  // fresh monthly data after a month rolls over during a long-lived SSE session.
+  let prevMonthlyEmitted = false;
+  let prevMonthEmittedMonth = -1; // UTC month (0-11) when last emitted
 
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -137,6 +148,33 @@ export async function GET(req: NextRequest): Promise<Response> {
 
           // Advance snapshot.
           prevSnapshot = curr;
+
+          // Emit monthly buckets: last 13 months so the client has full MoM history.
+          // Emitted on the first poll tick and once per calendar-month rollover so
+          // long-lived SSE sessions receive fresh monthly data after a month turns.
+          const currentUTCMonth = now.getUTCMonth();
+          if (!prevMonthlyEmitted || currentUTCMonth !== prevMonthEmittedMonth) {
+            try {
+              const fromMonth = subtractMonths(now, 12); // 13 months incl. current
+              const toMonth = truncateToMonthUTC(now);
+              const monthlyRows = await readMonthlyRows(ownerParam, me.id, fromMonth, toMonth);
+              const monthlyEvents = buildMonthlyEvents(monthlyRows);
+              if (monthlyEvents.length > 0) {
+                const monthlyData = JSON.stringify(monthlyEvents);
+                controller.enqueue(encoder.encode(`data: ${monthlyData}\n\n`));
+              }
+              prevMonthlyEmitted = true;
+              prevMonthEmittedMonth = currentUTCMonth;
+            } catch (mErr) {
+              log.error({
+                msg: "peer-share-subscribe: monthly read error",
+                viewer_id: me.id,
+                owner_id: ownerParam,
+                err: mErr instanceof Error ? mErr.message : String(mErr),
+              });
+              // Don't fail the whole poll — monthly data is supplementary.
+            }
+          }
         } catch (err) {
           log.error({
             msg: "peer-share-subscribe: poll error",
