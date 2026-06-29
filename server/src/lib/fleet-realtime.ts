@@ -41,6 +41,7 @@ import { FORBIDDEN_FIELDS, assertMetadataOnly, MetadataFloorError } from "./peer
 import { admin } from "./supabase-server";
 import { log } from "./logger";
 import type { ActivityEventInsert } from "./otel-genai";
+import { computeCostImpactFields, type CostImpactFields } from "./fleet-cost-impact";
 
 // Lazy import of notifySSESubscribers — the registry module is a plain lib
 // file with no Next.js route constraints. Lazy to guard test envs that stub it.
@@ -61,6 +62,10 @@ async function notifySSE(userId: string, events: FleetRealtimeEvent[]): Promise<
  * The subset of ActivityEventInsert fields that may be broadcast over
  * Supabase Realtime. Mirrors SHAREABLE_FIELDS but restricted to the
  * fleet-relevant columns so the payload stays small.
+ *
+ * Cost-impact fields (M49 fleet control plane) are appended on ingest
+ * when a team-average baseline is available. They are pure numeric —
+ * never contain user content.
  */
 export interface FleetRealtimeEvent {
   ts: string;
@@ -75,6 +80,12 @@ export interface FleetRealtimeEvent {
   tokens_input: number | null;
   tokens_output: number | null;
   cost_millicents: number | null;
+  // Cost-impact fields — optional, set during pushFleetEvents when
+  // a team_avg_millicents baseline is provided by the caller.
+  user_cost_millicents?: number;
+  team_avg_millicents?: number;
+  peer_divergence_ratio?: number;
+  peer_divergence_severity?: "low" | "medium" | "high";
 }
 
 /**
@@ -151,7 +162,10 @@ export function toFleetEventJSON(event: FleetRealtimeEvent): Record<string, any>
  *
  * Exported for testing.
  */
-export function redactForBroadcast(row: ActivityEventInsert): FleetRealtimeEvent {
+export function redactForBroadcast(
+  row: ActivityEventInsert,
+  costImpact?: CostImpactFields,
+): FleetRealtimeEvent {
   const safe: FleetRealtimeEvent = {
     ts:            row.ts,
     source:        row.source,
@@ -166,6 +180,14 @@ export function redactForBroadcast(row: ActivityEventInsert): FleetRealtimeEvent
     tokens_output: row.tokens_output,
     cost_millicents: row.cost_millicents,
   };
+
+  // Attach cost-impact fields when provided — pure numeric, privacy-safe.
+  if (costImpact) {
+    safe.user_cost_millicents    = costImpact.user_cost_millicents;
+    safe.team_avg_millicents     = costImpact.team_avg_millicents;
+    safe.peer_divergence_ratio   = costImpact.peer_divergence_ratio;
+    safe.peer_divergence_severity = costImpact.peer_divergence_severity;
+  }
 
   // Verify no NEVER_BROADCAST key leaked into the constructed object.
   // This is a belt-and-suspenders check — the explicit field selection above
@@ -193,13 +215,18 @@ export function redactForBroadcast(row: ActivityEventInsert): FleetRealtimeEvent
  * Only runs when PULSE_REALTIME_PUSH=true. Silently no-ops otherwise so the
  * ingest path never blocks on a disabled feature.
  *
- * @param userId  - owner of the events; channel is `fleet-events:{userId}`
- * @param rows    - all activity rows from this OTLP batch; non-fleet rows
- *                  are filtered out before broadcast.
+ * @param userId             - owner of the events; channel is `fleet-events:{userId}`
+ * @param rows               - all activity rows from this OTLP batch; non-fleet rows
+ *                             are filtered out before broadcast.
+ * @param teamAvgMillicents  - optional team average cost-per-event (millicents) for
+ *                             peer-divergence computation. When provided, each event
+ *                             gets user_cost_millicents / team_avg_millicents /
+ *                             peer_divergence_ratio appended to the broadcast payload.
  */
 export async function pushFleetEvents(
   userId: string,
   rows: ActivityEventInsert[],
+  teamAvgMillicents?: number,
 ): Promise<void> {
   if (process.env.PULSE_REALTIME_PUSH !== "true") return;
 
@@ -214,7 +241,12 @@ export async function pushFleetEvents(
   for (const row of fleetRows) {
     let payload: FleetRealtimeEvent;
     try {
-      payload = redactForBroadcast(row);
+      // Compute cost-impact fields when a team average is available.
+      const costImpact =
+        teamAvgMillicents !== undefined
+          ? computeCostImpactFields(row.cost_millicents ?? 0, teamAvgMillicents)
+          : undefined;
+      payload = redactForBroadcast(row, costImpact);
     } catch (err) {
       if (err instanceof MetadataFloorError) {
         log.warn({
