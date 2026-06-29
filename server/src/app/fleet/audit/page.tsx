@@ -51,12 +51,17 @@ function defaultSince(): string {
 }
 
 function buildExportUrl(params: ExportParams): string {
-  const u = new URL("/api/fleet/audit/export", window.location.origin);
-  u.searchParams.set("since", params.since);
-  u.searchParams.set("until", params.until);
-  if (params.repo.trim()) u.searchParams.set("repo", params.repo.trim());
-  u.searchParams.set("format", params.format);
-  return u.toString();
+  // Build a RELATIVE url (path + query). This must be safe to evaluate during
+  // server prerender, where `window` is undefined — referencing
+  // window.location.origin here crashes the static export of this client page.
+  // The browser resolves the relative path against the current origin on
+  // navigation, and the relative form is exactly what we display/copy anyway.
+  const qs = new URLSearchParams();
+  qs.set("since", params.since);
+  qs.set("until", params.until);
+  if (params.repo.trim()) qs.set("repo", params.repo.trim());
+  qs.set("format", params.format);
+  return `/api/fleet/audit/export?${qs.toString()}`;
 }
 
 // ---------------------------------------------------------------------------
