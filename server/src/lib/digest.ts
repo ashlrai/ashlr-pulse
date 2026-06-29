@@ -27,6 +27,9 @@ import { sql } from "./db";
 import { costUsdCents } from "./pricing";
 import { aggregateByProject, type ProjectAgg } from "./project-db";
 import { retentionCutoff, type PlanLimits } from "./plan-gate";
+import { forecast } from "./forecast";
+
+export type DigestFrequency = "daily" | "weekly";
 
 export interface DigestSelfBySource {
   source: string;
@@ -73,6 +76,34 @@ export interface DigestPeer {
   showCost: boolean;                 // true iff token fields are visible
 }
 
+/** Week-over-week delta summary included in weekly digests. */
+export interface WeeklyWowDelta {
+  /** Current week total tokens. */
+  tokens_this: number;
+  /** Previous week total tokens. */
+  tokens_prev: number;
+  /** Current week total cost cents. */
+  cents_this: number | null;
+  /** Previous week total cost cents. */
+  cents_prev: number | null;
+  /** Current week total events. */
+  events_this: number;
+  /** Previous week total events. */
+  events_prev: number;
+}
+
+/** End-of-month cost forecast included in weekly digests (cents). */
+export interface WeeklyForecast {
+  /** Median projected remaining cost for the rest of this month (cents). */
+  remaining_p50: number;
+  /** Lower band projected remaining cost (cents). */
+  remaining_p10: number;
+  /** Upper band projected remaining cost (cents). */
+  remaining_p90: number;
+  /** Day-of-month when the forecast was computed. */
+  computed_dom: number;
+}
+
 export interface DigestPayload {
   user_id: string;
   email: string;
@@ -82,6 +113,31 @@ export interface DigestPayload {
   peers: DigestPeer[];
   /** True if there is literally nothing to report (no self, no peers). */
   empty: boolean;
+  /** Present only on weekly digests. */
+  weekly?: {
+    wow: WeeklyWowDelta;
+    /** Top 3 anomaly strings from the 7d window. */
+    anomalies: string[];
+    forecast: WeeklyForecast | null;
+  };
+}
+
+/**
+ * Should the digest cron fire for this granularity given the org's
+ * digest_frequency setting?
+ *
+ *   frequency='daily'  → daily fires, weekly does not
+ *   frequency='weekly' → weekly fires, daily does not
+ *   frequency='both'   → both fire
+ *
+ * The `granularity` arg comes from the cron route ('daily' | 'weekly').
+ */
+export function shouldSendDigest(
+  granularity: DigestFrequency,
+  orgFrequency: "daily" | "weekly" | "both",
+): boolean {
+  if (orgFrequency === "both") return true;
+  return orgFrequency === granularity;
 }
 
 interface UserPrefs {
@@ -170,6 +226,64 @@ export function localHour(tz: string, now: Date = new Date()): number {
     hour: "2-digit",
   });
   return Number(fmt.format(now).replace(/[^0-9]/g, ""));
+}
+
+/**
+ * Returns ISO-string bounds for "this week" and "previous week" in the
+ * user's TZ, ending at the start of the current day (i.e. the 7-day window
+ * Mon–Sun preceding today).
+ *
+ * "This week" = the 7 days ending at today's local midnight (the completed
+ * Mon–Sun span that the Monday digest summarises).
+ * "Prev week" = the 7 days before that.
+ */
+export function weekWindows(
+  tz: string,
+  now: Date = new Date(),
+): {
+  thisStart: string; thisEnd: string;
+  prevStart: string; prevEnd: string;
+  label: string;
+} {
+  // Find local Monday of the current ISO week (week starts Mon).
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: tz,
+    year: "numeric", month: "2-digit", day: "2-digit",
+  });
+  const parts = fmt.formatToParts(now);
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
+  const todayLocalYmd = `${get("year")}-${get("month")}-${get("day")}`;
+
+  // We want Monday–Sunday of last week.
+  const todayMidnightUtc = zonedDateToUtc(todayLocalYmd, "00:00:00", tz);
+  // dow: 0=Sun,1=Mon...6=Sat. We want the Monday that started this week.
+  const nowLocal = new Date(todayMidnightUtc.getTime());
+  const fmtWd = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short" });
+  const wdStr = fmtWd.format(now);
+  const dowMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  const dow = dowMap[wdStr] ?? 0;
+
+  // Days since last Monday. If today is Monday, dow=1 → daysToMon=0 (start of this week).
+  // For the weekly digest we summarise the *completed* week: Mon(7 days ago)→Mon(today midnight).
+  // So thisEnd = today's local midnight (= now's Monday midnight).
+  // thisStart = thisEnd - 7 days.
+  const daysToMon = dow === 0 ? 6 : dow - 1; // days since last Monday
+  // Monday midnight UTC of the current week:
+  const thisWeekMondayUtc = new Date(todayMidnightUtc.getTime() - daysToMon * 86_400_000);
+
+  const thisEnd   = thisWeekMondayUtc.toISOString();                                  // this Mon 00:00 local
+  const thisStart = new Date(thisWeekMondayUtc.getTime() - 7 * 86_400_000).toISOString(); // prev Mon 00:00 local
+  const prevStart = new Date(thisWeekMondayUtc.getTime() - 14 * 86_400_000).toISOString();
+  const prevEnd   = thisStart;
+
+  // Week label: "week of Mon Apr 21"
+  const weekStartDate = new Date(thisWeekMondayUtc.getTime() - 7 * 86_400_000);
+  const labelFmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz, weekday: "short", month: "short", day: "numeric",
+  });
+  const label = `week of ${labelFmt.format(weekStartDate)}`;
+
+  return { thisStart, thisEnd, prevStart, prevEnd, label };
 }
 
 /**
@@ -464,12 +578,32 @@ export async function buildDigest(
   userId: string,
   now: Date = new Date(),
   limits?: PlanLimits,
+  frequency: DigestFrequency = "daily",
 ): Promise<DigestPayload | null> {
   const prefs = await loadUserPrefs(userId);
   if (!prefs) return null;
 
-  const { startUtc, endUtc, label } = yesterdayWindow(prefs.digest_tz, now);
   const cal = localCalendar(prefs.digest_tz, now);
+
+  // For weekly digests use the 7-day window ending at this Monday's midnight;
+  // for daily use yesterday's 24h window.
+  let startUtc: string;
+  let endUtc: string;
+  let label: string;
+  let weekWindowsForWow: ReturnType<typeof weekWindows> | null = null;
+
+  if (frequency === "weekly") {
+    const ww = weekWindows(prefs.digest_tz, now);
+    weekWindowsForWow = ww;
+    startUtc = ww.thisStart;
+    endUtc   = ww.thisEnd;
+    label    = ww.label;
+  } else {
+    const dw = yesterdayWindow(prefs.digest_tz, now);
+    startUtc = dw.startUtc;
+    endUtc   = dw.endUtc;
+    label    = dw.label;
+  }
 
   // Clamp startUtc to the retention cutoff when limits are provided.
   // Yesterday is typically within any plan's window, but this ensures
@@ -548,6 +682,84 @@ export async function buildDigest(
     self.github.prs_merged === 0 &&
     peers.every((p) => p.bySource.length === 0 && (p.byRepo ?? []).length === 0);
 
+  // Weekly-only content: WoW deltas, top anomalies, EoM forecast.
+  let weeklySection: DigestPayload["weekly"] | undefined;
+  if (frequency === "weekly" && weekWindowsForWow) {
+    const prevRows = await loadActivity(userId, weekWindowsForWow.prevStart, weekWindowsForWow.prevEnd, { type: "all" });
+    const prevBySource = aggregateBySource(prevRows);
+
+    const tokensThis  = selfRows.reduce((s, r) => s + (r.tokens_input ?? 0) + (r.tokens_output ?? 0), 0);
+    const tokensPrev  = prevRows.reduce((s, r) => s + (r.tokens_input ?? 0) + (r.tokens_output ?? 0), 0);
+    const centsThis   = self.bySource.reduce((s, r) => s + (r.cents ?? 0), 0);
+    const centsPrev   = prevBySource.reduce((s, r) => s + (r.cents ?? 0), 0);
+    const eventsThis  = selfRows.length;
+    const eventsPrev  = prevRows.length;
+
+    const wow: WeeklyWowDelta = {
+      tokens_this: tokensThis,
+      tokens_prev: tokensPrev,
+      cents_this:  centsThis,
+      cents_prev:  centsPrev,
+      events_this: eventsThis,
+      events_prev: eventsPrev,
+    };
+
+    // Top 3 anomalies from the 7-day window using same composition checks.
+    const weeklyAnomalies = computeAnomalies({ bySource, byRepo, missedRepos }).slice(0, 3);
+
+    // End-of-month cost forecast. Build a 30-day history ending at thisEnd
+    // in daily buckets. We use the last 30 activity rows bucketed by day as
+    // a coarse daily series — the forecast() function only needs daily cost
+    // millicents so we compute them from the weekly window rows.
+    let weeklyForecast: WeeklyForecast | null = null;
+    try {
+      // Fetch 30 days of daily cost for the forecast history.
+      const thirtyDaysAgoUtc = new Date(new Date(weekWindowsForWow.thisEnd).getTime() - 30 * 86_400_000).toISOString();
+      const histRows = await loadActivity(userId, thirtyDaysAgoUtc, weekWindowsForWow.thisEnd, { type: "all" });
+
+      // Bucket into 30 daily millicent buckets (oldest first).
+      const buckets = new Array<number>(30).fill(0);
+      const endMs = new Date(weekWindowsForWow.thisEnd).getTime();
+      for (const r of histRows) {
+        const daysAgo = Math.floor((endMs - new Date(r.ts).getTime()) / 86_400_000);
+        const idx = 29 - daysAgo;
+        if (idx >= 0 && idx < 30) {
+          const cents = costUsdCents({
+            model: r.model,
+            tokens_input: r.tokens_input,
+            tokens_output: r.tokens_output,
+            tokens_cache_read: r.tokens_cache_read,
+            tokens_cache_write: r.tokens_cache_write,
+            tokens_cache_5m_write: r.tokens_cache_5m_write,
+            tokens_cache_1h_write: r.tokens_cache_1h_write,
+            ts: new Date(r.ts),
+          });
+          buckets[idx] += (cents ?? 0) * 10; // cents → millicents
+        }
+      }
+
+      const { dom: todayDom } = localCalendar(prefs.digest_tz, now);
+      const daysLeft = 30 - todayDom; // rough days remaining in month
+
+      if (daysLeft > 0) {
+        const pts = forecast({ history: buckets, horizon: daysLeft });
+        const remaining_p50 = Math.round(pts.reduce((s, p) => s + p.p50, 0) / 10); // millicents→cents
+        const remaining_p10 = Math.round(pts.reduce((s, p) => s + p.p10, 0) / 10);
+        const remaining_p90 = Math.round(pts.reduce((s, p) => s + p.p90, 0) / 10);
+        weeklyForecast = { remaining_p50, remaining_p10, remaining_p90, computed_dom: todayDom };
+      }
+    } catch {
+      // Forecast is best-effort; if it fails we just omit it.
+      weeklyForecast = null;
+    }
+
+    weeklySection = {
+      wow,
+      anomalies: weeklyAnomalies,
+      forecast: weeklyForecast,
+    };
+  }
+
   return {
     user_id: userId,
     email: prefs.digest_email ?? prefs.email,
@@ -555,6 +767,7 @@ export async function buildDigest(
     self,
     peers,
     empty,
+    ...(weeklySection !== undefined ? { weekly: weeklySection } : {}),
   };
 }
 
@@ -587,6 +800,73 @@ export function alreadySentToday(
   const todayLocalYmd = `${get("year")}-${get("month")}-${get("day")}`;
   const today9am = zonedDateToUtc(todayLocalYmd, "09:00:00", tz);
   return new Date(lastSentAtIso).getTime() >= today9am.getTime();
+}
+
+/**
+ * Has the user already been sent a weekly digest this week (in their local TZ)?
+ * Compares last_digest_sent_at against Monday 9am of the current local week.
+ */
+export function alreadySentThisWeek(
+  lastSentAtIso: string | null,
+  tz: string,
+  now: Date = new Date(),
+): boolean {
+  if (!lastSentAtIso) return false;
+  // Find Monday midnight (local) of the current week, then add 9h.
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
+  });
+  const parts = fmt.formatToParts(now);
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
+  const todayLocalYmd = `${get("year")}-${get("month")}-${get("day")}`;
+  const todayMidnightUtc = zonedDateToUtc(todayLocalYmd, "00:00:00", tz);
+
+  const fmtWd = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short" });
+  const wdStr = fmtWd.format(now);
+  const dowMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  const dow = dowMap[wdStr] ?? 0;
+  const daysToMon = dow === 0 ? 6 : dow - 1;
+  const mondayMidnightUtc = new Date(todayMidnightUtc.getTime() - daysToMon * 86_400_000);
+  const monday9am = new Date(mondayMidnightUtc.getTime() + 9 * 3600_000);
+
+  return new Date(lastSentAtIso).getTime() >= monday9am.getTime();
+}
+
+/**
+ * Mark the user as "weekly digest sent at <now>".
+ * Uses a separate column so daily and weekly sends don't clobber each other's
+ * idempotency guards.
+ */
+export async function markWeeklyDigestSent(userId: string, when: Date = new Date()): Promise<void> {
+  const db = sql();
+  await db`UPDATE "user" SET last_weekly_digest_sent_at = ${when.toISOString()}::timestamptz WHERE id = ${userId}::uuid`;
+}
+
+/**
+ * Pick all users who should be sent the weekly digest right now.
+ * Fires only on Mondays at local >= 9am, guarded by last_weekly_digest_sent_at.
+ */
+export async function pickDueUsersWeekly(now: Date = new Date()): Promise<UserPrefs[]> {
+  const db = sql();
+  const nowIso = now.toISOString();
+  return db<UserPrefs[]>`
+    SELECT
+      id::text     AS id,
+      email,
+      digest_email,
+      digest_tz
+    FROM "user"
+    WHERE digest_enabled = TRUE
+      AND EXTRACT(DOW  FROM (${nowIso}::timestamptz AT TIME ZONE digest_tz)) = 1
+      AND EXTRACT(HOUR FROM (${nowIso}::timestamptz AT TIME ZONE digest_tz)) >= 9
+      AND (
+        last_weekly_digest_sent_at IS NULL
+        OR last_weekly_digest_sent_at < (
+          date_trunc('week', ${nowIso}::timestamptz AT TIME ZONE digest_tz)
+          + interval '1 day 9 hours'
+        ) AT TIME ZONE digest_tz
+      )
+  `;
 }
 
 /**

@@ -10,9 +10,12 @@
 import { describe, expect, test } from "bun:test";
 import {
   alreadySentToday,
+  alreadySentThisWeek,
   grantFires,
   localCalendar,
   localHour,
+  shouldSendDigest,
+  weekWindows,
   yesterdayWindow,
 } from "../src/lib/digest";
 import { renderDigestEmail } from "../src/lib/digest-render";
@@ -199,5 +202,182 @@ describe("renderDigestEmail", () => {
     // cost column header absent for this peer
     const peerSlice = r.html.split("Peers")[1] ?? "";
     expect(peerSlice).not.toMatch(/<th class="num">cost<\/th>/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// shouldSendDigest — unit
+// ---------------------------------------------------------------------------
+
+describe("shouldSendDigest", () => {
+  test("daily frequency: daily fires, weekly does not", () => {
+    expect(shouldSendDigest("daily",  "daily")).toBe(true);
+    expect(shouldSendDigest("weekly", "daily")).toBe(false);
+  });
+  test("weekly frequency: weekly fires, daily does not", () => {
+    expect(shouldSendDigest("weekly", "weekly")).toBe(true);
+    expect(shouldSendDigest("daily",  "weekly")).toBe(false);
+  });
+  test("both frequency: daily and weekly both fire", () => {
+    expect(shouldSendDigest("daily",  "both")).toBe(true);
+    expect(shouldSendDigest("weekly", "both")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// weekWindows
+// ---------------------------------------------------------------------------
+
+describe("weekWindows", () => {
+  test("UTC Monday: thisStart is 7 days before thisEnd, prevStart 14 days before", () => {
+    // 2026-04-27 is a Monday. At 10:00 UTC (after 9am) the cron fires.
+    const now = new Date("2026-04-27T10:00:00Z");
+    const w = weekWindows("UTC", now);
+    // thisEnd = Mon Apr 27 00:00 UTC (start of this Monday = end of last week)
+    expect(w.thisEnd).toBe("2026-04-27T00:00:00.000Z");
+    // thisStart = Mon Apr 20 00:00 UTC
+    expect(w.thisStart).toBe("2026-04-20T00:00:00.000Z");
+    // prevStart = Mon Apr 13 00:00 UTC
+    expect(w.prevStart).toBe("2026-04-13T00:00:00.000Z");
+    expect(w.prevEnd).toBe(w.thisStart);
+    expect(w.label).toMatch(/week of/);
+    expect(w.label).toMatch(/Apr 20/);
+  });
+
+  test("thisStart window is exactly 7 days wide", () => {
+    const now = new Date("2026-05-04T10:00:00Z"); // also a Monday
+    const w = weekWindows("UTC", now);
+    const widthMs = new Date(w.thisEnd).getTime() - new Date(w.thisStart).getTime();
+    expect(widthMs).toBe(7 * 86_400_000);
+  });
+
+  test("prevStart/prevEnd window is also 7 days wide", () => {
+    const now = new Date("2026-04-27T10:00:00Z");
+    const w = weekWindows("UTC", now);
+    const widthMs = new Date(w.prevEnd).getTime() - new Date(w.prevStart).getTime();
+    expect(widthMs).toBe(7 * 86_400_000);
+  });
+
+  test("America/Los_Angeles: timezone offset respected", () => {
+    // Mon Apr 27 2026 10:00 PDT = 17:00 UTC
+    const now = new Date("2026-04-27T17:00:00Z");
+    const w = weekWindows("America/Los_Angeles", now);
+    // Mon Apr 27 00:00 PDT = 07:00 UTC
+    expect(w.thisEnd).toBe("2026-04-27T07:00:00.000Z");
+    // Mon Apr 20 00:00 PDT = 07:00 UTC
+    expect(w.thisStart).toBe("2026-04-20T07:00:00.000Z");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// alreadySentThisWeek
+// ---------------------------------------------------------------------------
+
+describe("alreadySentThisWeek", () => {
+  const tz = "UTC";
+  // 2026-04-27 is Monday. At 10:00 UTC the cron runs.
+  const mondayAt10 = new Date("2026-04-27T10:00:00Z");
+
+  test("never sent → false", () => {
+    expect(alreadySentThisWeek(null, tz, mondayAt10)).toBe(false);
+  });
+  test("sent 1 hour ago (this Monday) → true", () => {
+    expect(alreadySentThisWeek("2026-04-27T09:01:00Z", tz, mondayAt10)).toBe(true);
+  });
+  test("sent last Monday → false (new week)", () => {
+    expect(alreadySentThisWeek("2026-04-20T09:30:00Z", tz, mondayAt10)).toBe(false);
+  });
+  test("sent at exactly this Monday 9am → true", () => {
+    expect(alreadySentThisWeek("2026-04-27T09:00:00Z", tz, mondayAt10)).toBe(true);
+  });
+  test("sent Sunday (before this Monday 9am) → false", () => {
+    expect(alreadySentThisWeek("2026-04-26T20:00:00Z", tz, mondayAt10)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Weekly digest email rendering
+// ---------------------------------------------------------------------------
+
+const weeklyPayload: DigestPayload = {
+  ...fullPayload,
+  dateLabel: "week of Mon Apr 20",
+  weekly: {
+    wow: {
+      tokens_this: 2_400_000,
+      tokens_prev: 2_000_000,
+      cents_this: 1_600,
+      cents_prev: 1_400,
+      events_this: 42,
+      events_prev: 35,
+    },
+    anomalies: [
+      "ashlr/pulse dominated this week — 72% of tokens (38 events).",
+    ],
+    forecast: {
+      remaining_p50: 800,
+      remaining_p10: 600,
+      remaining_p90: 1_100,
+      computed_dom: 27,
+    },
+  },
+};
+
+describe("renderDigestEmail (weekly)", () => {
+  test("weekly subject includes 'pulse weekly', WoW delta, and cost", () => {
+    const r = renderDigestEmail(weeklyPayload);
+    expect(r.subject).toMatch(/pulse weekly/);
+    expect(r.subject).toMatch(/\+20% WoW/);
+    // cost in subject comes from self.bySource cents (inherited from fullPayload: 850+0 = $8.50)
+    expect(r.subject).toMatch(/\$8\.50/);
+  });
+
+  test("weekly text includes WoW section with token and cost deltas", () => {
+    const r = renderDigestEmail(weeklyPayload);
+    expect(r.text).toMatch(/WEEK-OVER-WEEK/);
+    expect(r.text).toMatch(/2\.40M/);
+    expect(r.text).toMatch(/\+20%/);
+    expect(r.text).toMatch(/END-OF-MONTH FORECAST/);
+    expect(r.text).toMatch(/\$8\.00/); // remaining_p50 = 800 cents = $8.00
+  });
+
+  test("weekly HTML includes WoW table and forecast panel", () => {
+    const r = renderDigestEmail(weeklyPayload);
+    expect(r.html).toMatch(/Week-over-Week/);
+    expect(r.html).toMatch(/\+20%/);
+    expect(r.html).toMatch(/End-of-Month Forecast/);
+    expect(r.html).toMatch(/\$8\.00/);
+  });
+
+  test("weekly HTML includes anomaly from weekly.anomalies", () => {
+    const r = renderDigestEmail(weeklyPayload);
+    expect(r.html).toMatch(/Top Anomalies/);
+    expect(r.html).toMatch(/ashlr\/pulse dominated/);
+  });
+
+  test("weekly HTML escapes XSS in anomaly strings", () => {
+    const evil: DigestPayload = {
+      ...weeklyPayload,
+      weekly: {
+        ...weeklyPayload.weekly!,
+        anomalies: ["<script>alert(1)</script> dominated"],
+      },
+    };
+    const r = renderDigestEmail(evil);
+    expect(r.html).not.toMatch(/<script>alert/);
+    expect(r.html).toMatch(/&lt;script&gt;/);
+  });
+
+  test("empty weekly payload produces quiet-week subject", () => {
+    const emptyWeekly: DigestPayload = {
+      ...emptyPayload,
+      weekly: {
+        wow: { tokens_this: 0, tokens_prev: 0, cents_this: 0, cents_prev: 0, events_this: 0, events_prev: 0 },
+        anomalies: [],
+        forecast: null,
+      },
+    };
+    const r = renderDigestEmail(emptyWeekly);
+    expect(r.subject).toMatch(/quiet week/);
   });
 });

@@ -30,6 +30,7 @@ function mockOrg(overrides: Partial<OrgRow> = {}): OrgRow {
     billing_mode: "api",
     source_subscription_modes: {},
     monthly_budget_usd: null,
+    digest_frequency: "daily",
     ...overrides,
   };
 }

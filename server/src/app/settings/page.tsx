@@ -13,7 +13,7 @@ import { sql } from "@/lib/db";
 import { currentUser } from "@/lib/current-user";
 import {
   primaryOrgForUser, isOrgAdmin, setBillingMode,
-  setSourceSubscriptionMode, setMonthlyBudgetUsd,
+  setSourceSubscriptionMode, setMonthlyBudgetUsd, setDigestFrequency,
   type PerSourceMode, type SourceSubscriptionModes,
 } from "@/lib/org-db";
 import { type BillingMode, BILLING_MODE_MONTHLY_CAP_USD, isSubscriptionMode } from "@/lib/plan-gate";
@@ -145,6 +145,28 @@ async function updatePerSourceSubscriptionAction(formData: FormData): Promise<vo
   redirect("/settings?ok=1");
 }
 
+async function updateDigestFrequencyAction(formData: FormData): Promise<void> {
+  "use server";
+  const me = await currentUser();
+  if (!me) redirect("/login");
+
+  const raw = String(formData.get("digest_frequency") ?? "daily");
+  const allowed = ["daily", "weekly", "both"] as const;
+  if (!allowed.includes(raw as (typeof allowed)[number])) {
+    redirect(`/settings?error=${encodeURIComponent("invalid digest frequency")}`);
+  }
+
+  const org = await primaryOrgForUser(me.id);
+  if (!org) redirect(`/settings?error=${encodeURIComponent("no org")}`);
+  if (!(await isOrgAdmin(org.id, me.id))) {
+    redirect(`/settings?error=${encodeURIComponent("admin required to change digest frequency")}`);
+  }
+
+  await setDigestFrequency(org.id, raw as "daily" | "weekly" | "both");
+  revalidatePath("/settings");
+  redirect("/settings?ok=1");
+}
+
 async function sendTestDigestAction(): Promise<void> {
   "use server";
   const me = await currentUser();
@@ -192,6 +214,8 @@ export default async function SettingsPage({
   const monthlyCap = BILLING_MODE_MONTHLY_CAP_USD[billingMode];
   const sourceModes: SourceSubscriptionModes = org?.source_subscription_modes ?? {};
   const monthlyBudget = org?.monthly_budget_usd ?? null;
+  const digestFrequency = (org?.digest_frequency ?? "daily") as "daily" | "weekly" | "both";
+  const isAdmin = org ? await isOrgAdmin(org.id, me.id) : false;
 
   return (
     <DashboardShell maxWidth={760}>
@@ -240,6 +264,45 @@ export default async function SettingsPage({
                   last sent {new Date(prefs.last_digest_sent_at).toISOString().slice(0, 16).replace("T", " ")}Z
                 </span>
               )}
+            </div>
+          </Card>
+        </form>
+
+        <form action={updateDigestFrequencyAction}>
+          <Card>
+            <CardHeader title="digest frequency" hint="how often to receive email digests" />
+            <p style={{ color: palette.textDim, fontSize: 12, lineHeight: 1.6, margin: `0 0 ${space.x3}px` }}>
+              <strong>Daily</strong> — morning recap every day at 9am in your timezone.<br />
+              <strong>Weekly</strong> — Monday morning only, with week-over-week deltas, top anomalies, and an end-of-month cost forecast.<br />
+              <strong>Both</strong> — daily recap plus the Monday weekly summary.
+            </p>
+
+            <Field label="Frequency">
+              <div style={{ display: "flex", flexDirection: "column", gap: space.x2 }}>
+                {(["daily", "weekly", "both"] as const).map((f) => (
+                  <label key={f} style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 13, color: palette.text, cursor: isAdmin ? "pointer" : "not-allowed", opacity: isAdmin ? 1 : 0.5 }}>
+                    <input
+                      type="radio"
+                      name="digest_frequency"
+                      value={f}
+                      defaultChecked={digestFrequency === f}
+                      disabled={!isAdmin}
+                      style={{ accentColor: palette.green }}
+                    />
+                    {f === "daily" ? "Daily (default)" : f === "weekly" ? "Weekly (Monday recap)" : "Both (daily + weekly)"}
+                  </label>
+                ))}
+              </div>
+            </Field>
+
+            {!isAdmin && (
+              <p style={{ color: palette.textMute, fontSize: 11, marginTop: space.x2 }}>
+                Only org admins can change the digest frequency.
+              </p>
+            )}
+
+            <div style={{ display: "flex", gap: space.x3, alignItems: "center", marginTop: space.x4 }}>
+              <Button type="submit" variant="primary" disabled={!isAdmin}>Save frequency</Button>
             </div>
           </Card>
         </form>

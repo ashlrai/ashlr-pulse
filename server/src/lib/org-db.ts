@@ -55,6 +55,8 @@ export interface OrgRow extends OrgPlanRef {
   source_subscription_modes: SourceSubscriptionModes;
   /** Optional monthly budget for /forecast burn-down. NULL = unset. */
   monthly_budget_usd: number | null;
+  /** Digest cadence: 'daily' | 'weekly' | 'both'. Default 'daily'. */
+  digest_frequency: "daily" | "weekly" | "both";
 }
 
 /**
@@ -106,7 +108,8 @@ export async function getOrgById(orgId: string): Promise<OrgRow | null> {
            created_at::text         AS created_at,
            COALESCE(billing_mode, 'api') AS billing_mode,
            COALESCE(source_subscription_modes, '{}'::jsonb) AS source_subscription_modes,
-           monthly_budget_usd::float8 AS monthly_budget_usd
+           monthly_budget_usd::float8 AS monthly_budget_usd,
+           COALESCE(digest_frequency, 'daily') AS digest_frequency
     FROM org WHERE id = ${orgId}::uuid
   `;
   return row ?? null;
@@ -127,7 +130,8 @@ export async function primaryOrgForUser(userId: string): Promise<OrgRow | null> 
            o.created_at::text         AS created_at,
            COALESCE(o.billing_mode, 'api') AS billing_mode,
            COALESCE(o.source_subscription_modes, '{}'::jsonb) AS source_subscription_modes,
-           o.monthly_budget_usd::float8 AS monthly_budget_usd
+           o.monthly_budget_usd::float8 AS monthly_budget_usd,
+           COALESCE(o.digest_frequency, 'daily') AS digest_frequency
     FROM org o
     JOIN membership m ON m.org_id = o.id
     WHERE m.user_id = ${userId}::uuid
@@ -240,6 +244,23 @@ export async function setMonthlyBudgetUsd(
 }
 
 /**
+ * Update an org's digest_frequency ('daily' | 'weekly' | 'both').
+ * Only an admin should call this; the route handler is responsible for
+ * authorization.
+ */
+export async function setDigestFrequency(
+  orgId: string,
+  frequency: "daily" | "weekly" | "both",
+): Promise<void> {
+  const db = sql();
+  await db`
+    UPDATE org
+    SET digest_frequency = ${frequency}::text
+    WHERE id = ${orgId}::uuid
+  `;
+}
+
+/**
  * Codex auto-default: if this is the first Codex span ingested for the
  * org AND the agent reported a subscription-tier plan_type, set
  * source_subscription_modes['codex'] = 'subscription' so the user starts
@@ -292,7 +313,8 @@ export async function getOrgByStripeCustomerId(
            created_at::text         AS created_at,
            COALESCE(billing_mode, 'api') AS billing_mode,
            COALESCE(source_subscription_modes, '{}'::jsonb) AS source_subscription_modes,
-           monthly_budget_usd::float8 AS monthly_budget_usd
+           monthly_budget_usd::float8 AS monthly_budget_usd,
+           COALESCE(digest_frequency, 'daily') AS digest_frequency
     FROM org WHERE stripe_customer_id = ${customerId}
   `;
   return row ?? null;

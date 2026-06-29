@@ -13,6 +13,8 @@ import type {
   DigestPeer,
   DigestSelfBySource,
   DigestSelfByRepo,
+  WeeklyWowDelta,
+  WeeklyForecast,
 } from "./digest";
 
 export interface RenderedEmail {
@@ -54,12 +56,20 @@ export function renderDigestEmail(
 }
 
 function subjectFor(d: DigestPayload): string {
-  if (d.empty) return `pulse · ${d.dateLabel} · quiet day`;
+  const prefix = d.weekly ? "pulse weekly" : "pulse";
+  if (d.empty) return `${prefix} · ${d.dateLabel} · ${d.weekly ? "quiet week" : "quiet day"}`;
   const totalTokens = d.self.bySource.reduce((s, x) => s + x.tokens, 0);
   const totalCents = d.self.bySource.reduce((s, x) => s + (x.cents ?? 0), 0);
   const peerCount = d.peers.filter((p) => p.bySource.length || (p.byRepo ?? []).length).length;
   const peerTag = peerCount ? ` · +${peerCount} peer${peerCount === 1 ? "" : "s"}` : "";
-  return `pulse · ${d.dateLabel} · ${fmtTokens(totalTokens)} tok · ${fmtUsd(totalCents)}${peerTag}`;
+  if (d.weekly) {
+    const wow = d.weekly.wow;
+    const delta = wow.tokens_prev > 0
+      ? ` · ${wow.tokens_this >= wow.tokens_prev ? "+" : ""}${Math.round(((wow.tokens_this - wow.tokens_prev) / wow.tokens_prev) * 100)}% WoW`
+      : "";
+    return `${prefix} · ${d.dateLabel} · ${fmtTokens(totalTokens)} tok${delta} · ${fmtUsd(totalCents)}${peerTag}`;
+  }
+  return `${prefix} · ${d.dateLabel} · ${fmtTokens(totalTokens)} tok · ${fmtUsd(totalCents)}${peerTag}`;
 }
 
 function fmtTokens(n: number): string {
@@ -161,6 +171,37 @@ function renderText(d: DigestPayload, opts: DigestRenderOptions): string {
     }
   }
 
+  // Weekly section: WoW deltas + forecast
+  if (d.weekly) {
+    const w = d.weekly;
+    lines.push("");
+    lines.push("WEEK-OVER-WEEK");
+    lines.push("==============");
+    const tokDelta = w.wow.tokens_prev > 0
+      ? ` (${w.wow.tokens_this >= w.wow.tokens_prev ? "+" : ""}${Math.round(((w.wow.tokens_this - w.wow.tokens_prev) / w.wow.tokens_prev) * 100)}%)`
+      : "";
+    lines.push(`  tokens: ${fmtTokens(w.wow.tokens_this)}${tokDelta}  (prev: ${fmtTokens(w.wow.tokens_prev)})`);
+    if (w.wow.cents_this != null && w.wow.cents_prev != null) {
+      const costDelta = w.wow.cents_prev > 0
+        ? ` (${w.wow.cents_this >= w.wow.cents_prev ? "+" : ""}${Math.round(((w.wow.cents_this - w.wow.cents_prev) / w.wow.cents_prev) * 100)}%)`
+        : "";
+      lines.push(`  cost:   ${fmtUsd(w.wow.cents_this)}${costDelta}  (prev: ${fmtUsd(w.wow.cents_prev)})`);
+    }
+    lines.push(`  events: ${w.wow.events_this}  (prev: ${w.wow.events_prev})`);
+
+    if (w.anomalies.length) {
+      lines.push("");
+      lines.push("TOP ANOMALIES");
+      for (const a of w.anomalies) lines.push(`  · ${a}`);
+    }
+
+    if (w.forecast) {
+      lines.push("");
+      lines.push("END-OF-MONTH FORECAST");
+      lines.push(`  remaining spend: ${fmtUsd(w.forecast.remaining_p50)} (p10 ${fmtUsd(w.forecast.remaining_p10)} – p90 ${fmtUsd(w.forecast.remaining_p90)})`);
+    }
+  }
+
   lines.push("");
   lines.push("---");
   lines.push(`open dashboard: ${APP_URL}/app`);
@@ -238,15 +279,61 @@ function renderHtml(d: DigestPayload, opts: DigestRenderOptions): string {
 
   const selfBlock = renderSelfBlockHtml(d);
   const peersBlock = renderPeersBlockHtml(d.peers);
+  const weeklyBlock = d.weekly ? renderWeeklyBlockHtml(d.weekly) : "";
 
   return `<!doctype html><html>${head}<body><div class="wrap">
     ${header}
     ${briefing}
+    ${weeklyBlock}
     ${selfBlock}
     ${peersBlock}
     ${cta}
     <div class="footer">manage digest preferences at <a href="${APP_URL}/settings">/settings</a></div>
   </div></body></html>`;
+}
+
+function renderWeeklyBlockHtml(w: NonNullable<DigestPayload["weekly"]>): string {
+  const parts: string[] = [];
+  parts.push(`<h2>Week-over-Week</h2>`);
+
+  // WoW delta table
+  const tokDelta = w.wow.tokens_prev > 0
+    ? ` (${w.wow.tokens_this >= w.wow.tokens_prev ? "+" : ""}${Math.round(((w.wow.tokens_this - w.wow.tokens_prev) / w.wow.tokens_prev) * 100)}%)`
+    : "";
+  const costDeltaStr = (w.wow.cents_this != null && w.wow.cents_prev != null && w.wow.cents_prev > 0)
+    ? ` (${w.wow.cents_this >= w.wow.cents_prev ? "+" : ""}${Math.round(((w.wow.cents_this - w.wow.cents_prev) / w.wow.cents_prev) * 100)}%)`
+    : "";
+
+  parts.push(`<div class="panel"><table>
+    <thead><tr><th>metric</th><th class="num">this week</th><th class="num">prev week</th><th class="num">delta</th></tr></thead>
+    <tbody>
+      <tr><td>tokens</td><td class="num">${fmtTokens(w.wow.tokens_this)}</td><td class="num">${fmtTokens(w.wow.tokens_prev)}</td><td class="num">${esc(tokDelta || "—")}</td></tr>
+      ${w.wow.cents_this != null ? `<tr><td>cost</td><td class="num">${esc(fmtUsd(w.wow.cents_this))}</td><td class="num">${esc(fmtUsd(w.wow.cents_prev))}</td><td class="num">${esc(costDeltaStr || "—")}</td></tr>` : ""}
+      <tr><td>events</td><td class="num">${w.wow.events_this}</td><td class="num">${w.wow.events_prev}</td><td class="num">${w.wow.events_prev > 0 ? esc(`${w.wow.events_this >= w.wow.events_prev ? "+" : ""}${Math.round(((w.wow.events_this - w.wow.events_prev) / w.wow.events_prev) * 100)}%`) : "—"}</td></tr>
+    </tbody>
+  </table></div>`);
+
+  // Top anomalies
+  if (w.anomalies.length) {
+    const items = w.anomalies.map((a) => `<li>${esc(a)}</li>`).join("");
+    parts.push(
+      `<div class="panel" style="border-left:3px solid ${COLORS.amber};"><strong style="color:${COLORS.amber};">Top Anomalies</strong><ul style="margin:6px 0 0;padding-left:18px;color:#ddd;line-height:1.5;">${items}</ul></div>`,
+    );
+  }
+
+  // End-of-month forecast
+  if (w.forecast) {
+    parts.push(`<div class="panel">
+      <strong style="color:${COLORS.cyan};">End-of-Month Forecast</strong>
+      <div style="margin-top:8px;font-size:12px;color:${COLORS.text};">
+        Remaining spend: <strong>${esc(fmtUsd(w.forecast.remaining_p50))}</strong>
+        <span style="color:${COLORS.dim};">&nbsp;(p10 ${esc(fmtUsd(w.forecast.remaining_p10))} – p90 ${esc(fmtUsd(w.forecast.remaining_p90))})</span>
+      </div>
+      <div style="margin-top:4px;font-size:10px;color:${COLORS.dim};">Computed day ${w.forecast.computed_dom} of month · Holt-Winters projection</div>
+    </div>`);
+  }
+
+  return parts.join("");
 }
 
 function renderSelfBlockHtml(d: DigestPayload): string {

@@ -1,29 +1,33 @@
 /**
- * POST /api/cron/digest — daily digest sweep.
+ * POST /api/cron/digest-weekly — weekly digest sweep.
  *
  * Auth: shared secret in `x-cron-secret` (PULSE_CRON_SECRET env), same
- * pattern as /api/cron/github-sync. Internal endpoint, not user-facing.
+ * pattern as /api/cron/digest.
  *
- * Per tick (every 15 min from lib/cron.ts in production):
- *   1. Pick users where digest_enabled = true AND it's >= 9am in their TZ
- *      AND last_digest_sent_at < today_local_9am.
- *   2. For each, build the digest payload (yesterday's activity + peer
- *      grants that fire today), render, send via SendGrid, mark sent.
+ * Fires: Monday 9am in each user's local timezone (the caller — typically
+ * a Railway/Vercel cron — should tick this every 15 min so every timezone
+ * is caught; the pickDueUsersWeekly() query gates on dow=Monday AND hour>=9
+ * AND last_weekly_digest_sent_at < this-Monday-9am).
  *
- * If SENDGRID_API_KEY is unset (typical in dev), individual sends return
- * `{ skipped: true }` and we log without marking the user as sent — that
- * way prod can be flipped on without backfill drift.
+ * For MVP, orgs without a digest_frequency preference default to 'daily',
+ * so shouldSendDigest('weekly', org.digest_frequency) returns false for them
+ * and they are silently skipped. Only orgs that have opted into 'weekly' or
+ * 'both' receive the weekly email.
  *
- * Per-user errors are captured in the response (200 with details) so the
- * caller can see partial success; we only 5xx on configuration faults.
+ * Content differences vs daily:
+ *   - 7-day activity window instead of 1-day
+ *   - WoW deltas (tokens / cost / events vs previous 7 days)
+ *   - Top 3 anomalies from the 7-day window
+ *   - End-of-month cost forecast
+ *   - Peer-share section still fires (filtered by grant granularity)
  */
 
 import { NextResponse } from "next/server";
 import { sendEmail } from "@/lib/email";
 import {
   buildDigest,
-  markDigestSent,
-  pickDueUsers,
+  markWeeklyDigestSent,
+  pickDueUsersWeekly,
   shouldSendDigest,
 } from "@/lib/digest";
 import { renderDigestEmail } from "@/lib/digest-render";
@@ -50,8 +54,6 @@ export async function POST(req: Request): Promise<Response> {
       { status: 500 },
     );
   }
-  // Constant-time compare: !== short-circuits and leaks the secret
-  // byte-by-byte to an attacker measuring response timing.
   const supplied = req.headers.get("x-cron-secret") ?? "";
   if (!safeEqual(supplied, expected)) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
@@ -59,30 +61,28 @@ export async function POST(req: Request): Promise<Response> {
 
   const startedAt = Date.now();
   const now = new Date();
-  const due = await pickDueUsers(now);
-  log.info({ msg: "cron: digest starting", candidates: due.length });
+  const due = await pickDueUsersWeekly(now);
+  log.info({ msg: "cron: digest-weekly starting", candidates: due.length });
 
   const results: PerUserResult[] = [];
   for (const u of due) {
     try {
-      // Gate on org's digest_frequency — skip users whose org is weekly-only.
+      // Check org's digest_frequency — skip if not opted into weekly.
       const org = await primaryOrgForUser(u.id);
       const orgFrequency = org?.digest_frequency ?? "daily";
-      if (!shouldSendDigest("daily", orgFrequency)) {
+      if (!shouldSendDigest("weekly", orgFrequency)) {
         results.push({ user_id: u.id, email: u.email, status: "frequency_skip", detail: `org frequency: ${orgFrequency}` });
         continue;
       }
 
-      const payload = await buildDigest(u.id, now);
+      const payload = await buildDigest(u.id, now, undefined, "weekly");
       if (!payload) {
         results.push({ user_id: u.id, email: u.email, status: "error", detail: "user vanished" });
         continue;
       }
 
-      // Empty digests still mark the user as sent so we don't try again
-      // until tomorrow — but we don't actually send the email.
       if (payload.empty) {
-        await markDigestSent(u.id, now);
+        await markWeeklyDigestSent(u.id, now);
         results.push({ user_id: u.id, email: payload.email, status: "empty" });
         continue;
       }
@@ -96,17 +96,16 @@ export async function POST(req: Request): Promise<Response> {
         text: rendered.text,
       });
       if (r.ok) {
-        await markDigestSent(u.id, now);
+        await markWeeklyDigestSent(u.id, now);
         results.push({ user_id: u.id, email: payload.email, status: "sent", detail: r.id });
       } else if ("skipped" in r) {
-        // Don't mark sent — prod will pick this up tomorrow once SendGrid is wired.
         results.push({ user_id: u.id, email: payload.email, status: "skipped", detail: r.reason });
       } else {
         results.push({ user_id: u.id, email: payload.email, status: "error", detail: `${r.status}: ${r.error}` });
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      log.error({ msg: "cron: digest user threw", user_id: u.id, err: msg });
+      log.error({ msg: "cron: digest-weekly user threw", user_id: u.id, err: msg });
       results.push({ user_id: u.id, email: u.email, status: "error", detail: msg });
     }
   }
@@ -119,13 +118,8 @@ export async function POST(req: Request): Promise<Response> {
     frequency_skip: results.filter((r) => r.status === "frequency_skip").length,
     error:          results.filter((r) => r.status === "error").length,
   };
-  log.info({ msg: "cron: digest done", elapsed_ms, ...summary });
+  log.info({ msg: "cron: digest-weekly done", elapsed_ms, ...summary });
 
-  // Per-user details (emails, errors) go to the structured log only —
-  // we don't put them in the HTTP response. Cron callers (Railway,
-  // GitHub Actions) often log response bodies wholesale, and anyone
-  // with PULSE_CRON_SECRET would otherwise be able to enumerate every
-  // active digest user via the response.
   return NextResponse.json({
     ok: true,
     candidates: due.length,
