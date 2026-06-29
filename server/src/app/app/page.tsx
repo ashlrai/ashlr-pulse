@@ -57,6 +57,7 @@ import { FleetTab } from "./_tabs/fleet";
 import { ManagementTab } from "./_tabs/management";
 import { TimelineTab } from "./_tabs/timeline";
 import { AlertsTab, type PersistedAnomaly } from "./_tabs/alerts";
+import { TeamMetricsTab } from "./_tabs/team-metrics";
 import { loadTimeline } from "@/lib/timeline-data";
 import { SavedViewsTabStrip } from "./_components/SavedViewsTabStrip";
 import { DashboardSSE } from "./_components/DashboardSSE";
@@ -95,7 +96,7 @@ interface SearchParams {
   tl_group?: string;
 }
 
-const TABS = ["today", "trends", "compare", "costs", "tools", "fleet", "management", "timeline", "alerts"] as const;
+const TABS = ["today", "trends", "compare", "costs", "tools", "fleet", "management", "timeline", "alerts", "team"] as const;
 type Tab = (typeof TABS)[number];
 
 function resolveTab(raw: string | undefined): Tab {
@@ -451,6 +452,14 @@ export default async function Page({
           orgId={org?.id ?? ""}
         />
       )}
+      {activeTab === "team" && org && (
+        <TeamMetricsTab orgId={org.id} windowDays={windowOpt.days} />
+      )}
+      {activeTab === "team" && !org && (
+        <div style={{ marginTop: 32, padding: 24, textAlign: "center", color: "#6f6f6f", fontSize: 13, border: "1px dashed #1f1f22", borderRadius: 8 }}>
+          Team metrics require an org. Join or create one to get started.
+        </div>
+      )}
     </DashboardShell>
   );
 }
@@ -467,6 +476,7 @@ const TAB_LABELS: Record<Tab, string> = {
   management: "management",
   timeline:   "timeline",
   alerts:     "alerts",
+  team:       "team metrics",
 };
 
 function TabNav({
