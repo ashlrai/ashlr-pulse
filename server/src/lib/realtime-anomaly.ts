@@ -45,7 +45,74 @@ export type AnomalyKind =
   | "cache_miss_storm"
   | "peer_divergence";
 
+/** Runtime array of all valid AnomalyKind values (for validation). */
+export const ANOMALY_KIND_VALUES: AnomalyKind[] = [
+  "cost_spike",
+  "token_explosion",
+  "tool_failure_rate",
+  "model_thrash",
+  "cache_miss_storm",
+  "peer_divergence",
+];
+
 export type AnomalySeverity = "low" | "medium" | "high";
+
+export type AnomalySensitivityLevel = "conservative" | "moderate" | "aggressive";
+
+/**
+ * Org-level anomaly detection settings that calibrate all detectors.
+ *
+ * sensitivity_level maps to a threshold multiplier applied on top of every
+ * detector's built-in trigger ratio:
+ *   conservative → multiplier 2.0  (need twice the signal to fire)
+ *   moderate     → multiplier 1.0  (default behaviour, unchanged)
+ *   aggressive   → multiplier 0.5  (fires on half the usual signal)
+ *
+ * threshold_overrides lets teams set absolute values for specific detectors,
+ * bypassing the multiplier for that detector only:
+ *   cost_spike    — absolute batch cost in millicents that triggers
+ *   velocity_drop — velocity-drop percent threshold (0–100)
+ *
+ * enabled_detector_types — subset of AnomalyKind values that are active.
+ * Empty array = all six defaults are active.
+ */
+export interface AnomalySettings {
+  sensitivity_level:       AnomalySensitivityLevel;
+  threshold_overrides:     Partial<Record<"cost_spike" | "velocity_drop", number>>;
+  enabled_detector_types:  AnomalyKind[];
+}
+
+/** Default settings when no org row exists. */
+export const DEFAULT_ANOMALY_SETTINGS: AnomalySettings = {
+  sensitivity_level:      "moderate",
+  threshold_overrides:    {},
+  enabled_detector_types: [],
+};
+
+/**
+ * Return the threshold multiplier for a given sensitivity level.
+ * Used to scale built-in trigger ratios/rates.
+ */
+export function sensitivityMultiplier(level: AnomalySensitivityLevel): number {
+  switch (level) {
+    case "conservative": return 2.0;
+    case "moderate":     return 1.0;
+    case "aggressive":   return 0.5;
+  }
+}
+
+/**
+ * Return the set of active detector kinds given the settings.
+ * Empty enabled_detector_types means all six are active.
+ */
+export function activeDetectorKinds(settings: AnomalySettings): Set<AnomalyKind> {
+  const all: AnomalyKind[] = [
+    "cost_spike", "token_explosion", "tool_failure_rate",
+    "model_thrash", "cache_miss_storm", "peer_divergence",
+  ];
+  if (settings.enabled_detector_types.length === 0) return new Set(all);
+  return new Set(settings.enabled_detector_types);
+}
 
 export interface RealtimeAnomaly {
   kind: AnomalyKind;
@@ -439,48 +506,245 @@ export function deriveAnomalies(
   batch: FleetRealtimeEvent[],
   context: AnomalyContext,
 ): RealtimeAnomaly[] {
+  return deriveAnomaliesWithSettings(batch, context, DEFAULT_ANOMALY_SETTINGS);
+}
+
+/**
+ * Settings-aware variant of deriveAnomalies. Applies the org's sensitivity
+ * multiplier to each detector's trigger threshold before running detection,
+ * and skips detectors not in enabled_detector_types.
+ *
+ * Used by the calibration simulation API and by future background jobs.
+ *
+ * Pure function — no DB, no network. Safe to call in unit tests.
+ */
+export function deriveAnomaliesWithSettings(
+  batch: FleetRealtimeEvent[],
+  context: AnomalyContext,
+  settings: AnomalySettings,
+): RealtimeAnomaly[] {
   if (batch.length === 0) return [];
+
+  const active = activeDetectorKinds(settings);
+  const mul    = sensitivityMultiplier(settings.sensitivity_level);
+  const overrides = settings.threshold_overrides;
 
   const results: RealtimeAnomaly[] = [];
 
-  const costSpike = detectCostSpike(
-    batch,
-    context.rollingDailyCosts ?? [],
-  );
-  if (costSpike) results.push(costSpike);
+  // cost_spike — scale COST_SPIKE_THRESHOLD by multiplier, or use absolute override
+  if (active.has("cost_spike")) {
+    const baseThreshold = overrides.cost_spike != null
+      ? null  // absolute override: we compare batchCost directly
+      : COST_SPIKE_THRESHOLD * mul;
 
-  const tokenExplosion = detectTokenExplosion(
-    batch,
-    context.recentEventTokens ?? [],
-  );
-  if (tokenExplosion) results.push(tokenExplosion);
+    if (overrides.cost_spike != null) {
+      const batchCost = batch.reduce((s, e) => s + (e.cost_millicents ?? 0), 0);
+      if (batchCost > overrides.cost_spike) {
+        const ratio = context.rollingDailyCosts && context.rollingDailyCosts.length > 0
+          ? batchCost / (context.rollingDailyCosts.reduce((a, b) => a + b, 0) / context.rollingDailyCosts.length)
+          : 1;
+        const pct = Math.round((ratio - 1) * 100);
+        const severity: AnomalySeverity = ratio >= 3 ? "high" : ratio >= 2 ? "medium" : "low";
+        results.push({
+          kind: "cost_spike",
+          severity,
+          message: `Cost spike: batch cost ${batchCost.toLocaleString()} millicents exceeds override threshold (${overrides.cost_spike.toLocaleString()} mc); ${pct}% above 7d avg`,
+          repo_name: null,
+          user_id: null,
+          context: {
+            batch_cost_millicents: batchCost,
+            threshold_override_millicents: overrides.cost_spike,
+            ratio: Number(ratio.toFixed(2)),
+            sigma_reasoning: `batch ${batchCost.toLocaleString()} mc > override ${overrides.cost_spike.toLocaleString()} mc`,
+          },
+        });
+      }
+    } else {
+      const scaledResult = detectCostSpikeScaled(batch, context.rollingDailyCosts ?? [], baseThreshold!);
+      if (scaledResult) results.push(scaledResult);
+    }
+  }
 
-  const toolFailure = detectToolFailureRate(
-    batch,
-    context.recentEvents ?? [],
-  );
-  if (toolFailure) results.push(toolFailure);
+  if (active.has("token_explosion")) {
+    const scaledMul = TOKEN_EXPLOSION_MULTIPLIER * mul;
+    const r = detectTokenExplosionScaled(batch, context.recentEventTokens ?? [], scaledMul);
+    if (r) results.push(r);
+  }
 
-  const modelThrash = detectModelThrash(
-    batch,
-    context.recentEvents ?? [],
-  );
-  if (modelThrash) results.push(modelThrash);
+  if (active.has("tool_failure_rate")) {
+    const scaledThreshold = TOOL_FAILURE_RATE_THRESHOLD * mul;
+    const r = detectToolFailureRateScaled(batch, context.recentEvents ?? [], scaledThreshold);
+    if (r) results.push(r);
+  }
 
-  const cacheMiss = detectCacheMissStorm(
-    batch,
-    context.recentEvents ?? [],
-  );
-  if (cacheMiss) results.push(cacheMiss);
+  if (active.has("model_thrash")) {
+    const r = detectModelThrash(batch, context.recentEvents ?? []);
+    if (r) results.push(r);
+  }
 
-  const peerDiv = detectPeerDivergence(
-    batch,
-    context.ownerCosts ?? {},
-  );
-  if (peerDiv) results.push(peerDiv);
+  if (active.has("cache_miss_storm")) {
+    const scaledThreshold = CACHE_MISS_RATE_THRESHOLD * mul;
+    const r = detectCacheMissStormScaled(batch, context.recentEvents ?? [], scaledThreshold);
+    if (r) results.push(r);
+  }
 
-  // Sort worst-first (high → medium → low).
+  if (active.has("peer_divergence")) {
+    const r = detectPeerDivergence(batch, context.ownerCosts ?? {});
+    if (r) results.push(r);
+  }
+
   results.sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity]);
-
   return results;
+}
+
+// ---------------------------------------------------------------------------
+// Scaled detector variants (accept explicit threshold for settings-aware runs)
+// ---------------------------------------------------------------------------
+
+function detectCostSpikeScaled(
+  batch: FleetRealtimeEvent[],
+  rollingDailyCosts: number[],
+  threshold: number,
+): RealtimeAnomaly | null {
+  if (rollingDailyCosts.length === 0) return null;
+
+  const batchCost = batch.reduce((s, e) => s + (e.cost_millicents ?? 0), 0);
+  if (batchCost === 0) return null;
+
+  const avg = rollingDailyCosts.reduce((a, b) => a + b, 0) / rollingDailyCosts.length;
+  if (avg === 0) return null;
+
+  const ratio = batchCost / avg;
+  if (ratio <= 1 + threshold) return null;
+
+  const pct = Math.round((ratio - 1) * 100);
+  const severity: AnomalySeverity = ratio >= 3 ? "high" : ratio >= 2 ? "medium" : "low";
+
+  return {
+    kind: "cost_spike",
+    severity,
+    message: `Cost spike: batch cost ${pct}% above 7d rolling average (${batchCost.toLocaleString()} vs avg ${Math.round(avg).toLocaleString()} millicents)`,
+    repo_name: null,
+    user_id: null,
+    context: {
+      batch_cost_millicents: batchCost,
+      rolling_avg_millicents: Math.round(avg),
+      ratio: Number(ratio.toFixed(2)),
+      threshold,
+      sigma_reasoning: `${pct}% above 7d mean (${Math.round(avg).toLocaleString()} mc avg)`,
+    },
+  };
+}
+
+function detectTokenExplosionScaled(
+  batch: FleetRealtimeEvent[],
+  recentEventTokens: number[],
+  multiplier: number,
+): RealtimeAnomaly | null {
+  if (recentEventTokens.length === 0) return null;
+
+  const avg = recentEventTokens.reduce((a, b) => a + b, 0) / recentEventTokens.length;
+  if (avg === 0) return null;
+
+  let worstEvent: FleetRealtimeEvent | null = null;
+  let worstTotal = 0;
+
+  for (const e of batch) {
+    const total = (e.tokens_input ?? 0) + (e.tokens_output ?? 0);
+    if (total > avg * multiplier && total > worstTotal) {
+      worstTotal = total;
+      worstEvent = e;
+    }
+  }
+
+  if (!worstEvent) return null;
+
+  const ratio = worstTotal / avg;
+  const severity: AnomalySeverity = ratio >= 10 ? "high" : ratio >= 5 ? "medium" : "low";
+
+  return {
+    kind: "token_explosion",
+    severity,
+    message: `Token explosion: single event used ${worstTotal.toLocaleString()} tokens (${ratio.toFixed(1)}× per-event average of ${Math.round(avg).toLocaleString()})`,
+    repo_name: worstEvent.repo_name ?? null,
+    user_id: null,
+    context: {
+      event_tokens: worstTotal,
+      rolling_avg_tokens: Math.round(avg),
+      ratio: Number(ratio.toFixed(2)),
+      multiplier_threshold: multiplier,
+      model: worstEvent.model ?? null,
+      sigma_reasoning: `${ratio.toFixed(1)}× per-event mean (${Math.round(avg).toLocaleString()} tok avg)`,
+    },
+  };
+}
+
+function detectToolFailureRateScaled(
+  batch: FleetRealtimeEvent[],
+  recentEvents: FleetRealtimeEvent[],
+  threshold: number,
+): RealtimeAnomaly | null {
+  const window = [...recentEvents, ...batch].slice(-TOOL_FAILURE_WINDOW);
+  if (window.length < 10) return null;
+
+  const failures = window.filter((e) => e.fleet_outcome === "fail").length;
+  const rate = failures / window.length;
+
+  if (rate <= threshold) return null;
+
+  const pct = Math.round(rate * 100);
+  const severity: AnomalySeverity = rate >= 0.5 ? "high" : rate >= 0.35 ? "medium" : "low";
+
+  return {
+    kind: "tool_failure_rate",
+    severity,
+    message: `High tool-call failure rate: ${pct}% of last ${window.length} fleet events failed (threshold: ${Math.round(threshold * 100)}%)`,
+    repo_name: null,
+    user_id: null,
+    context: {
+      failure_count: failures,
+      window_size: window.length,
+      failure_rate: Number(rate.toFixed(3)),
+      threshold,
+      sigma_reasoning: `${pct}% failure rate over ${window.length}-event window`,
+    },
+  };
+}
+
+function detectCacheMissStormScaled(
+  batch: FleetRealtimeEvent[],
+  recentEvents: FleetRealtimeEvent[],
+  threshold: number,
+): RealtimeAnomaly | null {
+  const window = [...recentEvents, ...batch].slice(-CACHE_MISS_WINDOW);
+  const tokenEvents = window.filter((e) => (e.tokens_input ?? 0) > 0);
+  if (tokenEvents.length < 10) return null;
+
+  const misses = tokenEvents.filter((e) => {
+    const inp = e.tokens_input ?? 0;
+    const out = e.tokens_output ?? 0;
+    if (inp === 0) return true;
+    return out / inp > 0.10;
+  }).length;
+
+  const rate = misses / tokenEvents.length;
+  if (rate <= threshold) return null;
+
+  const pct = Math.round(rate * 100);
+  const severity: AnomalySeverity = rate >= 0.95 ? "high" : rate >= 0.90 ? "medium" : "low";
+
+  return {
+    kind: "cache_miss_storm",
+    severity,
+    message: `Cache-miss storm: ${pct}% of last ${tokenEvents.length} token-bearing events had no cache reads (threshold: ${Math.round(threshold * 100)}%)`,
+    repo_name: null,
+    user_id: null,
+    context: {
+      miss_count: misses,
+      window_size: tokenEvents.length,
+      miss_rate: Number(rate.toFixed(3)),
+      threshold,
+      sigma_reasoning: `${pct}% cache-miss rate over ${tokenEvents.length}-event window`,
+    },
+  };
 }
