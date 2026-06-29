@@ -48,4 +48,9 @@ export interface TabProps {
   costAnomaly:  { message: string } | null;
   /** Peer-share: viewing someone else's activity */
   isOwnView: boolean;
+  /**
+   * Sources flagged "subscription" in the org's source_subscription_modes.
+   * Passed through to the costs tab so the attribution chart can annotate them.
+   */
+  subscriptionSources: string[];
 }

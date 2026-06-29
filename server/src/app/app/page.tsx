@@ -56,6 +56,7 @@ import { ToolsTab } from "./_tabs/tools";
 import { FleetTab } from "./_tabs/fleet";
 import { ManagementTab } from "./_tabs/management";
 import { TimelineTab } from "./_tabs/timeline";
+import { AlertsTab, type PersistedAnomaly } from "./_tabs/alerts";
 import { loadTimeline } from "@/lib/timeline-data";
 import { SavedViewsTabStrip } from "./_components/SavedViewsTabStrip";
 import { DashboardSSE } from "./_components/DashboardSSE";
@@ -94,7 +95,7 @@ interface SearchParams {
   tl_group?: string;
 }
 
-const TABS = ["today", "trends", "compare", "costs", "tools", "fleet", "management", "timeline"] as const;
+const TABS = ["today", "trends", "compare", "costs", "tools", "fleet", "management", "timeline", "alerts"] as const;
 type Tab = (typeof TABS)[number];
 
 function resolveTab(raw: string | undefined): Tab {
@@ -199,7 +200,7 @@ export default async function Page({
   };
 
   // Run all heavy lifts in parallel.
-  const [data, agentStatus, missedRepos, pluginImpact, savedViews, teamSyncLabel, timelineData] = await Promise.all([
+  const [data, agentStatus, missedRepos, pluginImpact, savedViews, teamSyncLabel, timelineData, alertsData] = await Promise.all([
     loadDashboard(targetUserId, scope, {
       chartDays: windowOpt.days,
       limits,
@@ -232,6 +233,9 @@ export default async function Page({
           days: windowOpt.days,
         }).catch(() => null)
       : Promise.resolve(null),
+    // Only load anomalies when the alerts tab is active or the user is viewing
+    // their own dashboard (for the live badge count in the tab nav).
+    isOwnView ? loadAnomalies(org?.id ?? null).catch(() => [] as PersistedAnomaly[]) : Promise.resolve([] as PersistedAnomaly[]),
   ]);
 
   // Compute prior-week medians for baselines + deltas.
@@ -313,6 +317,7 @@ export default async function Page({
     tokenAnomaly,
     costAnomaly,
     isOwnView,
+    subscriptionSources: [...subscriptionSources],
   };
 
   const acceptedGrant = accepted
@@ -440,6 +445,12 @@ export default async function Page({
           No timeline data available for the selected window.
         </div>
       )}
+      {activeTab === "alerts" && (
+        <AlertsTab
+          anomalies={alertsData}
+          orgId={org?.id ?? ""}
+        />
+      )}
     </DashboardShell>
   );
 }
@@ -455,6 +466,7 @@ const TAB_LABELS: Record<Tab, string> = {
   fleet:      "fleet",
   management: "management",
   timeline:   "timeline",
+  alerts:     "alerts",
 };
 
 function TabNav({
@@ -650,6 +662,58 @@ async function loadPluginImpact(userId: string): Promise<PluginImpact | null> {
     };
   } catch {
     return null;
+  }
+}
+
+// ─── Anomaly loader ───────────────────────────────────────────────────
+
+/**
+ * Load recent undismissed anomaly_event rows for the org.
+ * Returns an empty array when the org has no anomaly data or the table
+ * does not yet exist (pre-migration environments).
+ */
+async function loadAnomalies(orgId: string | null): Promise<PersistedAnomaly[]> {
+  if (!orgId) return [];
+  const db = sql();
+  try {
+    const rows = await db<{
+      id: string;
+      ts: string;
+      severity: string;
+      kind: string;
+      repo_name: string | null;
+      context_json: { message?: string } | null;
+      dismissed_at: string | null;
+    }[]>`
+      SELECT
+        id::text            AS id,
+        ts::text            AS ts,
+        severity,
+        kind,
+        repo_name,
+        context_json,
+        dismissed_at::text  AS dismissed_at
+      FROM anomaly_event
+      WHERE org_id      = ${orgId}::uuid
+        AND dismissed_at IS NULL
+        AND ts          >= NOW() - INTERVAL '24 hours'
+      ORDER BY
+        CASE severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
+        ts DESC
+      LIMIT 50
+    `;
+    return rows.map((r) => ({
+      id:           r.id,
+      ts:           r.ts,
+      severity:     r.severity as PersistedAnomaly["severity"],
+      kind:         r.kind,
+      repo_name:    r.repo_name,
+      message:      r.context_json?.message ?? r.kind,
+      dismissed_at: r.dismissed_at,
+    }));
+  } catch {
+    // Table may not exist in pre-migration envs — fail gracefully.
+    return [];
   }
 }
 

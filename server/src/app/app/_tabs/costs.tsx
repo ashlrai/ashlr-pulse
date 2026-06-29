@@ -1,5 +1,6 @@
 /**
- * Costs tab — cost breakdown 24h donut + detailed table.
+ * Costs tab — cost breakdown 24h donut + component detail table
+ *             + cost attribution by source / model (chart window).
  *
  * Receives pre-loaded data from the shell (page.tsx).
  */
@@ -12,12 +13,14 @@ import { palette, space } from "@/lib/theme";
 import { Card, CardHeader } from "@/components/ui/Card";
 import { ChartFrame } from "@/components/charts/ChartFrame";
 import { DonutChart } from "@/components/charts/DonutChart";
+import { CostAttributionChart } from "@/components/charts/CostAttributionChart";
 
 import { th, td } from "../_components/dashboard-format";
 import type { TabProps } from "./types";
 
-export function CostsTab({ data, isSubMode }: TabProps): ReactElement {
+export function CostsTab({ data, isSubMode, subscriptionSources }: TabProps): ReactElement {
   const breakdown = data.costBreakdown24h;
+  const attribution = data.costAttribution;
 
   // Build donut slices from the breakdown components (filter 0-value entries)
   const slices: { label: string; value: number; color: string }[] = [
@@ -33,11 +36,16 @@ export function CostsTab({ data, isSubMode }: TabProps): ReactElement {
     .map((s) => ({ ...s, value: s.value / 1000 })); // millicents → cents for display scale
 
   const hasData = breakdown.total > 0;
+  const hasAttribution = attribution.bySource.length > 0 || attribution.byModel.length > 0;
+
+  // Top-3 sources for the drill-down summary
+  const top3Sources = attribution.bySource.slice(0, 3);
+  const top3Models  = attribution.byModel.slice(0, 3);
 
   return (
     <div style={{ marginTop: space.x4 }}>
 
-      {!hasData && (
+      {!hasData && !hasAttribution && (
         <div style={{
           padding: space.x6,
           textAlign: "center",
@@ -80,9 +88,90 @@ export function CostsTab({ data, isSubMode }: TabProps): ReactElement {
 
         </div>
       )}
+
+      {/* ── Cost Attribution by Source + Model ── */}
+      {hasAttribution && (
+        <div style={{ marginTop: space.x4 }}>
+          <ChartFrame
+            title="cost attribution · by source + model"
+            hint={isSubMode
+              ? "rate-card cost by tool (subscription sources shown at $0)"
+              : "who's spending what — cursor vs claude code vs copilot"}
+            accent={palette.cyan}
+            right={
+              <a
+                href="/api/cost-attribution/export"
+                style={{
+                  fontSize: 11,
+                  color: palette.cyan,
+                  textDecoration: "none",
+                  fontFamily: "var(--font-mono)",
+                  letterSpacing: "0.3px",
+                }}
+              >
+                ↓ csv
+              </a>
+            }
+          >
+            <CostAttributionChart
+              bySource={attribution.bySource}
+              byModel={attribution.byModel}
+              total_cents={attribution.total_cents}
+              isSubMode={isSubMode}
+              subscriptionSources={subscriptionSources}
+            />
+          </ChartFrame>
+
+          {/* Drill-down: top 3 sources and top 3 models in text */}
+          {(top3Sources.length > 0 || top3Models.length > 0) && (
+            <div style={{ marginTop: space.x3, display: "grid", gridTemplateColumns: "1fr 1fr", gap: space.x3 }}>
+
+              {top3Sources.length > 0 && (
+                <Card pad="tight">
+                  <CardHeader
+                    title="top sources"
+                    hint="by cost this window"
+                  />
+                  <DrillDownTable
+                    rows={top3Sources.map((r) => ({
+                      label: r.source,
+                      cost_cents: r.cost_cents,
+                      share: r.cost_share,
+                      isSub: subscriptionSources.includes(r.source),
+                    }))}
+                    total_cents={attribution.total_cents}
+                  />
+                </Card>
+              )}
+
+              {top3Models.length > 0 && (
+                <Card pad="tight">
+                  <CardHeader
+                    title="top models"
+                    hint="by cost this window"
+                  />
+                  <DrillDownTable
+                    rows={top3Models.map((r) => ({
+                      label: r.model,
+                      cost_cents: r.cost_cents,
+                      share: r.cost_share,
+                      isSub: false,
+                    }))}
+                    total_cents={attribution.total_cents}
+                  />
+                </Card>
+              )}
+
+            </div>
+          )}
+        </div>
+      )}
+
     </div>
   );
 }
+
+// ── Sub-components ────────────────────────────────────────────────────────────
 
 function CostDetailTable({
   breakdown,
@@ -154,5 +243,59 @@ function CostDetailTable({
         </div>
       )}
     </div>
+  );
+}
+
+interface DrillRow {
+  label: string;
+  cost_cents: number | null;
+  share: number;
+  isSub: boolean;
+}
+
+function DrillDownTable({
+  rows,
+  total_cents,
+}: { rows: DrillRow[]; total_cents: number }): ReactElement {
+  return (
+    <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12, marginTop: space.x2 }}>
+      <tbody>
+        {rows.map((r) => {
+          const pct = r.share > 0 ? `${(r.share * 100).toFixed(1)}%` : "—";
+          return (
+            <tr key={r.label} style={{ borderBottom: `1px dashed ${palette.border}` }}>
+              <td style={{ ...td, fontFamily: "var(--font-mono)", fontSize: 11, color: palette.text }}>
+                {r.label}
+                {r.isSub && (
+                  <span style={{
+                    marginLeft: 6, fontSize: 9, color: palette.amber,
+                    background: "rgba(255,224,122,0.1)", borderRadius: 3, padding: "1px 4px",
+                  }}>
+                    sub
+                  </span>
+                )}
+              </td>
+              <td style={{ ...td, textAlign: "right", color: palette.textDim, fontVariantNumeric: "tabular-nums" }}>
+                {pct}
+              </td>
+              <td style={{ ...td, textAlign: "right", color: palette.text, fontVariantNumeric: "tabular-nums" }}>
+                {fmtUsd(r.cost_cents)}
+              </td>
+            </tr>
+          );
+        })}
+        {total_cents > 0 && (
+          <tr>
+            <td style={{ ...td, color: palette.textMute, fontSize: 11 }}>
+              (total attributed)
+            </td>
+            <td style={td}></td>
+            <td style={{ ...td, textAlign: "right", color: palette.magenta, fontWeight: 500, fontVariantNumeric: "tabular-nums" }}>
+              {fmtUsd(total_cents)}
+            </td>
+          </tr>
+        )}
+      </tbody>
+    </table>
   );
 }

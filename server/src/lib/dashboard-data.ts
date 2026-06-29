@@ -13,8 +13,13 @@ import { sql } from "@/lib/db";
 import {
   costMillicents, millicentsToCents,
   costBreakdownMillicents, emptyBreakdown, addBreakdown,
+  normalizeModel,
   type CostBreakdownMillicents,
 } from "@/lib/pricing";
+import {
+  computeAttribution,
+  type CostAttributionBreakdown,
+} from "@/lib/cost-attribution-breakdown";
 import { retentionCutoff, type PlanLimits } from "@/lib/plan-gate";
 
 export interface ScopeFilter {
@@ -152,6 +157,8 @@ export interface DashboardData {
   chartDays: number;
   /** Fleet aggregates — null when no ashlr-fleet events in the window. */
   fleet: FleetData | null;
+  /** Cost attribution by source + model over the chart window. */
+  costAttribution: CostAttributionBreakdown;
 }
 
 // ── Fleet types ─────────────────────────────────────────────────────────────
@@ -605,6 +612,10 @@ function computeAggregates(
   const dailyMap = new Map<string, SumBucket>(); // YYYY-MM-DD → sum
   const stackedMap = new Map<string, Record<string, number>>(); // bucket → source → tokens
   const sourceTotals = new Map<string, number>();
+  // Cost attribution: source → { events, tokens, millicents }
+  const attribSourceMap = new Map<string, { events: number; tokens: number; millicents: number | null }>();
+  // Cost attribution: model (normalized) → { events, tokens, millicents }
+  const attribModelMap = new Map<string, { events: number; tokens: number; millicents: number | null }>();
   const modelTokens = new Map<string, number>();
   const modelByDayMillicents = new Map<string, Map<string, number>>(); // model → day → millicents
   const modelTotalMillicents = new Map<string, number>(); // model → total millicents over chart window
@@ -730,6 +741,22 @@ function computeAggregates(
       } else if (e.tool_calls_count != null && e.tool_calls_count > 0) {
         incrementToolModel(toolModels, "(unspecified)", model, e.tool_calls_count);
       }
+    }
+
+    // Cost attribution accumulators (chart window).
+    if (inChartWindow) {
+      const srcAcc = attribSourceMap.get(e.source) ?? { events: 0, tokens: 0, millicents: null };
+      srcAcc.events += 1;
+      srcAcc.tokens += billable;
+      if (millicents !== null) srcAcc.millicents = (srcAcc.millicents ?? 0) + millicents;
+      attribSourceMap.set(e.source, srcAcc);
+
+      const modelKey = normalizeModel(e.model ?? "(unknown)");
+      const mdlAcc = attribModelMap.get(modelKey) ?? { events: 0, tokens: 0, millicents: null };
+      mdlAcc.events += 1;
+      mdlAcc.tokens += billable;
+      if (millicents !== null) mdlAcc.millicents = (mdlAcc.millicents ?? 0) + millicents;
+      attribModelMap.set(modelKey, mdlAcc);
     }
 
     // 30-day heatmap.
@@ -1037,6 +1064,69 @@ function computeAggregates(
     };
   })();
 
+  // Build cost attribution from the in-loop accumulators — no extra DB round-trip.
+  // We pass raw accumulator maps into computeAttribution via synthetic event list
+  // but since we already have the maps, we build the output directly here.
+  const attribTotalMillicents = [...attribSourceMap.values()]
+    .reduce((s, a) => s + (a.millicents ?? 0), 0);
+  const attribTotalCents = millicentsToCents(attribTotalMillicents) ?? 0;
+
+  const attribBySource = [...attribSourceMap.entries()]
+    .map(([source, acc]) => {
+      const cost_cents = acc.millicents !== null ? (millicentsToCents(acc.millicents) ?? 0) : null;
+      return {
+        source,
+        events: acc.events,
+        tokens: acc.tokens,
+        cost_cents,
+        cost_share: attribTotalCents > 0 && cost_cents !== null ? cost_cents / attribTotalCents : 0,
+      };
+    })
+    .sort((a, b) => {
+      if (a.cost_cents === null && b.cost_cents === null) return b.events - a.events;
+      if (a.cost_cents === null) return 1;
+      if (b.cost_cents === null) return -1;
+      return b.cost_cents - a.cost_cents;
+    });
+
+  const attribByModel = [...attribModelMap.entries()]
+    .map(([model, acc]) => {
+      const cost_cents = acc.millicents !== null ? (millicentsToCents(acc.millicents) ?? 0) : null;
+      return {
+        model,
+        events: acc.events,
+        tokens: acc.tokens,
+        cost_cents,
+        cost_share: attribTotalCents > 0 && cost_cents !== null ? cost_cents / attribTotalCents : 0,
+      };
+    })
+    .sort((a, b) => {
+      if (a.cost_cents === null && b.cost_cents === null) return b.events - a.events;
+      if (a.cost_cents === null) return 1;
+      if (b.cost_cents === null) return -1;
+      return b.cost_cents - a.cost_cents;
+    });
+
+  // Date range from the chart window
+  const chartWindowEvents = events.filter((e) => {
+    const ageMs = now - new Date(e.ts).getTime();
+    return ageMs <= chartDays * D_MS;
+  });
+  const attribSince = chartWindowEvents.length > 0
+    ? chartWindowEvents[chartWindowEvents.length - 1].ts.slice(0, 10)
+    : null;
+  const attribUntil = chartWindowEvents.length > 0
+    ? chartWindowEvents[0].ts.slice(0, 10)
+    : null;
+
+  const costAttribution: import("@/lib/cost-attribution-breakdown").CostAttributionBreakdown = {
+    bySource: attribBySource,
+    byModel: attribByModel,
+    total_cents: attribTotalCents,
+    since: attribSince,
+    until: attribUntil,
+  };
+
   return {
     today:     statCard(today),
     yesterday: statCard(yesterday),
@@ -1061,6 +1151,7 @@ function computeAggregates(
     byProject,
     chartDays,
     fleet,
+    costAttribution,
     github: daysBack.map<GithubDaily>((d) => {
       const slot = githubByDay.get(d) ?? { commits: 0, prs_opened: 0, prs_merged: 0, reviews: 0 };
       return { bucket: shortDay(d), ...slot, commits: gitCommitRollup.commitsByDay.get(d) ?? 0 };
