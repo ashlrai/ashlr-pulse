@@ -3,6 +3,8 @@
  *
  * Server component: loads raw span data, applies session-cluster, then
  * hands the SessionCluster to client components for flamegraph rendering.
+ * Also computes a cost attribution waterfall and passes it to the
+ * SessionAttributionWaterfall chart.
  *
  * Privacy floor: only metadata (tool names, latencies, tokens, cost).
  * No code, prompts, or LLM output text ever appear here.
@@ -13,11 +15,13 @@ import { redirect, notFound } from "next/navigation";
 import { currentUser } from "@/lib/current-user";
 import { sql } from "@/lib/db";
 import { clusterSpansBySession, type SpanRow } from "@/lib/session-cluster";
+import { computeSessionAttribution, type RawSessionSpan } from "@/lib/session-attribution";
 import { Header } from "@/components/Header";
 import { DashboardShell } from "@/components/ui/DashboardShell";
 import { Card, CardHeader } from "@/components/ui/Card";
 import { SessionFlamegraph } from "@/components/sessions/SessionFlamegraph";
 import { SessionCostCard } from "@/components/sessions/SessionCostCard";
+import { SessionAttributionWaterfall } from "@/components/sessions/SessionAttributionWaterfall";
 import { palette, space, font } from "@/lib/theme";
 
 export const runtime = "nodejs";
@@ -27,6 +31,21 @@ interface PageProps {
   params: Promise<{ id: string }>;
 }
 
+/** Row shape returned from the DB query — superset of SpanRow and RawSessionSpan. */
+interface DbRow {
+  session_id: string | null;
+  ts: string;
+  duration_ms: number | null;
+  tool_calls_types: string[] | null;
+  tokens_input: number | null;
+  tokens_output: number | null;
+  tokens_reasoning: number | null;
+  cost_millicents: number | null;
+  repo_name: string | null;
+  source: string;
+  model: string | null;
+}
+
 export default async function SessionDetailPage({ params }: PageProps): Promise<ReactElement> {
   const me = await currentUser();
   if (!me) redirect("/login");
@@ -34,19 +53,7 @@ export default async function SessionDetailPage({ params }: PageProps): Promise<
   const { id: sessionId } = await params;
   const db = sql();
 
-  const rows = await db.unsafe<Array<{
-    session_id: string | null;
-    ts: string;
-    duration_ms: number | null;
-    tool_calls_types: string[] | null;
-    tokens_input: number | null;
-    tokens_output: number | null;
-    tokens_reasoning: number | null;
-    cost_millicents: number | null;
-    repo_name: string | null;
-    source: string;
-    model: string | null;
-  }>>(
+  const rows = await db.unsafe<DbRow[]>(
     `
     SELECT
       session_id,
@@ -68,10 +75,11 @@ export default async function SessionDetailPage({ params }: PageProps): Promise<
     LIMIT 500
     `,
     [me.id, sessionId],
-  ).catch(() => []);
+  ).catch(() => [] as DbRow[]);
 
   if (rows.length === 0) notFound();
 
+  // Build SpanRow array for session-cluster (flamegraph / cost card).
   const spans: SpanRow[] = rows.map((r) => ({
     session_id: r.session_id,
     ts: r.ts,
@@ -89,6 +97,21 @@ export default async function SessionDetailPage({ params }: PageProps): Promise<
   const clusters = clusterSpansBySession(spans);
   const cluster = clusters.find((c) => c.sessionId === sessionId) ?? clusters[0];
   if (!cluster) notFound();
+
+  // Build attribution payload for the waterfall chart.
+  const rawSpans: RawSessionSpan[] = rows.map((r) => ({
+    ts: r.ts,
+    duration_ms: r.duration_ms,
+    tool_calls_types: r.tool_calls_types,
+    tokens_input: r.tokens_input,
+    tokens_output: r.tokens_output,
+    tokens_reasoning: r.tokens_reasoning,
+    cost_millicents: r.cost_millicents,
+    repo_name: r.repo_name,
+    source: r.source,
+    model: r.model,
+  }));
+  const attribution = computeSessionAttribution(sessionId, rawSpans);
 
   const durationSec = Math.round(cluster.totalLatency / 1000);
   const costFmt = cluster.totalCost.toFixed(4);
@@ -136,6 +159,11 @@ export default async function SessionDetailPage({ params }: PageProps): Promise<
         {/* Cost breakdown card */}
         <div style={{ marginBottom: space.x4 }}>
           <SessionCostCard cluster={cluster} />
+        </div>
+
+        {/* Cost attribution waterfall */}
+        <div style={{ marginBottom: space.x4 }}>
+          <SessionAttributionWaterfall sessionId={sessionId} payload={attribution} />
         </div>
 
         {/* Flamegraph */}
