@@ -19,6 +19,9 @@
  *   6. Group surviving anomalies into anomaly_incident rows via
  *      groupAnomaliesToIncidents(), then upsert created/updated incidents.
  *      Each new anomaly_event.id is appended to its incident's context.span_ids.
+ *   7. Enrich newly-created incidents with root_cause_signal, severity_score,
+ *      and description via clusterAndEnrich(), then insert anomaly_remediation
+ *      rows for each new incident.
  *
  * Privacy: reads only aggregate cost/token columns, model enums, fleet_outcome,
  * fleet_owner, and repo_name from activity_event. No prompts, completions,
@@ -38,6 +41,8 @@ import {
   groupAnomaliesToIncidents,
   type AnomalyIncident,
 } from "@/lib/anomaly-incident-grouping";
+import { clusterAndEnrich } from "@/lib/anomaly-grouper";
+import { insertRemediationsForIncident } from "@/lib/anomaly-remediation-db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -354,12 +359,35 @@ export async function POST(req: Request): Promise<Response> {
             createdIdx++;
           }
 
+          // Enrich created incidents with root_cause_signal, severity_score,
+          // description via the anomaly-grouper's clusterAndEnrich().
+          // We cluster the anomalies that belong to each created incident
+          // by matching kind, then apply enrichment to the incident.
+          const enrichmentMap = new Map<string, ReturnType<typeof clusterAndEnrich>[number]["enrichment"]>();
+          if (created.length > 0) {
+            // Cluster the full surviving batch to derive root-cause signals.
+            const clusters = clusterAndEnrich(batchAnomalies);
+            // Match each created incident to the best-fitting cluster by kind.
+            for (const inc of created) {
+              const match = clusters.find((c) =>
+                c.cluster.anomalies.some((a) => a.kind === inc.kind),
+              );
+              if (match) {
+                enrichmentMap.set(`${inc.kind}-${inc.first_detected_at}`, match.enrichment);
+              }
+            }
+          }
+
           // INSERT new incidents.
           for (const inc of created) {
-            await db`
+            const enrichKey = `${inc.kind}-${inc.first_detected_at}`;
+            const enrichment = enrichmentMap.get(enrichKey) ?? null;
+
+            const insertedRows = await db<{ id: string }[]>`
               INSERT INTO anomaly_incident
                 (org_id, first_detected_at, last_seen_at, kind, severity,
-                 cost_impact_millicents, event_count, context)
+                 cost_impact_millicents, event_count, context,
+                 description, root_cause_signal, severity_score, status)
               VALUES (
                 ${inc.org_id}::uuid,
                 ${inc.first_detected_at}::timestamptz,
@@ -368,9 +396,25 @@ export async function POST(req: Request): Promise<Response> {
                 ${inc.severity},
                 ${inc.cost_impact_millicents},
                 ${inc.event_count},
-                ${JSON.stringify(inc.context)}::jsonb
+                ${JSON.stringify(inc.context)}::jsonb,
+                ${enrichment?.description ?? null},
+                ${enrichment?.root_cause_signal ?? null},
+                ${enrichment?.severity_score ?? 0},
+                'open'
               )
+              RETURNING id::text AS id
             `;
+
+            // Insert suggested remediation actions for new incidents.
+            const newId = insertedRows[0]?.id;
+            if (newId && enrichment?.root_cause_signal) {
+              try {
+                await insertRemediationsForIncident(newId, enrichment.root_cause_signal);
+              } catch (remErr) {
+                const msg = remErr instanceof Error ? remErr.message : String(remErr);
+                log.warn({ msg: "cron: anomaly-persist remediation insert failed (non-fatal)", incident_id: newId, err: msg });
+              }
+            }
           }
 
           // UPDATE merged incidents.
