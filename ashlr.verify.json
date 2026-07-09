@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "mode": "replace-detected",
+  "commands": [
+    {
+      "id": "agent-check",
+      "kind": "typecheck",
+      "cmd": ["cargo", "check"],
+      "cwd": "agent",
+      "timeoutMs": 300000,
+      "required": true,
+      "profiles": ["quick", "merge"]
+    },
+    {
+      "id": "agent-test",
+      "kind": "test",
+      "cmd": ["cargo", "test", "--", "--test-threads=1"],
+      "cwd": "agent",
+      "timeoutMs": 600000,
+      "required": true,
+      "profiles": ["merge"]
+    },
+    {
+      "id": "server-typecheck",
+      "kind": "typecheck",
+      "cmd": ["bun", "run", "typecheck"],
+      "cwd": "server",
+      "timeoutMs": 300000,
+      "required": true,
+      "profiles": ["quick", "merge"]
+    },
+    {
+      "id": "server-test",
+      "kind": "test",
+      "cmd": ["bun", "run", "test"],
+      "cwd": "server",
+      "timeoutMs": 600000,
+      "required": true,
+      "profiles": ["merge"]
+    }
+  ]
+}
