@@ -122,7 +122,7 @@ export async function runQuery(userId: string, q: AskQuery): Promise<AskResult> 
 
   // Pre-build filter as parameterized AND-clauses. Whitelist the
   // column names so an injected value can't ride into the SQL itself.
-  const conds: string[] = [`user_id = $1::uuid`, `ts >= NOW() - INTERVAL '${q.window_days} days'`];
+  const conds: string[] = [`user_id = $1`, `ts >= NOW() - INTERVAL '${q.window_days} days'`];
   const params: (string | number)[] = [userId];
   let pIdx = 2;
   if (q.filter?.source) { conds.push(`source = $${pIdx++}`); params.push(q.filter.source); }

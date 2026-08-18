@@ -49,7 +49,7 @@ async function loadTeamSyncData(userId: string, orgId: string): Promise<{
       EXTRACT(HOUR FROM ts)::int  AS hour,
       COUNT(*)::int               AS value
     FROM activity_event
-    WHERE user_id = ${userId}::uuid
+    WHERE user_id = ${userId}
       AND ts >= NOW() - INTERVAL '30 days'
     GROUP BY dow, hour
   `.catch(() => [] as { dow: number; hour: number; value: number }[]);

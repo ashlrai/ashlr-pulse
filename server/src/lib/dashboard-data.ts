@@ -549,7 +549,7 @@ export async function loadDashboard(
     JOIN project_repo pr ON pr.project_id = p.id
     LEFT JOIN activity_event ae
       ON ae.repo_name = pr.repo_name
-     AND ae.user_id   = $1::uuid
+     AND ae.user_id   = $1
      AND ae.ts >= NOW() - INTERVAL '${chartDays} days'
      ${projectRepoClauseSql}
     GROUP BY p.id, p.name, p.kind

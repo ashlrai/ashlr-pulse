@@ -1,17 +1,23 @@
 name: CI
 
 on:
+  # push is scoped to main only: pull_request already covers every branch/PR,
+  # and firing push unconditionally too causes duplicate concurrent runs for
+  # the same commit (push + pull_request). main-only push still gets
+  # `verify` on every merge commit.
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
-  test:
+  verify:
     runs-on: ubuntu-latest
 
     services:
@@ -57,6 +63,10 @@ jobs:
         env:
           DATABASE_URL: postgres://pulse:pulse@localhost:5432/pulse
         run: bun test
+
+      - name: Build
+        working-directory: server
+        run: bun run build
 
   agent:
     name: build agent

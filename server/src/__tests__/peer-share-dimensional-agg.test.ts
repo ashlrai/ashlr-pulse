@@ -37,6 +37,7 @@ import {
   type DimensionalAggRow,
 } from "../lib/peer-share-dimensional-agg";
 import { FORBIDDEN_FIELDS } from "../lib/peer-share-guard";
+import { createTestUserWithGithub } from "../lib/test-fixtures";
 
 const HAS_DB = Boolean(process.env.DATABASE_URL);
 
@@ -274,21 +275,9 @@ describe.skipIf(!HAS_DB)("peer-share-dimensional-agg — DB integration", () => 
     db = sql();
 
     // Create users.
-    const [rowOwner] = await db<{ id: string }[]>`
-      INSERT INTO "user" (email, github_login, github_node_id, avatar_url)
-      VALUES (${ownerEmail}, ${"da-owner-" + tag}, ${"da-owner-node-" + tag}, '')
-      RETURNING id::text AS id
-    `;
-    const [rowViewer] = await db<{ id: string }[]>`
-      INSERT INTO "user" (email, github_login, github_node_id, avatar_url)
-      VALUES (${viewerEmail}, ${"da-viewer-" + tag}, ${"da-viewer-node-" + tag}, '')
-      RETURNING id::text AS id
-    `;
-    const [rowUnrel] = await db<{ id: string }[]>`
-      INSERT INTO "user" (email, github_login, github_node_id, avatar_url)
-      VALUES (${unrelEmail}, ${"da-unrel-" + tag}, ${"da-unrel-node-" + tag}, '')
-      RETURNING id::text AS id
-    `;
+    const rowOwner = await createTestUserWithGithub(ownerEmail, "da-owner-" + tag);
+    const rowViewer = await createTestUserWithGithub(viewerEmail, "da-viewer-" + tag);
+    const rowUnrel = await createTestUserWithGithub(unrelEmail, "da-unrel-" + tag);
     ownerId  = rowOwner.id;
     viewerId = rowViewer.id;
     unrelId  = rowUnrel.id;
@@ -349,7 +338,7 @@ describe.skipIf(!HAS_DB)("peer-share-dimensional-agg — DB integration", () => 
     await db`DELETE FROM peer_share_daily_agg_by_source   WHERE share_id = ${shareId}::uuid`;
     await db`DELETE FROM peer_share_daily_agg_by_language WHERE share_id = ${shareId}::uuid`;
     await db`DELETE FROM peer_share_hourly_aggregate WHERE owner_id = ${ownerId}::uuid`;
-    await db`DELETE FROM activity_event WHERE user_id = ${ownerId}::uuid`;
+    await db`DELETE FROM activity_event WHERE user_id = ${ownerId}`;
     await db`DELETE FROM peer_share WHERE id = ${shareId}`;
     await db`DELETE FROM "user" WHERE id IN (${ownerId}::uuid, ${viewerId}::uuid, ${unrelId}::uuid)`;
   });

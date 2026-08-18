@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS peer_share_monthly_aggregate (
     )
   ),
   computed_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  CONSTRAINT peer_share_monthly_aggregate_pkey
+  CONSTRAINT peer_share_monthly_aggregate_owner_viewer_bucket_key
     UNIQUE (owner_id, viewer_id, month_bucket, source, model)
 );
 

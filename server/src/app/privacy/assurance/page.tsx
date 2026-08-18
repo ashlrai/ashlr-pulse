@@ -48,7 +48,7 @@ async function loadStoredShape(userId: string): Promise<{
       COUNT(*)::int   AS n,
       MIN(ts)::text   AS oldest,
       MAX(ts)::text   AS newest
-    FROM activity_event WHERE user_id = ${userId}::uuid
+    FROM activity_event WHERE user_id = ${userId}
   `;
   const [sample] = await db<SampleRow[]>`
     SELECT
@@ -62,7 +62,7 @@ async function loadStoredShape(userId: string): Promise<{
       tokens_cache_read,
       cost_millicents
     FROM activity_event
-    WHERE user_id = ${userId}::uuid
+    WHERE user_id = ${userId}
     ORDER BY ts DESC
     LIMIT 1
   `;

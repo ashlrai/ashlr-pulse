@@ -138,7 +138,7 @@ export async function loadCostAttributionBreakdown(
       tokens_cache_1h_write,
       cost_millicents
     FROM activity_event
-    WHERE user_id = $1::uuid
+    WHERE user_id = $1
       AND ts >= COALESCE($2::timestamptz, NOW() - INTERVAL '30 days')
       AND ($3::timestamptz IS NULL OR ts < $3::timestamptz)
       AND ($4::text IS NULL OR source = $4::text)

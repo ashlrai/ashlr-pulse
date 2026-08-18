@@ -114,7 +114,7 @@ export async function loadProjectDetail(
       ROUND(COALESCE(SUM(ae.cost_millicents),0) / 1000.0)::int AS cents
     FROM activity_event ae
     JOIN project_repo pr ON pr.repo_name = ae.repo_name AND pr.project_id = ${projectId}::uuid
-    WHERE ae.user_id = ${userId}::uuid
+    WHERE ae.user_id = ${userId}
       AND ae.ts >= NOW() - (${days}::int || ' days')::interval
     GROUP BY ae.repo_name
     ORDER BY cents DESC NULLS LAST
@@ -126,7 +126,7 @@ export async function loadProjectDetail(
       COALESCE(SUM(COALESCE(ae.tokens_input,0) + COALESCE(ae.tokens_output,0)), 0)::int AS tokens
     FROM activity_event ae
     JOIN project_repo pr ON pr.repo_name = ae.repo_name AND pr.project_id = ${projectId}::uuid
-    WHERE ae.user_id = ${userId}::uuid
+    WHERE ae.user_id = ${userId}
       AND ae.ts >= NOW() - (${days}::int || ' days')::interval
     GROUP BY 1
     ORDER BY 1 ASC
@@ -139,7 +139,7 @@ export async function loadProjectDetail(
       ROUND(COALESCE(SUM(ae.cost_millicents),0) / 1000.0)::int AS cents
     FROM activity_event ae
     JOIN project_repo pr ON pr.repo_name = ae.repo_name AND pr.project_id = ${projectId}::uuid
-    WHERE ae.user_id = ${userId}::uuid
+    WHERE ae.user_id = ${userId}
       AND ae.ts >= NOW() - (${days}::int || ' days')::interval
     GROUP BY 1
     ORDER BY cents DESC NULLS LAST

@@ -192,7 +192,7 @@ async function aggregateMonthlyBuckets(
       COALESCE(SUM(ae.cost_millicents), 0)::bigint                  AS cost_millicents,
       COUNT(*)::int                                                  AS event_count
     FROM activity_event ae
-    WHERE ae.user_id = ${ownerId}::uuid
+    WHERE ae.user_id = ${ownerId}
       AND ae.ts >= ${sinceMonthIso}::timestamptz
       AND EXISTS (
         SELECT 1 FROM peer_share ps

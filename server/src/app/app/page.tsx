@@ -655,12 +655,12 @@ async function loadPluginImpact(userId: string): Promise<PluginImpact | null> {
         ARRAY(
           SELECT DISTINCT unnest(plugin_features)
           FROM activity_event
-          WHERE user_id = ${userId}::uuid
+          WHERE user_id = ${userId}
             AND ts >= NOW() - INTERVAL '14 days'
             AND plugin_features IS NOT NULL
         ) AS features
       FROM activity_event
-      WHERE user_id = ${userId}::uuid
+      WHERE user_id = ${userId}
         AND ts >= NOW() - INTERVAL '14 days'
         AND tokens_saved IS NOT NULL
         AND tokens_saved > 0
@@ -782,7 +782,7 @@ async function loadTeamSyncLabel(userId: string, orgId: string): Promise<string 
     const heatRows = await db<{ hour: number; value: number }[]>`
       SELECT EXTRACT(HOUR FROM ts)::int AS hour, COUNT(*)::int AS value
       FROM activity_event
-      WHERE user_id = ${userId}::uuid AND ts >= NOW() - INTERVAL '30 days'
+      WHERE user_id = ${userId} AND ts >= NOW() - INTERVAL '30 days'
       GROUP BY hour
     `.catch(() => [] as { hour: number; value: number }[]);
 

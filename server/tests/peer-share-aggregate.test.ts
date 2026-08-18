@@ -23,6 +23,7 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { sql } from "../src/lib/db";
+import { createTestUserWithGithub } from "../src/lib/test-fixtures";
 import {
   refreshPeerShareAggregates,
   runPeerShareAggregatesCron,
@@ -60,16 +61,8 @@ describe.skipIf(!HAS_DB)("peer_share_daily_aggregate", () => {
   beforeAll(async () => {
     db = sql();
     // Insert owner + viewer users
-    const [ownerRow] = await db<{ id: string }[]>`
-      INSERT INTO "user" (email, github_login, github_node_id, avatar_url)
-      VALUES (${ownerEmail}, ${"psa-owner-" + tag}, ${"psa-owner-node-" + tag}, '')
-      RETURNING id::text AS id
-    `;
-    const [viewerRow] = await db<{ id: string }[]>`
-      INSERT INTO "user" (email, github_login, github_node_id, avatar_url)
-      VALUES (${viewerEmail}, ${"psa-viewer-" + tag}, ${"psa-viewer-node-" + tag}, '')
-      RETURNING id::text AS id
-    `;
+    const ownerRow = await createTestUserWithGithub(ownerEmail, "psa-owner-" + tag);
+    const viewerRow = await createTestUserWithGithub(viewerEmail, "psa-viewer-" + tag);
     ownerId  = ownerRow.id;
     viewerId = viewerRow.id;
 
@@ -99,7 +92,7 @@ describe.skipIf(!HAS_DB)("peer_share_daily_aggregate", () => {
   afterAll(async () => {
     // Clean up in dependency order
     await db`DELETE FROM peer_share_daily_aggregate WHERE owner_id = ${ownerId}::uuid`;
-    await db`DELETE FROM activity_event WHERE user_id = ${ownerId}::uuid`;
+    await db`DELETE FROM activity_event WHERE user_id = ${ownerId}`;
     await db`DELETE FROM peer_share WHERE id = ${shareId}`;
     await db`DELETE FROM "user" WHERE id IN (${ownerId}::uuid, ${viewerId}::uuid)`;
   });

@@ -131,7 +131,7 @@ export async function refreshHourlyAggregates(
         COALESCE(SUM(ae.cost_millicents), 0)::bigint      AS cost_millicents,
         COUNT(*)::int                                     AS event_count
       FROM activity_event ae
-      WHERE ae.user_id = ${ownerId}::uuid
+      WHERE ae.user_id = ${ownerId}
         AND ae.ts >= ${bucketStartIso}::timestamptz
         AND ae.ts <  ${bucketEndIso}::timestamptz
         AND EXISTS (
