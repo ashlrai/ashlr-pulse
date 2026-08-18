@@ -28,6 +28,7 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { sql } from "../src/lib/db";
+import { createTestUserWithGithub } from "../src/lib/test-fixtures";
 import {
   refreshHourlyAggregates,
   readHourlyRows,
@@ -76,27 +77,15 @@ describe.skipIf(!HAS_DB)("peer_share_hourly_aggregate", () => {
     db = sql();
 
     // Owner
-    const [ownerRow] = await db<{ id: string }[]>`
-      INSERT INTO "user" (email, github_login, github_node_id, avatar_url)
-      VALUES (${ownerEmail}, ${"pha-owner-" + tag}, ${"pha-owner-node-" + tag}, '')
-      RETURNING id::text AS id
-    `;
+    const ownerRow = await createTestUserWithGithub(ownerEmail, "pha-owner-" + tag);
     ownerId = ownerRow.id;
 
     // Viewer (has a grant)
-    const [viewerRow] = await db<{ id: string }[]>`
-      INSERT INTO "user" (email, github_login, github_node_id, avatar_url)
-      VALUES (${viewerEmail}, ${"pha-viewer-" + tag}, ${"pha-viewer-node-" + tag}, '')
-      RETURNING id::text AS id
-    `;
+    const viewerRow = await createTestUserWithGithub(viewerEmail, "pha-viewer-" + tag);
     viewerId = viewerRow.id;
 
     // Stranger (no grant)
-    const [strangerRow] = await db<{ id: string }[]>`
-      INSERT INTO "user" (email, github_login, github_node_id, avatar_url)
-      VALUES (${stranger}, ${"pha-stranger-" + tag}, ${"pha-stranger-node-" + tag}, '')
-      RETURNING id::text AS id
-    `;
+    const strangerRow = await createTestUserWithGithub(stranger, "pha-stranger-" + tag);
     strangerId = strangerRow.id;
 
     // Active grant from owner → viewer
@@ -124,7 +113,7 @@ describe.skipIf(!HAS_DB)("peer_share_hourly_aggregate", () => {
 
   afterAll(async () => {
     await db`DELETE FROM peer_share_hourly_aggregate WHERE owner_id = ${ownerId}::uuid`;
-    await db`DELETE FROM activity_event WHERE user_id = ${ownerId}::uuid`;
+    await db`DELETE FROM activity_event WHERE user_id = ${ownerId}`;
     await db`DELETE FROM peer_share WHERE id = ${shareId}`;
     await db`DELETE FROM "user" WHERE id IN (${ownerId}::uuid, ${viewerId}::uuid, ${strangerId}::uuid)`;
   });
@@ -728,18 +717,10 @@ describe.skipIf(!HAS_DB)("peer-share-agg DB integration", () => {
   beforeAll(async () => {
     db = sql();
 
-    const [ownerRow] = await db<{ id: string }[]>`
-      INSERT INTO "user" (email, github_login, github_node_id, avatar_url)
-      VALUES (${ownerEmail}, ${"agg-owner-" + tag}, ${"agg-owner-node-" + tag}, '')
-      RETURNING id::text AS id
-    `;
+    const ownerRow = await createTestUserWithGithub(ownerEmail, "agg-owner-" + tag);
     ownerId = ownerRow.id;
 
-    const [viewerRow] = await db<{ id: string }[]>`
-      INSERT INTO "user" (email, github_login, github_node_id, avatar_url)
-      VALUES (${viewerEmail}, ${"agg-viewer-" + tag}, ${"agg-viewer-node-" + tag}, '')
-      RETURNING id::text AS id
-    `;
+    const viewerRow = await createTestUserWithGithub(viewerEmail, "agg-viewer-" + tag);
     viewerId = viewerRow.id;
 
     const [shareRow] = await db<{ id: string }[]>`
@@ -766,7 +747,7 @@ describe.skipIf(!HAS_DB)("peer-share-agg DB integration", () => {
 
   afterAll(async () => {
     await db`DELETE FROM peer_share_hourly_aggregate WHERE owner_id = ${ownerId}::uuid`;
-    await db`DELETE FROM activity_event WHERE user_id = ${ownerId}::uuid`;
+    await db`DELETE FROM activity_event WHERE user_id = ${ownerId}`;
     await db`DELETE FROM peer_share WHERE id = ${shareId}`;
     await db`DELETE FROM "user" WHERE id IN (${ownerId}::uuid, ${viewerId}::uuid)`;
   });

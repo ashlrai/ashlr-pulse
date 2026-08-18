@@ -49,6 +49,7 @@ import {
   type PeerShareMonthlyAggregate,
 } from "../src/lib/peer-share-monthly-aggregate";
 import { sql } from "../src/lib/db";
+import { createTestUserWithGithub } from "../src/lib/test-fixtures";
 
 const HAS_DB = Boolean(process.env.DATABASE_URL);
 
@@ -241,25 +242,13 @@ describe.skipIf(!HAS_DB)("peer_share_monthly_aggregate DB", () => {
   beforeAll(async () => {
     db = sql();
 
-    const [ownerRow] = await db<{ id: string }[]>`
-      INSERT INTO "user" (email, github_login, github_node_id, avatar_url)
-      VALUES (${ownerEmail}, ${"pma-owner-" + tag}, ${"pma-owner-node-" + tag}, '')
-      RETURNING id::text AS id
-    `;
+    const ownerRow = await createTestUserWithGithub(ownerEmail, "pma-owner-" + tag);
     ownerId = ownerRow.id;
 
-    const [viewerRow] = await db<{ id: string }[]>`
-      INSERT INTO "user" (email, github_login, github_node_id, avatar_url)
-      VALUES (${viewerEmail}, ${"pma-viewer-" + tag}, ${"pma-viewer-node-" + tag}, '')
-      RETURNING id::text AS id
-    `;
+    const viewerRow = await createTestUserWithGithub(viewerEmail, "pma-viewer-" + tag);
     viewerId = viewerRow.id;
 
-    const [strangerRow] = await db<{ id: string }[]>`
-      INSERT INTO "user" (email, github_login, github_node_id, avatar_url)
-      VALUES (${strangerEmail}, ${"pma-stranger-" + tag}, ${"pma-stranger-node-" + tag}, '')
-      RETURNING id::text AS id
-    `;
+    const strangerRow = await createTestUserWithGithub(strangerEmail, "pma-stranger-" + tag);
     strangerId = strangerRow.id;
 
     // Active grant from owner → viewer
@@ -288,7 +277,7 @@ describe.skipIf(!HAS_DB)("peer_share_monthly_aggregate DB", () => {
 
   afterAll(async () => {
     await db`DELETE FROM peer_share_monthly_aggregate WHERE owner_id = ${ownerId}::uuid`;
-    await db`DELETE FROM activity_event WHERE user_id = ${ownerId}::uuid`;
+    await db`DELETE FROM activity_event WHERE user_id = ${ownerId}`;
     await db`DELETE FROM peer_share WHERE id = ${shareId}`;
     await db`DELETE FROM "user" WHERE id IN (${ownerId}::uuid, ${viewerId}::uuid, ${strangerId}::uuid)`;
   });

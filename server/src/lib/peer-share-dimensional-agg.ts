@@ -171,7 +171,7 @@ export async function materializeDimensionalAggregates(
       COALESCE(SUM(ae.tokens_output), 0)::bigint       AS tokens_output,
       COUNT(*)::int                                    AS event_count
     FROM activity_event ae
-    WHERE ae.user_id = ${ownerId}::uuid
+    WHERE ae.user_id = ${ownerId}
       AND ae.ts >= ${bucketStart}::timestamptz
       AND ae.ts <  ${bucketEnd}::timestamptz
       AND EXISTS (

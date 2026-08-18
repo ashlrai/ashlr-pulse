@@ -127,7 +127,7 @@ export async function refreshPeerShareAggregates(
         COUNT(*)::int                                     AS event_count
       FROM activity_event ae
       -- Only include events for the owner.
-      WHERE ae.user_id = ${ownerId}::uuid
+      WHERE ae.user_id = ${ownerId}
         AND ae.ts >= ${dayStart}::timestamptz
         AND ae.ts <  ${dayEnd}::timestamptz
         -- Confirm a non-revoked grant exists for this (owner, viewer) pair.

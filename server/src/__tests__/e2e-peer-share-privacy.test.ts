@@ -29,6 +29,7 @@ const HAS_DB = Boolean(process.env.DATABASE_URL);
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { validateFields, FORBIDDEN_FIELDS, SHAREABLE_FIELDS } from "../lib/peer-share-guard";
+import { createTestUserWithGithub } from "../lib/test-fixtures";
 
 describe("peer-share-guard — privacy floor (unit, no DB)", () => {
   test("FORBIDDEN_FIELDS covers prompts, completions, raw_otel_span", () => {
@@ -105,18 +106,10 @@ describe.skipIf(!HAS_DB)("e2e peer-share privacy pipeline", () => {
     db = sql();
 
     // Insert User A and User B directly (bypasses Supabase auth)
-    const [rowA] = await db<{ id: string }[]>`
-      INSERT INTO "user" (email, github_login, github_node_id, avatar_url)
-      VALUES (${userAEmail}, ${"e2e-ps-a-" + tag}, ${"e2e-ps-a-node-" + tag}, '')
-      RETURNING id::text AS id
-    `;
-    const [rowB] = await db<{ id: string }[]>`
-      INSERT INTO "user" (email, github_login, github_node_id, avatar_url)
-      VALUES (${userBEmail}, ${"e2e-ps-b-" + tag}, ${"e2e-ps-b-node-" + tag}, '')
-      RETURNING id::text AS id
-    `;
-    userAId = rowA.id;
-    userBId = rowB.id;
+    const userA = await createTestUserWithGithub(userAEmail, "e2e-ps-a-" + tag);
+    const userB = await createTestUserWithGithub(userBEmail, "e2e-ps-b-" + tag);
+    userAId = userA.id;
+    userBId = userB.id;
 
     // Ingest 5 synthetic activity_event rows for User A
     for (const span of SPANS) {
@@ -151,7 +144,7 @@ describe.skipIf(!HAS_DB)("e2e peer-share privacy pipeline", () => {
   afterAll(async () => {
     if (!db) return;
     await db`DELETE FROM peer_share WHERE id = ${shareId}`;
-    await db`DELETE FROM activity_event WHERE user_id = ${userAId}::uuid`;
+    await db`DELETE FROM activity_event WHERE user_id = ${userAId}`;
     await db`DELETE FROM "user" WHERE id IN (${userAId}::uuid, ${userBId}::uuid)`;
   });
 
@@ -169,7 +162,7 @@ describe.skipIf(!HAS_DB)("e2e peer-share privacy pipeline", () => {
         tokens_input       AS tokens_input,
         cost_millicents    AS cost_millicents
       FROM activity_event
-      WHERE user_id = ${userAId}::uuid
+      WHERE user_id = ${userAId}
       ORDER BY ts DESC
     `;
 
@@ -201,7 +194,7 @@ describe.skipIf(!HAS_DB)("e2e peer-share privacy pipeline", () => {
     const [agg] = await db<{ total: number }[]>`
       SELECT COALESCE(SUM(cost_millicents), 0)::bigint AS total
       FROM activity_event
-      WHERE user_id = ${userAId}::uuid
+      WHERE user_id = ${userAId}
     `;
     expect(Math.abs(Number(agg.total) - TOTAL_COST)).toBeLessThanOrEqual(1);
   });
@@ -225,7 +218,7 @@ describe.skipIf(!HAS_DB)("e2e peer-share privacy pipeline", () => {
         tokens_output,
         cost_millicents
       FROM activity_event
-      WHERE user_id = ${userAId}::uuid
+      WHERE user_id = ${userAId}
       ORDER BY ts DESC
     `;
 
@@ -314,11 +307,7 @@ describe.skipIf(!HAS_DB)("e2e peer-share privacy pipeline", () => {
     const tag2 = Date.now() + 1;
     const otherEmail = `e2e-ps-other-${tag2}@local`;
 
-    const [other] = await db<{ id: string }[]>`
-      INSERT INTO "user" (email, github_login, github_node_id, avatar_url)
-      VALUES (${otherEmail}, ${"e2e-ps-other-" + tag2}, ${"e2e-ps-other-node-" + tag2}, '')
-      RETURNING id::text AS id
-    `;
+    const other = await createTestUserWithGithub(otherEmail, "e2e-ps-other-" + tag2);
 
     try {
       // "other" user should have no grant viewing User A's data

@@ -38,6 +38,7 @@ import {
   HOURLY_RETENTION_HRS,
 } from "../lib/peer-share-hourly-aggregate";
 import { SHAREABLE_FIELDS, FORBIDDEN_FIELDS } from "../lib/peer-share-guard";
+import { createTestUserWithGithub } from "../lib/test-fixtures";
 
 const HAS_DB = Boolean(process.env.DATABASE_URL);
 
@@ -238,21 +239,9 @@ describe.skipIf(!HAS_DB)("peer-share-hourly-aggregate — DB integration", () =>
     db = sql();
 
     // Create owner, viewer, and unrelated user.
-    const [rowOwner] = await db<{ id: string }[]>`
-      INSERT INTO "user" (email, github_login, github_node_id, avatar_url)
-      VALUES (${ownerEmail}, ${"ha-owner-" + tag}, ${"ha-owner-node-" + tag}, '')
-      RETURNING id::text AS id
-    `;
-    const [rowViewer] = await db<{ id: string }[]>`
-      INSERT INTO "user" (email, github_login, github_node_id, avatar_url)
-      VALUES (${viewerEmail}, ${"ha-viewer-" + tag}, ${"ha-viewer-node-" + tag}, '')
-      RETURNING id::text AS id
-    `;
-    const [rowUnrelated] = await db<{ id: string }[]>`
-      INSERT INTO "user" (email, github_login, github_node_id, avatar_url)
-      VALUES (${unrelatedEmail}, ${"ha-unrelated-" + tag}, ${"ha-unrelated-node-" + tag}, '')
-      RETURNING id::text AS id
-    `;
+    const rowOwner = await createTestUserWithGithub(ownerEmail, "ha-owner-" + tag);
+    const rowViewer = await createTestUserWithGithub(viewerEmail, "ha-viewer-" + tag);
+    const rowUnrelated = await createTestUserWithGithub(unrelatedEmail, "ha-unrelated-" + tag);
     ownerId = rowOwner.id;
     viewerId = rowViewer.id;
     unrelatedId = rowUnrelated.id;
@@ -291,7 +280,7 @@ describe.skipIf(!HAS_DB)("peer-share-hourly-aggregate — DB integration", () =>
     if (!db) return;
     await db`DELETE FROM peer_share_hourly_aggregate WHERE owner_id = ${ownerId}::uuid`;
     await db`DELETE FROM peer_share WHERE id = ${shareId}`;
-    await db`DELETE FROM activity_event WHERE user_id = ${ownerId}::uuid`;
+    await db`DELETE FROM activity_event WHERE user_id = ${ownerId}`;
     await db`DELETE FROM "user" WHERE id IN (${ownerId}::uuid, ${viewerId}::uuid, ${unrelatedId}::uuid)`;
   });
 
@@ -341,7 +330,7 @@ describe.skipIf(!HAS_DB)("peer-share-hourly-aggregate — DB integration", () =>
         SUM(cost_millicents)::bigint AS total_cost,
         COUNT(*)::int               AS total_events
       FROM activity_event
-      WHERE user_id = ${ownerId}::uuid
+      WHERE user_id = ${ownerId}
         AND ts >= ${BUCKET_START_ISO}::timestamptz
         AND ts <  ${bucketEnd}::timestamptz
     `;
@@ -485,7 +474,7 @@ describe.skipIf(!HAS_DB)("peer-share-hourly-aggregate — DB integration", () =>
         SUM(cost_millicents)::bigint AS total_cost,
         COUNT(*)::int               AS total_events
       FROM activity_event
-      WHERE user_id = ${ownerId}::uuid
+      WHERE user_id = ${ownerId}
         AND ts >= ${BUCKET_START_ISO}::timestamptz
         AND ts <  ${bucketEnd}::timestamptz
     `;

@@ -33,6 +33,7 @@ import {
   type PeerShareWeeklyRow,
 } from "../lib/peer-share-weekly-agg";
 import { SHAREABLE_FIELDS } from "../lib/peer-share-guard";
+import { createTestUserWithGithub } from "../lib/test-fixtures";
 
 const HAS_DB = Boolean(process.env.DATABASE_URL);
 
@@ -309,21 +310,9 @@ describe.skipIf(!HAS_DB)("peer-share-weekly-agg — DB integration", () => {
     db = sql();
 
     // Create owner, viewer, unrelated.
-    const [rowOwner] = await db<{ id: string }[]>`
-      INSERT INTO "user" (email, github_login, github_node_id, avatar_url)
-      VALUES (${ownerEmail}, ${"wa-owner-" + tag}, ${"wa-owner-node-" + tag}, '')
-      RETURNING id::text AS id
-    `;
-    const [rowViewer] = await db<{ id: string }[]>`
-      INSERT INTO "user" (email, github_login, github_node_id, avatar_url)
-      VALUES (${viewerEmail}, ${"wa-viewer-" + tag}, ${"wa-viewer-node-" + tag}, '')
-      RETURNING id::text AS id
-    `;
-    const [rowUnrelated] = await db<{ id: string }[]>`
-      INSERT INTO "user" (email, github_login, github_node_id, avatar_url)
-      VALUES (${unrelatedEmail}, ${"wa-unrelated-" + tag}, ${"wa-unrelated-node-" + tag}, '')
-      RETURNING id::text AS id
-    `;
+    const rowOwner = await createTestUserWithGithub(ownerEmail, "wa-owner-" + tag);
+    const rowViewer = await createTestUserWithGithub(viewerEmail, "wa-viewer-" + tag);
+    const rowUnrelated = await createTestUserWithGithub(unrelatedEmail, "wa-unrelated-" + tag);
     ownerId     = rowOwner.id;
     viewerId    = rowViewer.id;
     unrelatedId = rowUnrelated.id;

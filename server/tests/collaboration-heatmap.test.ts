@@ -337,6 +337,7 @@ describe.skipIf(!HAS_DB)("computeCollaborationMatrix (DB integration)", () => {
   // Import at test time to avoid crashing in no-DB environments.
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { sql } = require("../src/lib/db") as typeof import("../src/lib/db");
+  const { createTestUserWithGithub } = require("../src/lib/test-fixtures") as typeof import("../src/lib/test-fixtures");
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { computeCollaborationMatrix } = require("../src/lib/team-collaboration-matrix") as typeof import("../src/lib/team-collaboration-matrix");
 
@@ -361,25 +362,13 @@ describe.skipIf(!HAS_DB)("computeCollaborationMatrix (DB integration)", () => {
   beforeAll(async () => {
     db = sql();
 
-    const [oRow] = await db<{ id: string }[]>`
-      INSERT INTO "user" (email, github_login, github_node_id, avatar_url)
-      VALUES (${ownerEmail}, ${"hm-owner-" + tag}, ${"hm-owner-node-" + tag}, '')
-      RETURNING id::text AS id
-    `;
+    const oRow = await createTestUserWithGithub(ownerEmail, "hm-owner-" + tag);
     ownerId = oRow.id;
 
-    const [vRow] = await db<{ id: string }[]>`
-      INSERT INTO "user" (email, github_login, github_node_id, avatar_url)
-      VALUES (${viewerEmail}, ${"hm-viewer-" + tag}, ${"hm-viewer-node-" + tag}, '')
-      RETURNING id::text AS id
-    `;
+    const vRow = await createTestUserWithGithub(viewerEmail, "hm-viewer-" + tag);
     viewerId = vRow.id;
 
-    const [sRow] = await db<{ id: string }[]>`
-      INSERT INTO "user" (email, github_login, github_node_id, avatar_url)
-      VALUES (${stranger}, ${"hm-stranger-" + tag}, ${"hm-stranger-node-" + tag}, '')
-      RETURNING id::text AS id
-    `;
+    const sRow = await createTestUserWithGithub(stranger, "hm-stranger-" + tag);
     strangeId = sRow.id;
 
     // Active grant: owner → viewer
@@ -448,7 +437,11 @@ describe.skipIf(!HAS_DB)("computeCollaborationMatrix (DB integration)", () => {
     const ownerCells = matrix.cells.filter((c) => c.ownerId === ownerId);
     expect(ownerCells.length).toBeGreaterThan(0);
 
-    const bucketCell = ownerCells.find((c) => c.hourBucket.startsWith(currentBucket.slice(0, 16)));
+    // Match by parsed timestamp, not string prefix: Postgres renders
+    // `hour_bucket::text` as "YYYY-MM-DD HH:MM:SS+00" (space-separated),
+    // not ISO 8601's "T"-separated form, so a startsWith() against an
+    // ISO string never matches regardless of the actual bucket value.
+    const bucketCell = ownerCells.find((c) => new Date(c.hourBucket).getTime() === currentHourMs);
     expect(bucketCell).toBeDefined();
     if (bucketCell) {
       expect(bucketCell.costMillicents).toBe(COST_A + COST_B);
