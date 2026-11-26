@@ -17,12 +17,6 @@ path = "src/main.rs"
 name = "pulse_agent"
 path = "src/lib.rs"
 
-[profile.release]
-strip = true
-opt-level = "z"
-lto = true
-codegen-units = 1
-
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

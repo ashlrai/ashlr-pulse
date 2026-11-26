@@ -157,7 +157,6 @@ one without confirmation.
 ### Agent (Rust)
 
 ```sh
-cd agent
 cargo build              # dev build
 cargo test               # unit + integration
 cargo build --release    # release binary at target/release/pulse-agent
@@ -319,7 +318,7 @@ If you're unsure whether an action is safe, stop and ask the user.
 ## When you finish a task, leave the project in good shape
 
 - Run `bun run typecheck && bun test` from `server/` after server changes.
-- Run `cargo build && cargo test` from `agent/` after agent changes.
+- Run `cargo build && cargo test` from the workspace root after agent changes.
 - If you changed migrations, apply them locally:
   `DATABASE_URL=postgres://pulse:pulse@localhost:55432/pulse bun run migrate`
 - If you changed agent code that affects the OTLP wire shape, verify

@@ -31,25 +31,23 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
+        run: |
+          rustup show
+          rustup target add ${{ matrix.target }}
 
       - name: Cache cargo registry + build
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: agent -> target
           key: ${{ matrix.target }}
 
       - name: Build release binary
-        working-directory: agent
         run: cargo build --release --target ${{ matrix.target }} --locked
 
       - name: Stage tarball
         working-directory: agent
         run: |
           mkdir -p stage
-          cp target/${{ matrix.target }}/release/pulse-agent stage/
+          cp ../target/${{ matrix.target }}/release/pulse-agent stage/
           cp -R scripts stage/scripts
           cp README.md stage/
           tar -C stage -czf ${{ matrix.asset }}.tar.gz .
