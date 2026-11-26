@@ -19,7 +19,7 @@ box. Re-run any time to upgrade.
 ### Build from source (development)
 
 ```sh
-cd agent && cargo build --release
+cargo build --release  # run from the repository root
 cp target/release/pulse-agent ~/.local/bin/
 ```
 

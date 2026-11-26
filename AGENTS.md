@@ -17,6 +17,12 @@ The single canonical user task this doc unblocks is:
 If you're an AI assistant and the user asked for that, jump to
 [**Onboarding flow**](#onboarding-flow) below. Then stop reading.
 
+## Article 1: Full autonomy, always forward
+
+Follow the [Ashlr Fleet Constitution, Article 1](https://github.com/ashlrai/phantom/blob/master/AGENTS.md#article-1-full-autonomy-always-forward) for repository work. When standing scope allows, agents may open and land Pulse PRs through the required GitHub checks. Arm GitHub auto-merge when the repository supports it. Honor Security GATES v3, the fleet hold list, and GitHub protections.
+
+The [agent release workflow](.github/workflows/release-agent.yml) and [server deployment runbook](DEPLOY.md) are the sanctioned paths. Follow the release-tag and setup handoffs in this file. Preserve Pulse's privacy floor. No force-push to default branches, admin overrides, billing changes, secret disclosure, or making private material public.
+
 ---
 
 ## Project at a glance
@@ -151,7 +157,6 @@ one without confirmation.
 ### Agent (Rust)
 
 ```sh
-cd agent
 cargo build              # dev build
 cargo test               # unit + integration
 cargo build --release    # release binary at target/release/pulse-agent
@@ -313,7 +318,7 @@ If you're unsure whether an action is safe, stop and ask the user.
 ## When you finish a task, leave the project in good shape
 
 - Run `bun run typecheck && bun test` from `server/` after server changes.
-- Run `cargo build && cargo test` from `agent/` after agent changes.
+- Run `cargo build && cargo test` from the workspace root after agent changes.
 - If you changed migrations, apply them locally:
   `DATABASE_URL=postgres://pulse:pulse@localhost:55432/pulse bun run migrate`
 - If you changed agent code that affects the OTLP wire shape, verify

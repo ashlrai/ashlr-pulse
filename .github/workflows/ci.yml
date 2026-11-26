@@ -75,7 +75,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        run: rustup show
 
       # libdbus-1-dev is needed by `dbus-secret-service`, a transitive dep of
       # `keyring`'s linux backend (added in ca54e6a). Without it cargo build
@@ -85,15 +85,11 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: agent -> target
 
       - name: cargo build
-        working-directory: agent
         run: cargo build --locked
 
       - name: cargo test
-        working-directory: agent
         run: cargo test --locked
 
       - name: shell-hook smoke test (zsh)
