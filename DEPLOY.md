@@ -125,15 +125,33 @@ already defaults every org to `free` so the app works without Stripe.
 
 ### 1.6 Deploy + smoke test
 
-`git push` to whatever branch Railway watches (usually `main`). On boot:
+After the change lands on `main`, open the production service in Railway.
+In **Settings**, confirm its GitHub source is `ashlrai/ashlr-pulse`, the
+trigger branch is `main`, and automatic deploys are enabled. The build
+context is the repository root because the Dockerfile copies both
+`server/` and `db/`.
+
+In **Deployments**, confirm the active deployment matches the intended
+`main` commit. If a commit did not create a deployment, follow
+[Railway's autodeploy troubleshooting](https://docs.railway.com/deployments/github-autodeploys#troubleshooting)
+and check whether **Wait for CI** is holding or skipping it. When an authorized
+operator needs a manual fallback, use **Deploy Latest Commit** after
+confirming the connected branch and its head, then check the deployment again.
+If the GitHub integration is unavailable, the CLI fallback is `railway up`
+from a clean repository-root checkout of the reviewed commit. Confirm the
+linked production project, environment, and service with `railway status`
+before running it.
+
+Check the public readiness endpoint:
 
 ```bash
-curl https://<your-pulse>/api/healthz
+curl --fail --silent --show-error https://pulse.ashlr.ai/api/healthz
 # → {"ok":true,"db":"ok",...}
 ```
 
-If `db: down`, the migration step likely failed — check Railway logs
-for `[entrypoint] applying 00XX_*.sql` lines.
+A successful response confirms readiness. Use the deployment record to verify
+the commit. If the endpoint reports `db: down`, check database connectivity
+and the Railway logs for `[entrypoint] applying 00XX_*.sql` lines.
 
 Manually trigger the digest cron once to verify SendGrid works:
 
@@ -275,6 +293,7 @@ dedups via `(user_id, span_id)` unique index.
 | Signal | Where | When |
 |---|---|---|
 | Server up | `curl /api/healthz` returns 200 | Immediately after deploy |
+| Intended server revision is live | Railway's active production deployment matches the intended `main` commit | After the deployment becomes active |
 | Agent alive | `/app` shows green "alive" badge near "today" | Within 60s of `pulse-agent run` |
 | Claude ingest | `/app` shows a `claude_code` row in the table | Within minutes of using Claude Code |
 | Shell hook | `/app` shows a `shell` row | After running `claude`/`codex`/`aider` from a new terminal |

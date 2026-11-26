@@ -161,9 +161,10 @@ Test invariants: 13 unit + 5 integration tests, 0 fail.
 
 ### Deployment
 
-- **Server**: Railway, auto-deploy from `main` (currently broken — manual
-  `railway up` from the local checkout works as fallback). Migrations apply
-  on container start via `server/scripts/entrypoint.sh`.
+- **Server**: Railway. After a merge to `main`, verify the connected branch,
+  auto-deploy status, and active production revision using the
+  [deployment runbook](DEPLOY.md#16-deploy--smoke-test). Migrations apply on
+  container start via `server/scripts/entrypoint.sh`.
 - **Agent**: GitHub Releases via `.github/workflows/release-agent.yml`,
   triggered by `git tag agent-v*`. Cross-compiles macOS arm64/x86_64 +
   Linux x86_64. The `agent/install.sh` curl one-liner downloads from the
